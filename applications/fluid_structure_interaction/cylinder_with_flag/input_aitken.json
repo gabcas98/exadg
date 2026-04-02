@@ -9,22 +9,22 @@
         "RefineSpace": "0"
     },
     "SpatialResolutionStructure": {
-        "Degree": "2",
+        "Degree": "4",
         "RefineSpace": "0"
     },
     "FSI" : {
         "AccelerationMethod": "Aitken",
         "AbsTol": "1.e-8",
         "RelTol": "1.e-3",
-        "OmegaInit": "0.3",
+        "OmegaInit": "0.5",
         "ReusedTimeSteps": "1",
         "PartitionedIterMax": "100"
     },
     "Application" : {
     },
     "Output": {
-        "OutputDirectory" : "output/cylinder_with_flag/",
+        "OutputDirectory" : "output/cylinder_with_flag_aitken/",
         "OutputName" : "test",
-        "WriteOutput" : "false"
+        "WriteOutput" : "true"
   }
 }

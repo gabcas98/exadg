@@ -24,6 +24,6 @@
     "Output": {
         "OutputDirectory": "output/bending_wall/",
         "OutputName": "fsi_test",
-        "WriteOutput": "false"
+        "WriteOutput": "true"
     }
 }

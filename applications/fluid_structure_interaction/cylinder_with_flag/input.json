@@ -5,12 +5,12 @@
         "IsTest": "false"
     },
     "SpatialResolutionFluid": {
-        "Degree": "6",
-        "RefineSpace": "0"
+        "Degree": "4",
+        "RefineSpace": "2"
     },
     "SpatialResolutionStructure": {
         "Degree": "2",
-        "RefineSpace": "0"
+        "RefineSpace": "2"
     },
     "FSI" : {
         "AccelerationMethod": "IQN_ILS",
@@ -25,6 +25,6 @@
     "Output": {
         "OutputDirectory": "output/cylinder_with_flag/",
         "OutputName": "test",
-        "WriteOutput": "false"
+        "WriteOutput": "true"
   }
 }
