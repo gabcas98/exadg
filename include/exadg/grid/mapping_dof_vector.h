@@ -26,6 +26,7 @@
 #include <deal.II/base/conditional_ostream.h>
 #include <deal.II/base/mg_level_object.h>
 #include <deal.II/base/multithread_info.h>
+#include <deal.II/base/quadrature_lib.h>
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/fe/fe_nothing.h>
 #include <deal.II/fe/fe_q.h>
@@ -532,8 +533,8 @@ initialize_coarse_mappings_from_mapping_dof_vector(
                     dof_handlers_all_levels[h_level].get_mpi_communicator());
     };
 
-  dealii::MGTransferGlobalCoarsening<dim, VectorType> mg_transfer_global_coarsening(
-    transfers, initialize_dof_vector);
+  dealii::MGTransferMatrixFree<dim, Number> mg_transfer_global_coarsening(transfers,
+                                                                          initialize_dof_vector);
 
   // Transfer grid coordinates to coarser h-levels.
   // The dealii::DoFHandler object will not be used for global coarsening.
