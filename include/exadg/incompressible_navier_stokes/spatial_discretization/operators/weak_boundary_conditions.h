@@ -477,16 +477,25 @@ inline DEAL_II_ALWAYS_INLINE //
   {
     if(operator_type == OperatorType::full or operator_type == OperatorType::inhomogeneous)
     {
-      auto bc       = boundary_descriptor->neumann_bc.find(boundary_id)->second;
-      auto q_points = integrator.quadrature_point(q);
-
       dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> h;
-      if(variable_normal_vector == false)
+      if(boundary_descriptor->is_neumann_cached(boundary_id))
       {
-        h = FunctionEvaluator<1, dim, Number>::value(*bc, q_points, time);
+        auto bc = boundary_descriptor->get_neumann_cached_data();
+        h       = FunctionEvaluator<1, dim, Number>::value(*bc,
+                                                     integrator.get_current_cell_index(),
+                                                     q,
+                                                     integrator.get_quadrature_index());
+      }
+      else if(variable_normal_vector == false)
+      {
+        auto bc       = boundary_descriptor->neumann_bc.find(boundary_id)->second;
+        auto q_points = integrator.quadrature_point(q);
+        h             = FunctionEvaluator<1, dim, Number>::value(*bc, q_points, time);
       }
       else
       {
+        auto bc        = boundary_descriptor->neumann_bc.find(boundary_id)->second;
+        auto q_points  = integrator.quadrature_point(q);
         auto normals_m = integrator.normal_vector(q);
         h              = FunctionEvaluator<1, dim, Number>::value(
           *(std::dynamic_pointer_cast<FunctionWithNormal<dim>>(bc)), q_points, normals_m, time);

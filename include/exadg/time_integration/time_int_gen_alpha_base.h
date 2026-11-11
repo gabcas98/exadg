@@ -52,7 +52,6 @@ public:
   void
   set_current_time_step_size(double const & time_step_size) final;
 
-protected:
   double
   get_scaling_factor_acceleration() const;
 
@@ -62,6 +61,25 @@ protected:
   double
   get_mid_time() const;
 
+  /*
+   * Derivative of the end-of-step quantities with respect to the mid-point displacement
+   * d_{n+1-alpha_f}, which is the unknown of the generalized-alpha system of equations:
+   *   d_{n+1} = (d_{n+1-alpha_f} - alpha_f d_n) / (1 - alpha_f),
+   *   v_{n+1} = gamma / (beta dt) d_{n+1} + f(d_n, v_n, a_n).
+   */
+  double
+  get_alpha_f() const
+  {
+    return alpha_f;
+  }
+
+  double
+  get_velocity_derivative_wrt_mid_displacement() const
+  {
+    return gamma / (beta * this->get_time_step_size() * (1.0 - alpha_f));
+  }
+
+protected:
   /*
    * Computes the finite element vector corresponding to the *remainder* of the acceleration term,
    * which depends on past time step data only. Denoting the acceleration by a, the velocity by v

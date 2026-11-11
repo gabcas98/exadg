@@ -138,7 +138,63 @@ public:
            unsigned int const q,
            unsigned int const v) const;
 
+  /*
+   * Read-only access and write access by {face, q, v}. These functions are used by the
+   * optimal-control based FSI coupling, where interface data are assembled and their transposes
+   * are applied face by face.
+   */
+  std::vector<quad_index> const &
+  get_quad_indices() const
+  {
+    return quad_indices;
+  }
+
+  ArraySolutionValues const &
+  get_array_solution(quad_index const & q_index) const
+  {
+    return map_solution.find(q_index)->second;
+  }
+
+  void
+  set_data(unsigned int const q_index,
+           unsigned int const face,
+           unsigned int const q,
+           unsigned int const v,
+           data_type const &  value)
+  {
+    map_solution.find(q_index)->second[get_vector_index(q_index, face, q, v)] = value;
+  }
+
+  void
+  set_zero()
+  {
+    for(auto & it : map_solution)
+      for(auto & value : it.second)
+        value = data_type();
+  }
+
+  void
+  scale(number_type const factor)
+  {
+    for(auto & it : map_solution)
+      for(auto & value : it.second)
+        value *= factor;
+  }
+
 private:
+  dealii::types::global_dof_index
+  get_vector_index(unsigned int const q_index,
+                   unsigned int const face,
+                   unsigned int const q,
+                   unsigned int const v) const
+  {
+    auto const it_map = map_vector_index.find(q_index);
+    Assert(it_map != map_vector_index.end(), dealii::ExcMessage("Invalid quadrature index."));
+    auto const it = it_map->second.find(std::make_tuple(face, q, v));
+    Assert(it != it_map->second.end(), dealii::ExcMessage("Invalid {face, q, v} index."));
+    return it->second;
+  }
+
   std::vector<quad_index> quad_indices;
 
   mutable std::map<quad_index, MapVectorIndex>        map_vector_index;

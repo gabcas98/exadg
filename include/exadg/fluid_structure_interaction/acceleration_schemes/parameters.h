@@ -38,7 +38,10 @@ enum class AccelerationMethod
   Undefined,
   Aitken,
   IQN_ILS,
-  IQN_IMVLS
+  IQN_IMVLS,
+  // Not a fixed-point acceleration: the interface traction is the control variable of an
+  // optimisation problem (see subsection "OptimalControl" and optimal_control/parameters.h).
+  OptimalControl
 };
 
 // The initial guess used in the FSI coupling loop is computed using an extrapolation of suitable
@@ -64,7 +67,8 @@ struct Parameters
       geometric_tolerance(1.e-10),
       update_ale(true),
       update_fluid_velocity(true),
-      update_fluid_pressure(true)
+      update_fluid_pressure(true),
+      monitor_point("")
   {
   }
 
@@ -122,6 +126,12 @@ struct Parameters
                         "Include fluid pressure subproblem in the strong coupling.",
                         dealii::Patterns::Bool(),
                         false);
+      prm.add_parameter("MonitorPoint",
+                        monitor_point,
+                        "Comma-separated coordinates of a structure point whose displacement and "
+                        "velocity are printed after every time step (empty: disabled).",
+                        dealii::Patterns::Anything(),
+                        false);
     }
     prm.leave_subsection();
   }
@@ -144,6 +154,9 @@ struct Parameters
   bool update_ale;
   bool update_fluid_velocity;
   bool update_fluid_pressure;
+
+  // point of the structure monitored after every time step (e.g. the tip of a flag)
+  std::string monitor_point;
 };
 
 } // namespace FSI

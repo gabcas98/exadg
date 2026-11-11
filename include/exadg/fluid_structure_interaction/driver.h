@@ -25,6 +25,9 @@
 // ExaDG
 #include <exadg/fluid_structure_interaction/acceleration_schemes/parameters.h>
 #include <exadg/fluid_structure_interaction/acceleration_schemes/partitioned_solver.h>
+#include <exadg/fluid_structure_interaction/optimal_control/interface_problem.h>
+#include <exadg/fluid_structure_interaction/optimal_control/optimizers.h>
+#include <exadg/fluid_structure_interaction/optimal_control/parameters.h>
 #include <exadg/fluid_structure_interaction/single_field_solvers/fluid.h>
 #include <exadg/fluid_structure_interaction/single_field_solvers/structure.h>
 #include <exadg/fluid_structure_interaction/user_interface/application_base.h>
@@ -91,6 +94,34 @@ private:
                                  VectorType const & displacement_structure,
                                  unsigned int       iteration) const;
 
+  /*
+   * Optimal-control based coupling (AccelerationMethod::OptimalControl): the interface traction
+   * is the control of an optimisation problem solved in every time step.
+   */
+  bool
+  use_optimal_control() const
+  {
+    return parameters.acceleration_method == AccelerationMethod::OptimalControl;
+  }
+
+  // one line per time step with norms of the structural solution (for comparisons of schemes)
+  void
+  print_time_step_summary() const;
+
+  // diagnostics: pressure and viscous forces of the fluid on the interface (and, for the optimal
+  // control coupling, the force of the control)
+  void
+  print_interface_forces() const;
+
+  void
+  check_optimal_control_requirements() const;
+
+  void
+  setup_optimal_control();
+
+  void
+  solve_optimal_control() const;
+
   // MPI communicator
   MPI_Comm const mpi_comm;
 
@@ -120,6 +151,16 @@ private:
 
   // Partitioned FSI solver
   std::shared_ptr<PartitionedSolver<dim, Number>> partitioned_solver;
+
+  // Optimal-control based coupling
+  OptimalControl::Parameters                                     oc_parameters;
+  std::shared_ptr<OptimalControl::InterfaceProblem<dim, Number>> oc_problem;
+  std::shared_ptr<OptimalControl::Optimizer<OptimalControl::InterfaceProblem<dim, Number>>>
+                                     oc_optimizer;
+  mutable OptimalControl::Statistics oc_statistics;
+  mutable unsigned int               oc_time_steps          = 0;
+  mutable unsigned int               oc_geometry_iterations = 0;
+  mutable VectorType                 oc_last_control;
 };
 
 } // namespace FSI

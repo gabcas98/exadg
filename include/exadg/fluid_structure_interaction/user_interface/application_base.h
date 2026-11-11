@@ -95,9 +95,9 @@ public:
     // parameters
     set_parameters();
     param.check();
-    // Some FSI specific Asserts
-    AssertThrow(param.pull_back_traction == true,
-                dealii::ExcMessage("Invalid parameter in context of fluid-structure interaction."));
+    // Note: pull_back_traction == false is only valid for coupling schemes that convert the
+    // spatial traction into a nominal traction themselves (AccelerationMethod::OptimalControl).
+    // This is checked by the FSI driver, which knows the coupling scheme.
     param.print(pcout, "List of parameters for structure:");
 
     // grid

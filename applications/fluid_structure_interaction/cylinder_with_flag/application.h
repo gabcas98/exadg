@@ -157,6 +157,47 @@ public:
 
 private:
   void
+  add_parameters(dealii::ParameterHandler & prm) final
+  {
+    FluidFSI::ApplicationBase<dim, Number>::add_parameters(prm);
+
+    prm.enter_subsection("Application");
+    {
+      prm.add_parameter("EndTime",
+                        end_time,
+                        "End time of the simulation.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("TractionCoupling",
+                        traction_coupling,
+                        "Prescribe the interface traction on the fluid (NeumannCached) and on the "
+                        "structure, as required by FSI/AccelerationMethod = OptimalControl.",
+                        dealii::Patterns::Bool());
+      prm.add_parameter(
+        "PullBackTraction",
+        pull_back_traction,
+        "Structure: pull back the (spatial) interface traction with the current "
+        "deformation. false is required by FSI/AccelerationMethod = OptimalControl.",
+        dealii::Patterns::Bool());
+      prm.add_parameter("CFL",
+                        cfl,
+                        "CFL number of the adaptive time step.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("CoupledFluidSolver",
+                        coupled_fluid_solver,
+                        "Use the fluid discretization of the traction coupling (coupled solver, "
+                        "divergence formulation) also for Dirichlet-Neumann schemes.",
+                        dealii::Patterns::Bool());
+    }
+    prm.leave_subsection();
+  }
+
+  double end_time             = END_TIME;
+  bool   traction_coupling    = false;
+  bool   coupled_fluid_solver = false;
+  double cfl                  = 0.5;
+  bool   pull_back_traction   = true;
+
+  void
   set_parameters() final
   {
     using namespace IncNS;
@@ -178,7 +219,7 @@ private:
 
     // PHYSICAL QUANTITIES
     param.start_time = 0.0;
-    param.end_time   = END_TIME;
+    param.end_time   = end_time;
     param.viscosity  = FLUID_VISCOSITY;
     param.density    = FLUID_DENSITY;
 
@@ -192,7 +233,7 @@ private:
     param.calculation_of_time_step_size   = TimeStepCalculation::CFL;
     param.time_step_size                  = END_TIME;
     param.max_velocity                    = U_X_MAX;
-    param.cfl                             = 0.5;
+    param.cfl                             = cfl;
     param.cfl_exponent_fe_degree_velocity = 1.5;
 
     // output of solver information
@@ -315,6 +356,19 @@ private:
     // preconditioner Schur-complement block
     param.preconditioner_pressure_block =
       SchurComplementPreconditioner::PressureConvectionDiffusion;
+
+    // Traction-controlled coupling (optimal control): the fluid step has to be affine in the
+    // interface traction with a symmetric saddle point matrix, and the natural boundary condition
+    // has to be the Cauchy traction.
+    if(traction_coupling or coupled_fluid_solver)
+    {
+      param.formulation_viscous_term     = FormulationViscousTerm::DivergenceFormulation;
+      param.temporal_discretization      = TemporalDiscretization::BDFCoupledSolution;
+      param.treatment_of_convective_term = TreatmentOfConvectiveTerm::Explicit;
+      param.apply_penalty_terms_in_postprocessing_step = false;
+      // sensitivities and adjoints are only as accurate as the linear solves
+      param.solver_data_coupled = SolverData(1e4, 1.e-14, 1.e-10, LinearSolver::FGMRES, 100);
+    }
   }
 
   void
@@ -557,8 +611,12 @@ private:
       pair(BOUNDARY_ID_OUTFLOW, new dealii::Functions::ZeroFunction<dim>(dim)));
     boundary_descriptor->velocity->dirichlet_bc.insert(
       pair(BOUNDARY_ID_CYLINDER, new dealii::Functions::ZeroFunction<dim>(dim)));
-    // fluid-structure interface
-    boundary_descriptor->velocity->dirichlet_cached_bc.insert(BOUNDARY_ID_FLAG);
+    // fluid-structure interface: velocity from the structure (Dirichlet-Neumann schemes) or
+    // traction from the coupling scheme (optimal control, with p = 0 in the weak boundary term)
+    if(traction_coupling)
+      boundary_descriptor->velocity->neumann_cached_bc.insert(BOUNDARY_ID_FLAG);
+    else
+      boundary_descriptor->velocity->dirichlet_cached_bc.insert(BOUNDARY_ID_FLAG);
 
     // fill boundary descriptor pressure
     boundary_descriptor->pressure->neumann_bc.insert(BOUNDARY_ID_WALLS);
@@ -566,7 +624,11 @@ private:
     boundary_descriptor->pressure->dirichlet_bc.insert(
       pair(BOUNDARY_ID_OUTFLOW, new dealii::Functions::ZeroFunction<dim>(1)));
     boundary_descriptor->pressure->neumann_bc.insert(BOUNDARY_ID_CYLINDER);
-    boundary_descriptor->pressure->neumann_bc.insert(BOUNDARY_ID_FLAG);
+    if(traction_coupling)
+      boundary_descriptor->pressure->dirichlet_bc.insert(
+        pair(BOUNDARY_ID_FLAG, new dealii::Functions::ZeroFunction<dim>(1)));
+    else
+      boundary_descriptor->pressure->neumann_bc.insert(BOUNDARY_ID_FLAG);
   }
 
   void
@@ -782,6 +844,47 @@ public:
   }
 
 private:
+  void
+  add_parameters(dealii::ParameterHandler & prm) final
+  {
+    StructureFSI::ApplicationBase<dim, Number>::add_parameters(prm);
+
+    prm.enter_subsection("Application");
+    {
+      prm.add_parameter("EndTime",
+                        end_time,
+                        "End time of the simulation.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("TractionCoupling",
+                        traction_coupling,
+                        "Prescribe the interface traction on the fluid (NeumannCached) and on the "
+                        "structure, as required by FSI/AccelerationMethod = OptimalControl.",
+                        dealii::Patterns::Bool());
+      prm.add_parameter(
+        "PullBackTraction",
+        pull_back_traction,
+        "Structure: pull back the (spatial) interface traction with the current "
+        "deformation. false is required by FSI/AccelerationMethod = OptimalControl.",
+        dealii::Patterns::Bool());
+      prm.add_parameter("CFL",
+                        cfl,
+                        "CFL number of the adaptive time step.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("CoupledFluidSolver",
+                        coupled_fluid_solver,
+                        "Use the fluid discretization of the traction coupling (coupled solver, "
+                        "divergence formulation) also for Dirichlet-Neumann schemes.",
+                        dealii::Patterns::Bool());
+    }
+    prm.leave_subsection();
+  }
+
+  double end_time             = END_TIME;
+  bool   traction_coupling    = false;
+  bool   coupled_fluid_solver = false;
+  double cfl                  = 0.5;
+  bool   pull_back_traction   = true;
+
   // Structure
   void
   set_parameters() final
@@ -794,13 +897,14 @@ private:
     param.body_force           = false;
     param.pull_back_body_force = false;
     param.large_deformation    = true;
-    param.pull_back_traction   = true;
-    param.material_type        = MaterialType::StVenantKirchhoff;
+    // traction-controlled coupling applies the area ratio of the frozen geometry itself
+    param.pull_back_traction = pull_back_traction and not traction_coupling;
+    param.material_type      = MaterialType::StVenantKirchhoff;
 
     param.density = DENSITY_STRUCTURE;
 
     param.start_time                           = 0.0;
-    param.end_time                             = END_TIME;
+    param.end_time                             = end_time;
     param.time_step_size                       = END_TIME / 100.0;
     param.gen_alpha_type                       = GenAlphaType::BossakAlpha;
     param.spectral_radius                      = 0.8;

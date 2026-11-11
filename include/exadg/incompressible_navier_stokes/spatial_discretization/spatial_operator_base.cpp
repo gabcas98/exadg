@@ -391,6 +391,28 @@ SpatialOperatorBase<dim, Number>::initialize_dirichlet_cached_bc()
 
 template<int dim, typename Number>
 void
+SpatialOperatorBase<dim, Number>::initialize_neumann_cached_bc()
+{
+  // initialize data container for NeumannCached boundary conditions
+  if(not(boundary_descriptor->velocity->neumann_cached_bc.empty()))
+  {
+    std::vector<unsigned int> quad_indices;
+    quad_indices.emplace_back(get_quad_index_velocity_standard());
+    quad_indices.emplace_back(get_quad_index_velocity_overintegration());
+    quad_indices.emplace_back(get_quad_index_velocity_nodal_points());
+
+    interface_data_neumann_cached = std::make_shared<ContainerInterfaceData<1, dim, double>>();
+    interface_data_neumann_cached->setup(*matrix_free,
+                                         get_dof_index_velocity(),
+                                         quad_indices,
+                                         boundary_descriptor->velocity->neumann_cached_bc);
+
+    boundary_descriptor->velocity->set_neumann_cached_data(interface_data_neumann_cached);
+  }
+}
+
+template<int dim, typename Number>
+void
 SpatialOperatorBase<dim, Number>::initialize_operators(std::string const & dof_index_temperature)
 {
   // mass operator
@@ -737,6 +759,8 @@ SpatialOperatorBase<dim, Number>::setup(
 
   initialize_dirichlet_cached_bc();
 
+  initialize_neumann_cached_bc();
+
   initialize_operators(dof_index_temperature);
 
   initialize_calculators_for_derived_quantities();
@@ -924,6 +948,13 @@ std::shared_ptr<ContainerInterfaceData<1, dim, double>>
 SpatialOperatorBase<dim, Number>::get_container_interface_data()
 {
   return interface_data_dirichlet_cached;
+}
+
+template<int dim, typename Number>
+std::shared_ptr<ContainerInterfaceData<1, dim, double>>
+SpatialOperatorBase<dim, Number>::get_container_interface_data_neumann() const
+{
+  return interface_data_neumann_cached;
 }
 
 template<int dim, typename Number>
@@ -2050,8 +2081,10 @@ SpatialOperatorBase<dim, Number>::local_interpolate_stress_bc_boundary_face(
     BoundaryTypeU const boundary_type =
       this->boundary_descriptor->velocity->get_boundary_type(boundary_id);
 
-    // a Dirichlet boundary for the fluid is a stress boundary for the structure
-    if(boundary_type == BoundaryTypeU::DirichletCached)
+    // a Dirichlet boundary for the fluid is a stress boundary for the structure (the same holds
+    // for a NeumannCached boundary used by traction-controlled coupling schemes)
+    if(boundary_type == BoundaryTypeU::DirichletCached or
+       this->boundary_descriptor->velocity->is_neumann_cached(boundary_id))
     {
       integrator_u.reinit(face);
       integrator_u.gather_evaluate(*velocity_ptr, dealii::EvaluationFlags::gradients);

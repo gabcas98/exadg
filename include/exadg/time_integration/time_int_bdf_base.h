@@ -42,10 +42,19 @@ public:
                  MPI_Comm const &    mpi_comm_,
                  bool const          is_test_);
 
-protected:
+  // coefficient beta_i of the extrapolation of explicitly treated terms (from t_{n-i})
+  double
+  get_extrapolation_coefficient(unsigned int const i) const
+  {
+    return extra.get_beta(i);
+  }
+
+  // scaling factor gamma_0/dt of the BDF time derivative term (public for coupling schemes that
+  // solve sensitivity/adjoint problems with the same system matrix)
   double
   get_scaling_factor_time_derivative_term() const;
 
+protected:
   void
   update_time_integrator_constants() override;
 

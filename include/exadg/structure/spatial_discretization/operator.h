@@ -303,6 +303,39 @@ public:
                bool const         update_preconditioner) const final;
 
   /*
+   * Solves the linearized problem (scaling_factor_mass * M + K'(linearization)) * dst = rhs with
+   * homogeneous Dirichlet boundary conditions, where K' is the tangent stiffness of the elasticity
+   * operator evaluated at the given linearization point (for linear problems, K' = K and the
+   * linearization point is ignored). This function is used for sensitivity and adjoint equations,
+   * e.g. by optimal-control based FSI coupling schemes. The preconditioner is not updated.
+   */
+  unsigned int
+  solve_linearized(VectorType &       dst,
+                   VectorType const & rhs,
+                   VectorType const & linearization,
+                   double const       scaling_factor_acceleration,
+                   double const       scaling_factor_velocity,
+                   double const       time) const;
+
+  /*
+   * dst = (scaling_factor_mass * M + K'(linearization)) * src, i.e. the operator inverted by
+   * solve_linearized(). Constrained degrees of freedom are treated as by the linear solver.
+   */
+  void
+  apply_linearized(VectorType &       dst,
+                   VectorType const & src,
+                   VectorType const & linearization,
+                   double const       scaling_factor_acceleration,
+                   double const       scaling_factor_velocity,
+                   double const       time) const;
+
+  dealii::AffineConstraints<Number> const &
+  get_affine_constraints() const
+  {
+    return affine_constraints;
+  }
+
+  /*
    * Setters and getters.
    */
   std::shared_ptr<dealii::MatrixFree<dim, Number> const>
@@ -330,6 +363,13 @@ public:
   // TODO: we currently need this function public for precice-based FSI
   unsigned int
   get_dof_index() const;
+
+  // quadrature index used for (Neumann) boundary integrals and the "cached" interface data
+  unsigned int
+  get_quad_index_public() const
+  {
+    return get_quad_index();
+  }
 
   /*
    * Computation of derived quantities needed for postprocessing.

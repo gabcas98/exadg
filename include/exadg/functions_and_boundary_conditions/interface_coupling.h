@@ -64,6 +64,24 @@ public:
   void
   update_data(VectorType const & dof_vector_src);
 
+  /**
+   * Exact transpose of update_data(): the point values currently stored in the dst-side container
+   * are interpreted as coefficients of point functionals and are scattered back to the src-side
+   * degrees of freedom, i.e. dof_vector_src += E^T * data, where E is the (averaged) point
+   * evaluation operator applied by update_data(). Points that are found in several cells are
+   * weighted by the inverse of their multiplicity, which is the transpose of the averaging in
+   * update_data(). Constraints are not applied: the caller is responsible for projecting the
+   * result onto the admissible space.
+   */
+  void
+  add_transpose(VectorType & dof_vector_src) const;
+
+  std::shared_ptr<ContainerInterfaceData<rank, dim, double>>
+  get_interface_data() const
+  {
+    return interface_data_dst;
+  }
+
 private:
   /*
    * dst-side
@@ -80,6 +98,8 @@ private:
    * src-side
    */
   dealii::DoFHandler<dim> const * dof_handler_src;
+
+  dealii::Mapping<dim> const * mapping_src;
 };
 
 } // namespace ExaDG

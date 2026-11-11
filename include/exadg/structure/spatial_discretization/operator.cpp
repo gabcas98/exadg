@@ -1134,6 +1134,56 @@ Operator<dim, Number>::solve_linear(VectorType &       sol,
 }
 
 template<int dim, typename Number>
+void
+Operator<dim, Number>::apply_linearized(VectorType &       dst,
+                                        VectorType const & src,
+                                        VectorType const & linearization,
+                                        double const       scaling_factor_acceleration,
+                                        double const       scaling_factor_velocity,
+                                        double const       time) const
+{
+  double const scaling_factor_mass =
+    compute_scaling_factor_mass(scaling_factor_acceleration, scaling_factor_velocity);
+
+  update_elasticity_operator(scaling_factor_mass, time);
+
+  if(param.large_deformation)
+    elasticity_operator_nonlinear.set_solution_linearization(linearization);
+
+  apply_elasticity_operator(dst, src);
+}
+
+template<int dim, typename Number>
+unsigned int
+Operator<dim, Number>::solve_linearized(VectorType &       dst,
+                                        VectorType const & rhs,
+                                        VectorType const & linearization,
+                                        double const       scaling_factor_acceleration,
+                                        double const       scaling_factor_velocity,
+                                        double const       time) const
+{
+  double const scaling_factor_mass =
+    compute_scaling_factor_mass(scaling_factor_acceleration, scaling_factor_velocity);
+
+  update_elasticity_operator(scaling_factor_mass, time);
+
+  if(param.large_deformation)
+    elasticity_operator_nonlinear.set_solution_linearization(linearization);
+
+  linear_solver->update_preconditioner(false);
+
+  // homogeneous Dirichlet boundary conditions for sensitivity/adjoint problems
+  VectorType rhs_homogeneous(rhs);
+  affine_constraints.set_zero(rhs_homogeneous);
+
+  dst                           = 0.0;
+  unsigned int const iterations = linear_solver->solve(dst, rhs_homogeneous);
+  affine_constraints.set_zero(dst);
+
+  return iterations;
+}
+
+template<int dim, typename Number>
 std::shared_ptr<dealii::MatrixFree<dim, Number> const>
 Operator<dim, Number>::get_matrix_free() const
 {

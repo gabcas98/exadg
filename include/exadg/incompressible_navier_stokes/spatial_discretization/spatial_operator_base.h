@@ -161,15 +161,15 @@ public:
   unsigned int
   get_quad_index_pressure() const;
 
-protected:
-  unsigned int
-  get_dof_index_velocity_scalar() const;
-
   unsigned int
   get_quad_index_velocity_overintegration() const;
 
   unsigned int
   get_quad_index_velocity_nodal_points() const;
+
+protected:
+  unsigned int
+  get_dof_index_velocity_scalar() const;
 
   unsigned int
   get_quad_index_pressure_nodal_points() const;
@@ -211,6 +211,36 @@ public:
   // Multiphysics coupling via "Cached" boundary conditions
   std::shared_ptr<ContainerInterfaceData<1, dim, double>>
   get_container_interface_data();
+
+  // Access to the operator kernels and parameters (e.g. for the transposes of boundary terms
+  // needed by adjoint-based coupling schemes)
+  std::shared_ptr<Operators::ViscousKernel<dim, Number>>
+  get_viscous_kernel() const
+  {
+    return viscous_kernel;
+  }
+
+  std::shared_ptr<Operators::ConvectiveKernel<dim, Number>>
+  get_convective_kernel() const
+  {
+    return convective_kernel;
+  }
+
+  std::shared_ptr<Operators::ContinuityPenaltyKernel<dim, Number>>
+  get_continuity_penalty_kernel() const
+  {
+    return conti_penalty_kernel;
+  }
+
+  Parameters const &
+  get_parameters() const
+  {
+    return param;
+  }
+
+  // Interface data for NeumannCached boundary conditions (prescribed h = F(u)*n)
+  std::shared_ptr<ContainerInterfaceData<1, dim, double>>
+  get_container_interface_data_neumann() const;
 
   void
   set_velocity_ptr(VectorType const & velocity) const;
@@ -558,6 +588,7 @@ private:
    * Interface coupling
    */
   std::shared_ptr<ContainerInterfaceData<1, dim, double>> interface_data_dirichlet_cached;
+  std::shared_ptr<ContainerInterfaceData<1, dim, double>> interface_data_neumann_cached;
 
 protected:
   /*
@@ -654,6 +685,9 @@ private:
 
   void
   initialize_dirichlet_cached_bc();
+
+  void
+  initialize_neumann_cached_bc();
 
   void
   initialize_operators(std::string const & dof_index_temperature);

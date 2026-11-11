@@ -91,6 +91,12 @@ struct BoundaryDescriptorU
   // Neumann: prescribe all components of the velocity gradient in normal direction
   std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>> neumann_bc;
 
+  // another type of Neumann boundary condition where the data h = F(u)*n comes from an interface
+  // data container (filled by a coupling scheme) instead of a dealii::Function. This is required
+  // for fluid-structure interaction schemes that prescribe the interface traction on the fluid
+  // side (e.g. optimal-control based coupling).
+  std::set<dealii::types::boundary_id> neumann_cached_bc;
+
   // Symmetry: A boundary condition prescribing "symmetry" for planar surfaces. Using this boundary
   // condition, the velocity normal to boundary is set to zero
   //
@@ -132,6 +138,8 @@ struct BoundaryDescriptorU
       return BoundaryTypeU::DirichletCached;
     else if(this->neumann_bc.find(boundary_id) != this->neumann_bc.end())
       return BoundaryTypeU::Neumann;
+    else if(this->neumann_cached_bc.find(boundary_id) != this->neumann_cached_bc.end())
+      return BoundaryTypeU::Neumann;
     else if(this->symmetry_bc.find(boundary_id) != this->symmetry_bc.end())
       return BoundaryTypeU::Symmetry;
 
@@ -154,6 +162,9 @@ struct BoundaryDescriptorU
       counter++;
 
     if(this->neumann_bc.find(boundary_id) != this->neumann_bc.end())
+      counter++;
+
+    if(this->neumann_cached_bc.find(boundary_id) != this->neumann_cached_bc.end())
       counter++;
 
     if(this->symmetry_bc.find(boundary_id) != this->symmetry_bc.end())
@@ -182,8 +193,31 @@ struct BoundaryDescriptorU
     return dirichlet_cached_data;
   }
 
+  bool
+  is_neumann_cached(dealii::types::boundary_id const & boundary_id) const
+  {
+    return neumann_cached_bc.find(boundary_id) != neumann_cached_bc.end();
+  }
+
+  void
+  set_neumann_cached_data(
+    std::shared_ptr<ContainerInterfaceData<1, dim, double> const> interface_data) const
+  {
+    neumann_cached_data = interface_data;
+  }
+
+  std::shared_ptr<ContainerInterfaceData<1, dim, double> const>
+  get_neumann_cached_data() const
+  {
+    AssertThrow(neumann_cached_data.get(),
+                dealii::ExcMessage("Pointer to ContainerInterfaceData has not been initialized."));
+
+    return neumann_cached_data;
+  }
+
 private:
   mutable std::shared_ptr<ContainerInterfaceData<1, dim, double> const> dirichlet_cached_data;
+  mutable std::shared_ptr<ContainerInterfaceData<1, dim, double> const> neumann_cached_data;
 };
 
 template<int dim>

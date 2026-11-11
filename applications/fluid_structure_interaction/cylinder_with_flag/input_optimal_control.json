@@ -1,0 +1,50 @@
+{
+    "General": {
+        "Precision": "double",
+        "Dim": "2",
+        "IsTest": "false"
+    },
+    "SpatialResolutionFluid": {
+        "Degree": "3",
+        "RefineSpace": "1"
+    },
+    "SpatialResolutionStructure": {
+        "Degree": "2",
+        "RefineSpace": "0"
+    },
+    "FSI": {
+        "AccelerationMethod": "OptimalControl",
+        "AbsTol": "1.e-8",
+        "RelTol": "1.e-3",
+        "OmegaInit": "0.3",
+        "PartitionedIterMax": "100",
+        "MonitorPoint": "0.6,0.2"
+    },
+    "OptimalControl": {
+        "Formulation": "NativeTraction",
+        "ControlSpace": "Structure",
+        "Method": "InterfaceQuasiNewton",
+        "GeometryInState": "true",
+        "GeometryIterations": "1",
+        "ExtrapolateControl": "true",
+        "MaxIterations": "100",
+        "MismatchTolerance": "1.e-8",
+        "QNReuseTimeSteps": "8",
+        "QNInitialRelaxation": "0.3",
+        "QNMixing": "1.0",
+        "QNFilter": "1.e-4",
+        "QNRestartFactor": "2.0",
+        "Verbose": "true"
+    },
+    "Application": {
+        "EndTime": "0.05",
+        "TractionCoupling": "false",
+        "CoupledFluidSolver": "true",
+        "PullBackTraction": "false"
+    },
+    "Output": {
+        "OutputDirectory": "output/cylinder_with_flag_optimal_control/",
+        "OutputName": "test",
+        "WriteOutput": "false"
+    }
+}

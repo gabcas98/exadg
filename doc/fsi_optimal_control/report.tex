@@ -1,0 +1,884 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}
+
+\newtheorem{proposition}{Proposition}[section]
+\newtheorem{lemma}[proposition]{Lemma}
+\newtheorem{corollary}[proposition]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[proposition]{Definition}
+\newtheorem{assumption}[proposition]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[proposition]{Remark}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\G}{\Gamma}
+\newcommand{\M}{M}
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\tr}{\operatorname{tr}}
+\usepackage{url}
+\DeclareUrlCommand\code{\urlstyle{tt}}
+\makeatletter\g@addto@macro\UrlBreaks{\UrlOrds}\makeatother
+\emergencystretch=2em
+\newcommand{\Pif}{\Pi_{f}}
+\newcommand{\Pis}{\Pi_{s}}
+
+\title{Optimal-control and secant interface solvers for partitioned\\
+fluid--structure interaction in a high-order DG framework:\\
+formulations, exact derivatives and the role of the interface discretisation}
+\author{Gabriel Cassese}
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study optimisation-based coupling of a high-order discontinuous Galerkin (DG) arbitrary
+Lagrangian--Eulerian (ALE) Navier--Stokes solver and a continuous Galerkin hyperelastic structure
+solver within the matrix-free finite element library ExaDG. The interface traction is treated as a
+control variable, in the spirit of optimisation-based domain decomposition. For a frozen fluid
+geometry and an explicit treatment of the convective term, the discrete fluid step is affine in the
+interface data and its system matrix is a symmetric saddle-point matrix; together with the symmetric
+tangent stiffness of the structure this yields \emph{exact} tangent and adjoint operators that only
+require forward solves of the single-field solvers and the transposes of the (non-matching) point
+evaluations between the meshes. On top of these operators we implement steepest descent, L-BFGS,
+Gauss--Newton, Levenberg--Marquardt, a Steihaug trust region, a Newton--Krylov method for the
+interface equation and a least-squares secant (Anderson/IQN-ILS type) method, with $L^2$ and
+$H^{\pm1/2}$ interface metrics and two preconditioners. All derivatives are verified to round-off.
+The numerical study on the Turek--Hron FSI benchmark geometry shows that (i) the choice of the
+control space is decisive: a traction space richer than the fluid trace violates a mortar-type
+compatibility condition and produces an unstable coupled scheme; (ii) with a compatible control
+space the velocity-mismatch formulation converges, but at first order in the fluid mesh size, to the
+solution of the native Dirichlet--Neumann scheme; a force decomposition identifies the cause as the
+strong versus weak imposition of the no-slip condition on unresolved boundary layers;
+(iii) a \emph{native-traction} formulation, whose root is by construction the fixed point of the
+native Dirichlet--Neumann scheme, reproduces the reference solution to all digits. For this
+formulation we derive the exact discrete adjoint, including the transposes of the Dirichlet boundary
+terms of the DG fluid and of the nodal stress interpolation, and compare all methods on the native
+solution: the secant method is as fast as IQN-ILS, interface Newton costs about twice as much, and
+Gauss--Newton about six to ten times as much.
+\end{abstract}
+
+\tableofcontents
+
+%=================================================================================================
+\section{Introduction}
+%=================================================================================================
+
+Partitioned solvers for fluid--structure interaction (FSI) couple two single-field solvers through
+interface conditions: continuity of velocity (kinematic condition) and balance of tractions
+(dynamic condition). The classical Dirichlet--Neumann (DN) iteration passes the structural velocity
+to the fluid and the fluid traction back to the structure; its convergence deteriorates in the
+added-mass regime \cite{CausinGerbeauNobile2005}, and practical implementations accelerate it by
+Aitken relaxation or interface quasi-Newton methods such as IQN-ILS \cite{Degroote2009}.
+
+An alternative is optimisation-based domain decomposition
+\cite{GunzburgerHeinkenschlossLee2000}: the interface flux is a control that is imposed on both
+subproblems with opposite signs, so that the dynamic condition holds by construction, and the
+kinematic condition is recovered by minimising the trace mismatch. For a scalar
+reaction--diffusion model, a companion study (report \emph{NL\_DD\_OPT}) derived state, sensitivity
+and adjoint equations, the reduced gradient and the Gauss--Newton Hessian for six optimisation
+methods, and concluded that solving the interface equation directly is cheaper and better
+conditioned than minimising its square, unless the interface equation has no exact solution.
+Fluid--structure interaction with non-matching meshes and different discretisations on the two
+sides is precisely a case in which the optimisation formulation may be attractive.
+
+This report transfers that framework to FSI in ExaDG \cite{ExaDG2020}, a matrix-free high-order
+finite element library built on \code{deal.II}. The contributions are:
+\begin{enumerate}
+  \item A flux-control formulation of one FSI time step with \emph{exact} discrete tangent and
+  adjoint operators (\cref{sec:oc}), obtained without differentiating the time-stepping scheme
+  by hand: the fluid step is affine in the interface data for frozen geometry and explicit
+  convection, and both single-field system matrices are symmetric (\cref{lem:affine,lem:symmetry}).
+  The only new transposes are those of the point evaluations between non-matching meshes, for which
+  we derive the exact transpose of the averaged remote point evaluation (\cref{lem:transpose}).
+  \item A generic implementation of seven optimisation and root-finding methods with general
+  interface metrics, a Steklov--Poincar\'e preconditioner and a frozen-Jacobian preconditioner
+  (\cref{sec:methods}).
+  \item A systematic study of the interface discretisation (\cref{sec:spaces,sec:diagnosis}): the
+  stability of the coupled scheme depends on a mortar-type compatibility of the control space, and
+  the remaining first-order discrepancy with the native DN solver is traced to the imposition of the
+  no-slip condition on unresolved boundary layers.
+  \item A native-traction formulation (\cref{sec:native}) whose root coincides with the native DN
+  fixed point, with its exact discrete tangent and adjoint (\cref{sec:native_adjoint}), so that all
+  methods can be compared on the native solution.
+\end{enumerate}
+Negative results (Sobolev metrics, Tikhonov regularisation, a constraint-only stabilisation of the
+multiplier, a Robin penalty) are reported as well, since they delimit the design space.
+
+%=================================================================================================
+\section{Model problem and discretisation}\label{sec:model}
+%=================================================================================================
+
+\subsection{Continuous problem}
+
+Let $\Omega_f(t)$ and $\Omega_s$ denote the fluid domain (moving) and the structure reference
+domain, with interface $\G(t)$ ($\G_0$ in the reference configuration). The fluid is governed by the
+incompressible Navier--Stokes equations in ALE form, written in kinematic quantities (kinematic
+pressure $p$, kinematic viscosity $\nu$, density $\rho_f$),
+\begin{equation}\label{eq:ns}
+  \partial_t u|_{\chi} + ((u-w)\cdot\nabla)u - \nabla\cdot\big(\nu F(u)\big) + \nabla p = 0,
+  \qquad \nabla\cdot u = 0 \quad\text{in } \Omega_f(t),
+\end{equation}
+with the grid velocity $w$, the ALE derivative at fixed reference point $\chi$, and
+$F(u) = \nabla u + \nabla u^{\top}$ (divergence formulation; the Laplace formulation
+$F(u)=\nabla u$ is also available in ExaDG). The Cauchy traction on $\G$ is
+$\rho_f(\nu F(u) - pI)n_f$, with $n_f$ the outward normal of the fluid. The structure is a
+St.~Venant--Kirchhoff material,
+\begin{equation}\label{eq:structure}
+  \rho_s \ddot d - \nabla_X\cdot P(d) = 0 \quad\text{in }\Omega_s,
+\end{equation}
+with displacement $d$ and first Piola--Kirchhoff stress $P$. The interface conditions are
+\begin{equation}\label{eq:interface}
+  u = \dot d \quad\text{(kinematic)},\qquad
+  P(d)N\,\dd A = -\rho_f(\nu F(u)-pI)n_f\,\dd a \quad\text{(dynamic)}\qquad\text{on }\G .
+\end{equation}
+The fluid mesh moves by an elasticity extension of the interface displacement (ALE mapping).
+
+\subsection{Discretisation in ExaDG}
+
+\paragraph{Fluid.} The fluid is discretised by a DG method with $Q_k$ velocity and $Q_{k-1}$
+pressure on hexahedral (quadrilateral) cells, symmetric interior penalty (SIPG) for the viscous term,
+weak formulations of the pressure gradient and velocity divergence with central fluxes, and
+divergence and continuity penalty terms. Time integration is BDF2 with the convective term treated
+explicitly (extrapolation), and the remaining linear saddle-point system is solved monolithically
+(``coupled solver''). Boundary conditions are imposed weakly by the mirror principle: on a Dirichlet
+boundary $u^+ = -u^- + 2g$, on a Neumann boundary $u^+=u^-$ and $\{F(u)\}n = h$, so that the
+viscous term imposes $\nu F(u)n = \nu h$; on a pressure-Dirichlet boundary $p^+=-p^-+2p_{\G}$, so
+that $\{p\}=p_{\G}$.
+
+\paragraph{Structure.} The structure uses continuous $Q_2$ elements, the generalised-$\alpha$ method
+of Bossak type and Newton's method with a matrix-free tangent operator and multigrid preconditioning.
+The unknown of each step is the mid-point displacement $d_{n+1-\alpha_f}$; the end-of-step velocity
+satisfies $v_{n+1} = c_v\, d_{n+1-\alpha_f} + \text{const}$ with
+$c_v = \gamma/(\beta\Delta t(1-\alpha_f))$.
+
+\paragraph{Interface transfer.} Fluid and structure meshes do not match on $\G$. Data are
+transferred by evaluating the finite element function of one side at the quadrature points of the
+other side (\code{InterfaceCoupling}, based on \code{deal.II}'s \code{RemotePointEvaluation}); for
+points that lie on several cells the values are averaged. The search is performed in the reference
+configuration, so that the transfer is time independent.
+
+\paragraph{Test case.} We use the geometry of the Turek--Hron benchmark FSI2 \cite{TurekHron2006}:
+mean inflow velocity $1\,\mathrm{m/s}$, $\nu=10^{-3}$, $\rho_f=10^3$, $\rho_s=10^4$,
+Poisson ratio $0.4$, $E=1.4\cdot10^6$, Bossak parameter from spectral radius $0.8$, adaptive time
+step with CFL number $0.5$. The fluid uses $Q_3/Q_2$ elements; ``refinement $r$'' denotes $r$ global
+refinements of the base mesh. At $r=0$ the fluid side of the interface consists of five faces (two
+per long side of the flag and the tip), the structure of 16 cells along the flag. All simulations
+start from rest, so the results concern the start-up phase $t\le 0.02$.
+
+\subsection{Reference: Dirichlet--Neumann and IQN-ILS}
+
+In the native partitioned scheme of ExaDG one iteration on the interface displacement $d$ consists
+of an ALE update with $d$, a fluid step with the Dirichlet data $v_s$ (\code{DirichletCached}
+condition), the traction $T_f = -\rho_f(\nu F(u)-pI)n_f$ computed by nodal interpolation of the
+fluid stress (\code{interpolate_stress_bc}) and evaluated at the structure quadrature points, and
+a structure step with this traction. The fixed point is accelerated by Aitken relaxation or IQN-ILS
+\cite{Degroote2009}. As reference we use IQN-ILS with tolerance $10^{-10}$; with the default
+tolerance ($10^{-3}$ relative) the scheme is visibly inaccurate during start-up, see
+\cref{sec:diagnosis}.
+
+%=================================================================================================
+\section{Flux-control formulation and exact derivatives}\label{sec:oc}
+%=================================================================================================
+
+\subsection{State equations for one time step}
+
+Let $V$ be a finite-dimensional trace space on $\G$ (the control space, \cref{sec:spaces}) with
+mass matrix $\M$, $(a,b)_{\M}=a^{\top}\M b$. The control $g\in V$ is the spatial traction acting on
+the structure. For a frozen fluid geometry, defined by a displacement $d^{\mathrm{geo}}$ with area
+ratio $j=\mathrm{d}a/\mathrm{d}A$, one time step reads:
+\begin{enumerate}
+\item Structure: one generalised-$\alpha$ step with the nominal (dead) load $j\,g$ on $\G_0$,
+giving $v_s(g)$.
+\item Fluid: one BDF step with the Neumann condition $\nu F(u)n_f = -g/\rho_f$ and $p_\G=0$ on
+$\G$ (\code{NeumannCached} condition), giving $u_f(g)$. By the natural boundary condition of
+\cref{sec:model} this imposes the Cauchy traction $-g$ on the fluid.
+\item Mismatch: $m(g) = \Pi\,(u_f(g)-v_s(g))$, with $\Pi$ the $L^2(\G)$ projection onto $V$.
+\end{enumerate}
+The dynamic condition holds by construction, and we seek the control that minimises
+\begin{equation}\label{eq:J}
+  J(g) = \tfrac12\,\|m(g)\|_{A}^2 + \tfrac{\gamma}{2}\,\|g\|_{G}^2,
+\end{equation}
+with metrics $A$ (mismatch) and $G$ (control), $A=G=\M$ in the $L^2$ case. The geometry is updated
+in an outer fixed-point loop ($d^{\mathrm{geo}}\leftarrow d_s$), or once per state evaluation
+(\cref{sec:native}).
+
+\subsection{Coupling operators}
+
+Denote by $E_f$ the evaluation of a structure finite element function at the fluid quadrature
+points of $\G$, by $P_f$ the evaluation of a fluid function at the structure quadrature points, and
+by $W$ the diagonal matrix of quadrature weights. For a control space on the structure side we
+define (primal $\to$ dual)
+\begin{align*}
+  L_s v &= \textstyle\int_{\G_0} j\,v\cdot\psi \dd A, &
+  L_f v &= -\rho_f^{-1}\textstyle\int_{\G} (E_f v)\cdot\varphi \dd a, \\
+  R_s y &= \textstyle\int_{\G_0} y\cdot\psi \dd A, &
+  R_f u &= \textstyle\int_{\G_0} (P_f u)\cdot\psi \dd A ,
+\end{align*}
+with structure and fluid test functions $\psi$ and $\varphi$; for a control space on the fluid side
+the roles of the evaluations are exchanged. Then $\M m = R_f u_f - R_s v_s$.
+
+\begin{lemma}[Affine fluid step]\label{lem:affine}
+For a frozen geometry, a constant viscosity, the convective term treated explicitly and the
+penalty terms evaluated with an extrapolated velocity, the fluid step is affine in the interface
+data: $A\,[u;p] = b_0 + [L_f g;0]$, where $A$ and $b_0$ do not depend on $g$.
+\end{lemma}
+\begin{proof}
+The explicit convective term and the penalty parameters depend only on previous time levels and on
+the extrapolated velocity. The Neumann data enter only the right-hand side of the viscous term,
+linearly. The system matrix (mass, viscous, penalty, gradient and divergence terms) is independent
+of the data.
+\end{proof}
+
+\begin{lemma}[Symmetry]\label{lem:symmetry}
+The saddle-point matrix $A=\begin{psmallmatrix} A_{uu} & G\\ G^{\top} & 0\end{psmallmatrix}$ of the
+coupled fluid solver is symmetric, and so is the tangent stiffness $K$ of the structure for a
+hyperelastic material and dead loads.
+\end{lemma}
+\begin{proof}
+$A_{uu}$ consists of the mass, the SIPG viscous and the penalty terms, which are symmetric; ExaDG
+assembles the divergence block with the sign that makes it the transpose of the weak gradient block
+(``symmetric saddle point matrix''). For $K$, the second derivative of a strain energy is
+symmetric; the load does not depend on the displacement when \code{pull_back_traction} is off.
+Numerically, $|(Ax,y)-(x,Ay)|/|(Ax,y)| = 5.5\cdot10^{-16}$ and the corresponding quantity for
+$K^{-1}$ is $2.9\cdot10^{-9}$ (iterative solver tolerance).
+\end{proof}
+
+\begin{proposition}[Tangent and adjoint]\label{prop:derivatives}
+Let $S = \partial m/\partial g$. With $Q=(R_f\;0)A^{-1}$,
+\begin{align}
+  S v &= \M^{-1}\big[\,Q\,[L_f v;0] - c_v R_s K^{-1}L_s v\,\big], \label{eq:tangent}\\
+  S^{*}_{\M} w &= \M^{-1}\big[\,L_f^{\top} A^{-1}[R_f^{\top}w;0]_u - c_v L_s^{\top} K^{-1} R_s^{\top} w\,\big],
+  \label{eq:adjoint}
+\end{align}
+where $S^*_{\M} = \M^{-1}S^{\top}\M$ is the adjoint in the $\M$ inner product. For general metrics,
+$S^*_{A,G} = G^{-1}\M\, S^*_{\M}\, \M^{-1}A$ satisfies $(Sv,w)_A = (v,S^*_{A,G}w)_G$. The Riesz
+gradient of \eqref{eq:J} is $r = S^*_{A,G}\,m + \gamma g$, and the Gauss--Newton Hessian is
+$H = S^*_{A,G}S + \gamma I$.
+\end{proposition}
+\begin{proof}
+Differentiate the state equations: the structure tangent is $\delta d = K^{-1}L_s\delta g$ and
+$\delta v_s = c_v\delta d$; the fluid tangent follows from \cref{lem:affine}. Transposition uses
+\cref{lem:symmetry}, so that the adjoint solves are forward solves with the same matrices.
+\end{proof}
+
+All solves in \eqref{eq:tangent}--\eqref{eq:adjoint} are linear. Since the single-field solvers use
+absolute tolerances tuned to the state, the right-hand sides are normalised before each solve; this
+was necessary for Gauss--Newton to converge (the vectors in the sensitivity problems are many orders
+of magnitude smaller than the state).
+
+\subsection{Exact transpose of the averaged point evaluation}
+
+\begin{lemma}\label{lem:transpose}
+Let $E u = \big(\frac{1}{\mu_i}\sum_{K\ni x_i} u|_K(x_i)\big)_i$ be the point evaluation that
+averages over the $\mu_i$ cells containing the point $x_i$. Then
+$E^{\top}c = \sum_i \frac{c_i}{\mu_i}\sum_{K\ni x_i}\sum_{j}\phi_j|_K(x_i)\, e_j$.
+\end{lemma}
+In the implementation (\code{InterfaceCoupling::add_transpose}) the point data are scaled by
+$1/\mu_i$, distributed to the cells by \code{RemotePointEvaluation::process_and_evaluate} and
+tested with the shape functions by \code{FEPointEvaluation::test_and_sum}. A pitfall:
+\code{CellData::get_data_view} must be called with the number of components; with the default
+(one component) the per-cell offsets of vector-valued data are wrong. Before the fix the transpose
+tests failed by $46\%$ ($P_f$) and a factor 35 ($E_f$); afterwards they hold to $10^{-14}$.
+
+\subsection{Verification}
+
+\Cref{tab:verification} collects the derivative tests: the adjoint (dot-product) test, the tangent
+against finite differences of the state map, and the Taylor test
+$|J(g+\varepsilon v)-J(g)-\varepsilon(r,v)_G| = O(\varepsilon^2)$.
+
+\begin{table}[ht]\centering
+\caption{Verification of derivatives (first time step, fluid refinement 0).}\label{tab:verification}
+\begin{tabular}{lccc}
+\toprule
+configuration & adjoint test & tangent vs.\ FD & Taylor ratio\\
+\midrule
+structure control, $L^2$ & $1.1\cdot10^{-10}$ & $9.3\cdot10^{-10}$--$2.6\cdot10^{-8}$ & $4.000$\\
+structure control, $H^{1/2}/H^{-1/2}$ & $9.6\cdot10^{-10}$ & $3\cdot10^{-8}$--$4\cdot10^{-9}$ & $4.000$\\
+fluid control, $L^2$ & $3.8\cdot10^{-10}$ & $1.0\cdot10^{-9}$--$1.7\cdot10^{-8}$ & $4.000$\\
+fluid control, degree reduction 1 & $2.9\cdot10^{-10}$ & $9.4\cdot10^{-10}$--$1.5\cdot10^{-8}$ & $4.000$\\
+\midrule
+\multicolumn{4}{l}{transposes: $P_f$ $3.9\cdot10^{-16}$, $E_f$ $1.4\cdot10^{-14}$, fluid load $1.2\cdot10^{-16}$}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%=================================================================================================
+\section{Optimisation and root-finding methods}\label{sec:methods}
+%=================================================================================================
+
+All methods (see \cite{NocedalWright2006} for the optimisation methods) are implemented once, for an abstract problem providing a state evaluation
+$g\mapsto m(g)$, the actions of $S$ and $S^*$, the two inner products and an optional
+preconditioner. After a rejected trial the linearisation (the structure state at which $K$ is
+evaluated) of the current iterate is restored.
+
+\begin{description}
+\item[Steepest descent (SD).] $d=-r$, Armijo backtracking with the Cauchy step
+$\|r\|^2/(\|Sr\|_A^2+\gamma\|r\|_G^2)$ as initial step length.
+\item[L-BFGS.] Two-loop recursion in the $G$ inner product, curvature filter, Gauss--Newton Cauchy
+scaling without pairs.
+\item[Gauss--Newton (GN).] $Hd=-r$ by CG in the $G$ inner product with forcing term
+$\eta_k=\min\{\eta_{\max},(\|r_k\|/\|r_0\|)^{1/2}\}$, Armijo.
+\item[Levenberg--Marquardt (LM).] $(H+\lambda I)d=-r$ by CG, gain ratio, adaptive $\lambda$.
+\item[Trust region (TR).] Steihaug--Toint CG \cite{Steihaug1983} on $H$; the full CG path ($x_j$, $p_j$, $Hp_j$,
+residuals) is stored, so that a rejected step is recomputed for a smaller radius without new
+solves.
+\item[Interface Newton (IN).] $Sd=-m$ by flexible GMRES in the $A$ inner product (right
+preconditioning), Armijo on $\tfrac12\|m\|_A^2$; $Sd$ is assembled from the Arnoldi relation.
+\item[Interface quasi-Newton (IQN).] The least-squares secant method of \cref{alg:qn}, an
+Anderson-type method \cite{WalkerNi2011}.
+\end{description}
+
+\paragraph{Interface metrics.} Following the companion report, $H^{\pm1/2}(\G)$ inner products are
+defined by spectral interpolation of the generalised eigenproblem
+$(\ell^2K_\G+\M)V = \M V\operatorname{diag}(\mu)$, $V^{\top}\M V=I$, with the Laplace--Beltrami
+matrix $K_\G$ (tangential gradients $\nabla u\,(I-n\otimes n)$ on the structure faces of $\G$):
+$A_s = \M V\operatorname{diag}(\mu^s)V^{\top}\M$, $A_s^{-1}=V\operatorname{diag}(\mu^{-s})V^{\top}$.
+The matrices are assembled densely on the (replicated) interface degrees of freedom.
+
+\paragraph{Preconditioners for IN.}
+(i) \emph{Structure Dirichlet-to-Neumann}: $P^{-1} = -c_v^{-1}\M^{-1}\Sigma_s$ with the
+Steklov--Poincar\'e operator of the linearised structure,
+$\Sigma_s\lambda = T K(T^{\top}\lambda + y)$, $K_{II}\,y = -(KT^{\top}\lambda)_I$, the interior
+solve by CG with the matrix-free tangent. It inverts the structure part of $S$ and addresses the
+added-mass regime.
+(ii) \emph{Frozen Jacobian}: $S$ is assembled densely (one tangent solve per interface degree of
+freedom), LU-factorised and reused for $k$ time steps; with a projected control space
+$P_cSP_c+(I-P_c)$ is factorised.
+
+\begin{algorithm}[ht]
+\caption{Interface quasi-Newton (Anderson type II / IQN-ILS) for $m(g)=0$}\label{alg:qn}
+\KwIn{$g_0$; secant pairs of the last $q$ time steps; $\omega$, $\omega_0$, filter $\epsilon$,
+restart factor $\kappa$}
+$m_0 \leftarrow m(g_0)$\;
+\For{$k=0,1,\dots$ until $\|m_k\|_{\M}\le\tau$}{
+  collect columns $\Delta G=[\,g_{i+1}-g_i\,]$, $\Delta M=[\,m_{i+1}-m_i\,]$: current step (newest
+  first), then previous time steps\;
+  \eIf{no columns}{$g_{k+1}\leftarrow g_k-\omega_0 m_k$}{
+    QR of $\Delta M$ by modified Gram--Schmidt in $(\cdot,\cdot)_{\M}$, dropping columns with
+    $\|q\|\le\epsilon\,\|\Delta M_j\|$\;
+    $c\leftarrow\arg\min_c\|m_k-\Delta M c\|_{\M}$\;
+    $g_{k+1}\leftarrow g_k-\omega m_k-(\Delta G-\omega\Delta M)c$\;}
+  $m_{k+1}\leftarrow m(g_{k+1})$\;
+  \If{$\|m_{k+1}\|>\kappa\|m_k\|$}{discard the pairs of previous time steps; if no columns were
+  used, $\omega_0\leftarrow\omega_0/2$}
+  append $(g_{k+1}-g_k,\ m_{k+1}-m_k)$\;
+}
+\end{algorithm}
+
+\begin{remark}
+For $m(g)=g-T(g)$ (\cref{sec:native}) and $\omega=1$, \cref{alg:qn} is IQN-ILS applied to the
+traction: with $\tilde x=T(g)$, $W=\Delta\tilde X=\Delta G-\Delta M$, $V=-\Delta M$, the IQN-ILS
+update $x_{k+1}=\tilde x_k+W\alpha$, $\alpha=\arg\min\|r_k+V\alpha\|$, coincides with the update in
+\cref{alg:qn}.
+\end{remark}
+
+%=================================================================================================
+\section{Behaviour of the optimisation methods}\label{sec:results_methods}
+%=================================================================================================
+
+\Cref{tab:methods} compares the methods for the velocity-mismatch formulation with structure
+control and $L^2$ metrics (four time steps, tolerance $\|m\|\le10^{-9}$). The cost is dominated by
+the tangent and adjoint solves. As predicted for the scalar model, the methods based on the normal
+equations (GN, LM, TR) need one to two orders of magnitude more solves than the interface Newton
+method, since CG on $S^*S$ sees the squared condition number; the gradient methods do not reach the
+tolerance.
+
+\begin{table}[ht]\centering
+\caption{Methods, structure control, $L^2$ metrics, fluid refinement 0 (per time step).}
+\label{tab:methods}
+\small
+\begin{tabular}{lcccp{4.2cm}}
+\toprule
+method & iterations & tangent solves & adjoint solves & remark\\
+\midrule
+IN & 2--3 & 46--113 & 0 & converged\\
+IN + structure DtN & 2 & 28 & 0 & first step\\
+GN & 3--28 & 497--5514 & 501--5543 & last step not finished in 50 min\\
+TR & 31 (mean) & 6090 (mean) & 6122 (mean) & converged\\
+LM & 18--67 & 1145--11871 & 1146--11872 & last step not finished\\
+L-BFGS & 100 (limit) & 1 & 100 & $\|m\|$: $10^{-7}$--$5\cdot10^{-6}$\\
+SD & 100 (limit) & 100 & 100 & $\|m\|$: $7\cdot10^{-7}$--$2\cdot10^{-5}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Sobolev metrics.} Contrary to the scalar model, where the pair $H^{1/2}/H^{-1/2}$ made
+the Gauss--Newton Hessian mesh independent, it is detrimental here (\cref{tab:metrics}). The
+spectrum of $(\ell^2K_\G+\M,\M)$ spans $[19.9,1.27\cdot10^5]$. The reason is that $S$ is not a
+Neumann-to-Dirichlet map of order $-1$: for small time steps the fluid response is dominated by the
+mass term and is nearly of order $0$ on the resolved frequencies, while the bending stiffness of
+the thin structure is of high order.
+
+\begin{table}[ht]\centering
+\caption{Interface metrics (one time step, structure control).}\label{tab:metrics}
+\begin{tabular}{lcc}
+\toprule
+method & $L^2/L^2$ & $H^{1/2}/H^{-1/2}$\\
+\midrule
+GN & 3 it., 472 $S$, 476 $S^*$ & 16 it., 3033 $S$, 3050 $S^*$\\
+L-BFGS (200 it.) & $\|m\|$: $8.8\cdot10^{-7}\to6.1\cdot10^{-8}$ & $6.1\cdot10^{-6}\to2.2\cdot10^{-6}$\\
+SD (200 it.) & $\|m\|$: $8.8\cdot10^{-7}\to6.8\cdot10^{-7}$ & $6.1\cdot10^{-6}\to3.1\cdot10^{-6}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Frozen-Jacobian preconditioner.} With fluid control (80 interface degrees of freedom at
+refinement 1) the dense Jacobian of one time step remains an excellent preconditioner for at least
+ten time steps (\cref{tab:frozen}).
+
+\begin{table}[ht]\centering
+\caption{Interface Newton with fluid control, refinement 1, 10 time steps, 4 processes.}
+\label{tab:frozen}
+\begin{tabular}{lccc}
+\toprule
+preconditioner & $S$ solves/step (GMRES+setup) & Newton it./step & time\\
+\midrule
+none & $42+0$ & 2.4 & 67.5 s\\
+frozen, updated every step & $1+80$ & 1.0 & 88.2 s\\
+frozen, every 5 steps & $3.5+16$ & 1.7 & 32.8 s\\
+frozen, every 10 steps & $4.5+8$ & 1.8 & 25.0 s\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%=================================================================================================
+\section{Choice of the control space}\label{sec:spaces}
+%=================================================================================================
+
+\subsection{Structure trace: an unstable coupling}
+
+With the control in the trace space of the structure ($Q_2$, 16 cells along the flag) and the fluid
+at refinement 0 (five interface faces), the coupled scheme grows exponentially
+(\cref{fig:stability}), although every time step is solved to $\|m\|\le10^{-9}$. Comparing the
+control with the traction computed from the fluid solution shows the mechanism: in the first steps
+both agree within $10\%$, later $\|g\|=854$ against $\|T_f\|=90$.
+
+\begin{proposition}[Invisible traction modes]
+Let $\mathcal N=\{g\in V: L_f g = 0\}$, i.e.\ traction modes orthogonal to the fluid trace space on
+$\G$. If $\dim V$ exceeds the dimension of the fluid trace space, $\mathcal N\neq\{0\}$; for
+$g\in\mathcal N$, $Sg = -c_v\M^{-1}R_sK^{-1}L_sg$, i.e.\ these modes act on the structure but
+produce no fluid reaction. The interface Newton method then places large amplitudes in
+$\mathcal N$ whenever this reduces the projected mismatch, which injects energy into the structure.
+\end{proposition}
+
+This is the compatibility (inf--sup) condition of mortar methods
+\cite{Babuska1973,BernardiMadayPatera1994}: the multiplier space must be controlled by the trace of
+the side on which the constraint acts. Consistently, refining the fluid delays the instability,
+and Tikhonov regularisation ($\gamma=10^{-12}$) does not remove it (it acts on the amplitude, not
+on the defect of the space) while making each step 2--4 times more expensive.
+
+\begin{figure}[ht]\centering
+\begin{tikzpicture}
+\begin{semilogyaxis}[width=0.75\textwidth,height=6cm,xlabel={time step},
+  ylabel={$|v_s|$ OC / $|v_s|$ reference},legend cell align=left,
+  legend style={at={(0.5,-0.22)},anchor=north,legend columns=2,font=\small},
+  ymin=0.3,ymax=400,grid=major]
+\addplot+[red,mark=*,mark options={fill=red}] coordinates {(1,1.052)(2,1.129)(3,1.445)(4,2.453)(5,6.077)(6,23.77)(7,208.4)};
+\addlegendentry{structure control, fluid $r=0$}
+\addplot+[orange,mark=square*,mark options={fill=orange}] coordinates {(1,0.982)(2,0.991)(3,1.015)(4,1.057)(5,1.146)(6,1.320)(7,1.609)(8,2.003)(9,2.409)(10,2.717)};
+\addlegendentry{structure control, fluid $r=1$}
+\addplot+[brown,dashed,mark=triangle*,mark options={fill=brown,solid}] coordinates {(1,0.983)(2,1.006)(3,1.176)(4,1.608)(5,2.298)(6,3.089)(7,3.744)};
+\addlegendentry{structure control, $\gamma=10^{-12}$, $r=0$}
+\addplot+[blue,thick,mark=o] coordinates {(1,1.006)(2,1.007)(3,0.999)(4,0.960)(5,0.865)(6,0.724)(7,0.578)};
+\addlegendentry{fluid control, $r=0$}
+\addplot+[teal,thick,mark=diamond*,mark options={fill=teal}] coordinates {(1,1.004)(2,1.004)(3,1.004)(4,1.003)(5,1.000)(6,0.990)(7,0.968)(8,0.927)(9,0.867)(10,0.804)};
+\addlegendentry{fluid control, $r=1$}
+\end{semilogyaxis}
+\end{tikzpicture}
+\caption{Velocity-mismatch formulation: norm of the structure velocity relative to the reference
+(IQN-ILS, tolerance $10^{-10}$, same mesh).}\label{fig:stability}
+\end{figure}
+
+\subsection{Fluid trace and a common interface space}
+
+With the control in the trace of the DG fluid velocity space (40 against 130 interface degrees of
+freedom at $r=0$) the scheme is stable, the control coincides with the fluid traction within
+$0.7\%$, and the problem is better conditioned (GN: 2 iterations, 79 tangent solves). As a common,
+coarser interface space we also use discontinuous polynomials of degree $k_f-\rho$ on the fluid
+faces of $\G$, with a face-wise $L^2$ projection $P_c$ (self-adjoint in $\M$). The effect on the
+solution is small (\cref{tab:common}).
+
+\begin{table}[ht]\centering
+\caption{Common interface space, fluid refinement 0: tip displacement $d_x(0.01)$ relative to the
+reference.}\label{tab:common}
+\begin{tabular}{lcc}
+\toprule
+control space & dimension & ratio\\
+\midrule
+fluid trace, degree 3 & 40 & 0.778\\
+degree 2 & 30 & 0.782\\
+degree 1 & 20 & 0.784\\
+degree 0 & 10 & 0.867\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%=================================================================================================
+\section{Diagnosis of the remaining discrepancy}\label{sec:diagnosis}
+%=================================================================================================
+
+With fluid control the velocity-mismatch formulation is stable but differs from the reference by
+$22\%$ at refinement 0 in the tip displacement. We isolate the cause.
+
+\paragraph{Convergence.} Refining fluid and structure, the ratio approaches one at first order
+(\cref{tab:hstudy}); Richardson extrapolation of the OC values gives $-1.43\cdot10^{-7}$, within
+$1.5\%$ of the reference.
+
+\begin{table}[ht]\centering
+\caption{Tip displacement $d_x$ at $t=0.01$ (log-linear interpolation in time).}\label{tab:hstudy}
+\begin{tabular}{cccc}
+\toprule
+refinement & reference & OC (fluid control) & ratio\\
+\midrule
+0 & $-1.4635\cdot10^{-7}$ & $-1.1389\cdot10^{-7}$ & 0.778\\
+1 & $-1.4745\cdot10^{-7}$ & $-1.3014\cdot10^{-7}$ & 0.883\\
+2 & $-1.4540\cdot10^{-7}$ & $-1.3738\cdot10^{-7}$ & 0.945\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Separation of effects.} The discrepancy is independent of the time step (CFL $0.5$,
+$0.25$, $0.125$: ratios $0.778$, $0.781$, $0.782$), of the structure mesh (fluid refinement 0:
+$0.778$ and $0.781$ for structure refinement 0 and 1; fluid refinement 1: $0.885$ and $0.883$;
+fluid refinement 2: $0.950$ and $0.945$) and of the geometry treatment (explicit geometry and ten
+fixed-point iterations on the geometry, converged to $10^{-12}$, give identical results). It
+depends only on the fluid mesh. The treatment of the convective term on $\G$ (outflow/backflow
+versus moving wall) has no effect, since $(u-w)\cdot n\approx0$ on the interface, and the pressure
+term is consistent ($\{p\}=p_\G$).
+
+\paragraph{Force decomposition.} \Cref{tab:faces} compares, face by face, the force computed from
+the fluid solution, $\int\rho_f(\nu F(u)-pI)n_f$, with the force imposed through the control,
+$-\int g$, at $t\approx0.008$ and refinement 0. The fluid solutions of OC and DN coincide within
+$1\%$ (pressure force $0.4766$ against $0.4794$). On the tip both forces agree; on the long sides of
+the flag the tangential component of the control is 20 to 90 times the viscous stress computed
+from the velocity gradient. The deficit of the transmitted force ($0.354$ against $0.474$ in $x$)
+is exactly the observed deviation.
+
+\begin{table}[ht]\centering
+\caption{Forces on the fluid at $t=7.96\cdot10^{-3}$, refinement 0, $x$ components.}
+\label{tab:faces}
+\begin{tabular}{lccc}
+\toprule
+face & length & from fluid solution & imposed ($-\int g$)\\
+\midrule
+tip ($x=0.6$) & 0.020 & $0.4765$ & $0.4678$\\
+upper side, first face & 0.151 & $-0.00066$ & $-0.0147$\\
+lower side, first face & 0.151 & $-0.00064$ & $-0.0155$\\
+upper side, second face & 0.200 & $-0.00049$ & $-0.0410$\\
+lower side, second face & 0.200 & $-0.00047$ & $-0.0430$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Boundary layer.} Following the shear force on the long sides under refinement
+(\cref{fig:shear}): the force imposed by the multiplier \emph{decreases}
+($-0.114,-0.034,-0.026,-0.020$), the viscous stress of the DN solution \emph{increases}
+($-0.0004,-0.0010,-0.0038,-0.0091$), and both approach a common value of about $-0.012$; the tip
+ratio reaches $0.98$ at refinement 3.
+
+\begin{figure}[ht]\centering
+\begin{tikzpicture}
+\begin{semilogyaxis}[width=0.7\textwidth,height=5.5cm,xlabel={fluid refinement},
+  ylabel={$|$shear force on the long sides$|$},xtick={0,1,2,3},legend cell align=left,
+  legend style={at={(0.5,-0.25)},anchor=north,font=\small},grid=major]
+\addplot+[mark=*] coordinates {(0,0.1142)(1,0.03409)(2,0.02552)(3,0.02029)};
+\addlegendentry{OC, imposed ($-\int g$)}
+\addplot+[mark=square*] coordinates {(0,0.00226)(1,0.00208)(2,0.00507)(3,0.00985)};
+\addlegendentry{OC, from velocity gradient}
+\addplot+[mark=triangle*] coordinates {(0,0.00039)(1,0.00096)(2,0.00375)(3,0.00908)};
+\addlegendentry{DN, from velocity gradient}
+\end{semilogyaxis}
+\end{tikzpicture}
+\caption{Shear force on the long sides of the flag at the last time step before $t=0.008$.}
+\label{fig:shear}
+\end{figure}
+
+\paragraph{Interpretation.} The two schemes impose the no-slip condition differently. In the
+velocity-mismatch formulation the multiplier enforces it strongly (the fluid trace equals
+$\Pi v_s$), and on an unresolved boundary layer the discrete flux needed to do so overestimates the
+wall shear. In the native DN scheme the condition is imposed weakly by SIPG, whose penalty scales
+with $\nu$; at Reynolds numbers of order $10^2$ the fluid effectively slips on coarse meshes, and the
+shear computed from the velocity gradient is underestimated. This is the dichotomy between strong
+and weak imposition of Dirichlet conditions on unresolved boundary layers
+\cite{BazilevsHughes2007}. The DN scheme \emph{appears} mesh converged only because the
+$x$ force is dominated by the pressure on the tip; both schemes converge to the same limit.
+
+\paragraph{Unsuccessful remedies.} (i) A stabilisation of the constraint row only, in the spirit of
+Stenberg \cite{Stenberg1995} and Barbosa--Hughes \cite{BarbosaHughes1991},
+$m=\Pi(u_f-v_s)-\beta\Pi(T_f(u_f,p_f)+g)$ with $\beta=\alpha h_F/(k\mu_f)$, is consistent and has
+an exact adjoint, but is unstable for every $\alpha\neq0$ (tip ratios $0.51$, $-8.1$, $-160$,
+$8.4$ for $\alpha=0.1,1,10,-1$); the full method also modifies the fluid equation. (ii) A Robin
+penalty $\nu\beta(u-v_s)$ on the fluid side combined with a coarse common space changes the result
+by less than $0.5\%$: $\nu\beta\ll1/\Delta t$, and the face means of the no-slip condition remain
+imposed by the multiplier. (iii) For the full fluid trace, any penalty tested on the same trace
+vanishes identically at convergence by the orthogonality of $\Pi$.
+
+%=================================================================================================
+\section{A native-traction formulation}\label{sec:native}
+%=================================================================================================
+
+Since the two discretisations of the interface conditions differ, no optimisation method can drive
+the velocity-mismatch formulation to the native solution. We therefore change the state and the
+residual while keeping the traction as unknown:
+\begin{enumerate}
+  \item Structure with the load $j\,g$, giving $d_s$ and $v_s$; the fluid mesh is moved with $d_s$
+  (geometry inside the state evaluation).
+  \item Fluid with the native \code{DirichletCached} condition $u=v_s$.
+  \item Residual $m(g) = g - \Pis T_f(u_f,p_f)$, with the native traction $T_f$
+  (\code{interpolate_stress_bc}) projected onto the structure trace space.
+\end{enumerate}
+
+\begin{proposition}
+$m(g)=0$ if and only if $(g,v_s,u_f,p_f)$ is a fixed point of the native Dirichlet--Neumann
+scheme. Moreover, the structure load is unchanged by the projection:
+$\int_{\G_0}\Pis T_f\cdot\psi = \int_{\G_0} T_f\cdot\psi$ for all structure test functions $\psi$.
+\end{proposition}
+\begin{proof}
+At a root the structure is loaded by the native traction of a fluid solution with Dirichlet data
+$v_s$, which is the DN fixed point; the second statement is the definition of the $L^2$ projection
+(up to the area ratio, which is one at convergence of the geometry).
+\end{proof}
+
+\begin{lemma}[Exact finite-difference tangent]\label{lem:fd}
+For frozen geometry the fluid step is a polynomial of degree at most two in the Dirichlet data: the
+data enter linearly, except in the explicit convective term on $\G$, where the upwind flux is
+bilinear in the data. Hence the central difference
+$T'(v)\,\delta v = \big(T(v+\varepsilon\delta v)-T(v-\varepsilon\delta v)\big)/(2\varepsilon)$ is
+exact (up to solver tolerances), and
+$S v = v - \Pis T'(v_s)\,c_vK^{-1}L_s v$ costs one linearised structure solve and two fluid steps.
+\end{lemma}
+
+\paragraph{Results.} With interface Newton the solution coincides with the reference to all digits
+reported (ratio $1.0000$ at refinements 0 and 1), and Newton converges quadratically
+($\|m\|$: $1.6$, $6.0\cdot10^{-4}$, $7.9\cdot10^{-7}$, $5.8\cdot10^{-9}$). The tangent-based
+variants with finite-difference tangents are expensive; the secant method of \cref{alg:qn}
+requires no tangent solves at all and is as fast as IQN-ILS (\cref{tab:native}; between the two
+sessions the relative timing varied between $0.57$ and $1.0$ with the load of the machine, see
+\cref{tab:native_methods} for a run under identical load). Two safeguards were necessary in the added-mass
+regime: a QR filter ($\epsilon=10^{-4}$) and a restart that discards only the pairs of previous
+time steps (pure relaxation with $\omega_0=0.3$ diverges, with residual growth factors 2 and 9 at
+refinements 0 and 1).
+
+\begin{table}[ht]\centering
+\caption{Native-traction formulation, 4 processes; ratio of $d_x(0.01)$ to the reference.}
+\label{tab:native}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+& \multicolumn{2}{c}{refinement 0 (5 steps)} & \multicolumn{2}{c}{refinement 1 (8 steps)} & \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+method & time & solves/step & time & solves/step & ratio\\
+\midrule
+IQN-ILS (native, reference) & 4.40 s & 10.4 & 25.1 s & 11.3 & ---\\
+IQN (\cref{alg:qn}) & \textbf{3.95 s} & 8.8 & \textbf{14.2 s} & 10.4 & 1.0000\\
+IN, frozen Jacobian, central FD & 38.2 s & 5.0 + 68 fluid & 126 s & 4.9 + 83 fluid & 1.0000\\
+IN, frozen Jacobian, forward FD & 20.4 s & 4.8 + 34 fluid & 74.9 s & 4.8 + 41 fluid & 1.0000\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+%=================================================================================================
+\section{Exact adjoint of the native formulation}\label{sec:native_adjoint}
+%=================================================================================================
+
+Write the native residual as $m(g) = g - \M^{-1}G(g)$, with
+$G = R_T\,A^{-1}\,D\,E_f\,c_vK^{-1}L_s$ for the linearised map, where $D$ maps the Dirichlet data
+at the fluid quadrature points of $\G$ to the right-hand side of the coupled fluid system,
+$R_T(u,p) = \int_{\G_0}\big(P_f(-I_\sigma(u,p))\big)\cdot\psi$, and $I_\sigma$ is the nodal stress
+interpolation. Then
+\begin{equation}
+  S = I - \M^{-1}G,\qquad S^*_{\M}w = w - \M^{-1}G^{\top}w,\qquad
+  G^{\top} = c_v L_s^{\top}K^{-1}E_f^{\top}D^{\top}A^{-1}R_T^{\top},
+\end{equation}
+using again the symmetry of $A$ and $K$. Two new transposes are needed.
+
+\begin{lemma}[Locality of the Dirichlet data]\label{lem:local}
+In the DG fluid with the mirror principle ($u^+=-u^-+2g$), the data $g$ enter the right-hand side
+through the inhomogeneous parts of the viscous (SIPG), velocity divergence and continuity-penalty
+boundary terms, linearly, and through the explicit convective term. Each contribution at a boundary
+quadrature point $x_q$ depends on $g(x_q)$ only. Hence
+$D^{\top}z\,(x_q) = \mathrm{JxW}_q\big(\sum_d e_d\,[\,V_q(e_d)\cdot z(x_q) + \mathcal G_q(e_d):\nabla
+z(x_q) + P_q(e_d)\,z_p(x_q)\,]\big)$, where $V_q,\mathcal G_q,P_q$ are the value, gradient and
+pressure coefficients of the boundary flux evaluated with the operator kernels for the unit data
+$e_d$.
+\end{lemma}
+
+\begin{lemma}[Explicit convective term]\label{lem:convective}
+With the convective formulation and the mirror principle, the normal transport velocity on a
+Dirichlet face is $a=(g-w)\cdot n$, independent of the interior value. The upwind flux minus the
+strong-form correction equals $(a-\zeta|a|)(g-u^-)$ and is affine in $u^-$. Consequently the
+extrapolated explicit term $\sum_i\beta_iC(u_i,g)$ equals $C(\tilde u,g)$ with
+$\tilde u=\sum_i\beta_iu_i$ (since $\sum_i\beta_i=1$), and its linearisation in $g$ is local. It is
+piecewise quadratic; the local derivative is evaluated by a central difference of the kernel flux,
+which is exact away from the kink $a=0$.
+\end{lemma}
+
+\begin{lemma}[Transpose of the nodal stress interpolation]\label{lem:stress}
+$I_\sigma$ writes $\rho_f(\nu F(u)n-pn)$ at the face nodes of the boundary cells, face by face,
+later faces overwriting nodes shared within a cell. Its transpose visits the faces in reverse order
+and uses each dual nodal value once (the last writer); the pointwise character is obtained by
+dividing the submitted gradient and value by the quadrature weight. ExaDG additionally writes the
+(irrelevant) interior nodal values of boundary cells; since the Gauss--Lobatto basis functions of
+these nodes vanish on the face, $P_f\circ I_\sigma$ and its transpose are unaffected.
+\end{lemma}
+
+The analytic tangent $S v = v - \M^{-1}R_TA^{-1}DE_f\,c_vK^{-1}L_s v$ costs one linearised
+structure solve and one linear fluid solve; it is consistent with the adjoint by construction.
+
+\begin{table}[ht]\centering
+\caption{Verification of the native tangent and adjoint (first time step, refinement 0).}
+\label{tab:native_verification}
+\begin{tabular}{lc}
+\toprule
+test & relative difference\\
+\midrule
+$D$ against the fluid operator used as a black box & $1.0\cdot10^{-8}$\\
+$(Dc,z) = (c,D^{\top}z)$ & $1.9\cdot10^{-15}$\\
+$(I_\sigma x,w) = (x,I_\sigma^{\top}w)$, $w$ in the range of $P_f^{\top}$ & $6.3\cdot10^{-15}$\\
+$(Sv,w)_{\M} = (v,S^*w)_{\M}$ & $1.1\cdot10^{-9}$\\
+analytic tangent against finite differences of the state & $1.2$--$1.4\cdot10^{-7}$\\
+Taylor ratio & $4.000$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{All methods on the native solution.} \Cref{tab:native_methods} repeats the comparison of
+\cref{sec:results_methods} for the native formulation. All converged methods reproduce the
+reference tip displacement to six digits. The native operator $S=I-\M^{-1}G$ is much better
+conditioned than in the velocity-mismatch formulation: Gauss--Newton needs about nine CG iterations
+per step instead of hundreds, and interface Newton three GMRES iterations. The ranking predicted by
+the scalar model is confirmed: the secant method and interface Newton are cheapest, the
+normal-equation methods (GN, LM, TR) cost five to six times more solves than interface Newton,
+L-BFGS converges but needs about sixty iterations, and steepest descent does not converge within
+200 iterations.
+
+\begin{table}[ht]\centering
+\caption{Native formulation, refinement 0, average per time step over four steps (tolerance
+$\|m\|\le10^{-8}$); one state evaluation = structure Newton solve, ALE update and fluid step;
+$S$, $S^*$ = one linearised structure solve and one linear fluid solve each. Times: five steps,
+refinement 0 and 1 (structure refinement 0), four simultaneous runs with 4 processes.}
+\label{tab:native_methods}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccccccc}
+\toprule
+method & iterations & states & $S$ & $S^*$ & $d_x$ error & time $r=0$ & time $r=1$\\
+\midrule
+IQN-ILS (native) & 10.4 & 10.4 & -- & -- & --- & 4.70 s & 24.8 s\\
+interface quasi-Newton & 7.8 & 8.8 & 0 & 0 & $<10^{-6}$ & 4.32 s & 24.4 s\\
+interface Newton & 4.0 & 5.0 & 12.2 & 0 & $<10^{-6}$ & 9.57 s & 48.7 s\\
+Gauss--Newton & 4.5 & 5.5 & 38 & 44 & $<10^{-6}$ & 47.0 s & 146 s\\
+trust region & 4.75 & 5.75 & 40 & 46 & $<10^{-6}$ & & \\
+Levenberg--Marquardt & 4.75 & 5.75 & 48 & 49 & $<10^{-6}$ & & \\
+L-BFGS & 62 & 78 & 1 & 63 & $<10^{-6}$ & & \\
+steepest descent & 200 (limit) & 201 & 200 & 200 & $11\%$ & & \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+%=================================================================================================
+\section{Conclusions and outlook}
+%=================================================================================================
+
+The optimisation-based coupling can be implemented in a production high-order FSI code with exact
+derivatives and modest intrusion: besides the new module, the changes to the single-field solvers
+are a \code{NeumannCached} boundary condition for the fluid, a public linearised solve for the
+structure, and the transpose of the interface point evaluation. The main lessons are:
+\begin{enumerate}
+\item The methods behave as predicted by the analysis of the scalar model: solving the interface
+equation (Newton--Krylov or secant) is far cheaper than minimising its square, and the normal
+equations suffer from the squared condition number.
+\item The interface discretisation, not the optimisation method, determines the solution. A
+traction space richer than the fluid trace yields an unstable coupling; a compatible space yields
+a stable but different discretisation of the no-slip condition, whose discrepancy with the native
+scheme is a first-order boundary-layer effect.
+\item Sobolev interface metrics do not transfer from the elliptic model to FSI with small time
+steps.
+\item A formulation with the traction as unknown and the native interface conditions in the
+residual recovers the native solution exactly. Its exact adjoint requires only local transposes of
+the boundary terms and of the nodal stress interpolation. On the native solution the ranking of the
+methods is the one predicted by the scalar model, and the secant solver matches IQN-ILS in cost.
+\end{enumerate}
+Open points are longer simulations into the periodic regime of FSI2 (where the added-mass effect is
+fully developed), preconditioning of the native interface Newton method (the frozen Jacobian of
+\cref{sec:methods} applies directly), and three-dimensional problems, where the dense
+frozen-Jacobian and Sobolev constructions must be replaced by low-rank or multilevel
+approximations.
+
+%=================================================================================================
+\appendix
+\section{Implementation and reproducibility}
+%=================================================================================================
+
+\paragraph{Code.} The adjoint of \cref{sec:native_adjoint} uses public access to the kernels of the
+fluid operator (\code{SpatialOperatorBase::get_viscous_kernel}, \code{get_convective_kernel},
+\code{get_continuity_penalty_kernel}) and the extrapolation coefficients of the BDF scheme. The module \code{include/exadg/fluid_structure_interaction/optimal_control}
+contains \code{parameters.h} (JSON subsection \code{OptimalControl}), \code{optimizers.h} (the
+methods, generic in the problem) and \code{interface_problem.h} (state, tangent, adjoint, metrics,
+preconditioners, both formulations). It is selected by \code{FSI/AccelerationMethod =
+OptimalControl}. Further changes: \code{NeumannCached} velocity condition of the fluid and its
+interface data container; \code{InterfaceCoupling::add_transpose}; write access to
+\code{ContainerInterfaceData}; \code{Structure::Operator::solve_linearized} and
+\code{apply_linearized}; public time-integration constants; monitor point and interface force
+output in the FSI driver; options \code{TractionCoupling}, \code{CoupledFluidSolver},
+\code{PullBackTraction}, \code{CFL}, \code{EndTime} of the application \code{cylinder_with_flag}.
+The variants discussed in \cref{sec:diagnosis} that were removed from the code (constraint-only
+stabilisation, Robin penalty) are preserved in \code{snapshot_all_variants.patch}.
+
+\paragraph{Inputs.} \code{input_optimal_control.json} (native traction, \cref{alg:qn}) and
+\code{input_optimal_control_velocity.json} (velocity mismatch, fluid control, interface Newton
+with frozen Jacobian and derivative verification) in
+\code{applications/fluid_structure_interaction/cylinder_with_flag}.
+
+\begin{thebibliography}{99}\small
+\item[] \emph{Note: references cited from memory; check details before reuse.}
+\bibitem{ExaDG2020} D.~Arndt, N.~Fehn, G.~Kanschat, K.~Kormann, M.~Kronbichler, P.~Munch, W.~A.~Wall,
+J.~Witte. ExaDG: High-order discontinuous Galerkin for the exa-scale. In: \emph{Software for
+Exascale Computing -- SPPEXA 2016--2019}, Springer, 2020.
+\bibitem{Babuska1973} I.~Babu\v{s}ka. The finite element method with Lagrangian multipliers.
+\emph{Numer.\ Math.} 20 (1973).
+\bibitem{BarbosaHughes1991} H.~J.~C.~Barbosa, T.~J.~R.~Hughes. The finite element method with
+Lagrange multipliers on the boundary: circumventing the Babu\v{s}ka--Brezzi condition.
+\emph{Comput.\ Methods Appl.\ Mech.\ Engrg.} 85 (1991).
+\bibitem{BazilevsHughes2007} Y.~Bazilevs, T.~J.~R.~Hughes. Weak imposition of Dirichlet boundary
+conditions in fluid mechanics. \emph{Comput.\ Fluids} 36 (2007).
+\bibitem{BernardiMadayPatera1994} C.~Bernardi, Y.~Maday, A.~T.~Patera. A new nonconforming approach
+to domain decomposition: the mortar element method. In: \emph{Nonlinear PDEs and their
+Applications}, Pitman, 1994.
+\bibitem{CausinGerbeauNobile2005} P.~Causin, J.-F.~Gerbeau, F.~Nobile. Added-mass effect in the
+design of partitioned algorithms for fluid--structure problems. \emph{Comput.\ Methods Appl.\
+Mech.\ Engrg.} 194 (2005).
+\bibitem{Degroote2009} J.~Degroote, K.-J.~Bathe, J.~Vierendeels. Performance of a new partitioned
+procedure versus a monolithic procedure in fluid--structure interaction. \emph{Comput.\ Struct.}
+87 (2009).
+\bibitem{GunzburgerHeinkenschlossLee2000} M.~D.~Gunzburger, M.~Heinkenschloss, H.~K.~Lee. Solution
+of elliptic partial differential equations by an optimization-based domain decomposition method.
+\emph{Appl.\ Math.\ Comput.} 113 (2000).
+\bibitem{NocedalWright2006} J.~Nocedal, S.~J.~Wright. \emph{Numerical Optimization}, 2nd ed.,
+Springer, 2006.
+\bibitem{Stenberg1995} R.~Stenberg. On some techniques for approximating boundary conditions in the
+finite element method. \emph{J.\ Comput.\ Appl.\ Math.} 63 (1995).
+\bibitem{Steihaug1983} T.~Steihaug. The conjugate gradient method and trust regions in large scale
+optimization. \emph{SIAM J.\ Numer.\ Anal.} 20 (1983).
+\bibitem{TurekHron2006} S.~Turek, J.~Hron. Proposal for numerical benchmarking of fluid--structure
+interaction between an elastic object and laminar incompressible flow. In: \emph{Fluid--Structure
+Interaction}, Springer, 2006.
+\bibitem{WalkerNi2011} H.~F.~Walker, P.~Ni. Anderson acceleration for fixed-point iterations.
+\emph{SIAM J.\ Numer.\ Anal.} 49 (2011).
+\end{thebibliography}
+
+\end{document}

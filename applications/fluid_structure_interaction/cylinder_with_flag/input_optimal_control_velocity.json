@@ -1,0 +1,51 @@
+{
+    "General": {
+        "Precision": "double",
+        "Dim": "2",
+        "IsTest": "false"
+    },
+    "SpatialResolutionFluid": {
+        "Degree": "3",
+        "RefineSpace": "1"
+    },
+    "SpatialResolutionStructure": {
+        "Degree": "2",
+        "RefineSpace": "0"
+    },
+    "FSI": {
+        "AccelerationMethod": "OptimalControl",
+        "AbsTol": "1.e-8",
+        "RelTol": "1.e-3",
+        "OmegaInit": "0.3",
+        "PartitionedIterMax": "100",
+        "MonitorPoint": "0.6,0.2"
+    },
+    "OptimalControl": {
+        "Formulation": "VelocityMismatch",
+        "ControlSpace": "Fluid",
+        "Method": "InterfaceNewton",
+        "Preconditioner": "FrozenJacobian",
+        "PreconditionerUpdateInterval": "10",
+        "Regularization": "0.0",
+        "GeometryInState": "false",
+        "GeometryIterations": "10",
+        "GeometryTolerance": "1.e-9",
+        "MaxIterations": "50",
+        "MismatchTolerance": "1.e-9",
+        "GradientToleranceRelative": "1.e-10",
+        "KrylovMaxIterations": "200",
+        "ForcingTermMax": "1.e-2",
+        "VerifyDerivatives": "true",
+        "Verbose": "true"
+    },
+    "Application": {
+        "EndTime": "0.01",
+        "TractionCoupling": "true",
+        "PullBackTraction": "false"
+    },
+    "Output": {
+        "OutputDirectory": "output/cylinder_with_flag_optimal_control/",
+        "OutputName": "test",
+        "WriteOutput": "false"
+    }
+}
