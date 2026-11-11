@@ -829,7 +829,7 @@ TimeIntBDFPressureCorrection<dim, Number>::projection_step(VectorType const & pr
     // extrapolate velocity to time t_{n+1} and use this velocity field to
     // calculate the penalty parameter for the divergence and continuity penalty terms
     VectorType velocity_extrapolated;
-    if(this->use_extrapolation)
+    if(this->use_extrapolation or this->penalty_velocity_from_extrapolation)
     {
       velocity_extrapolated.reinit(velocity[0]);
       for(unsigned int i = 0; i < velocity.size(); ++i)

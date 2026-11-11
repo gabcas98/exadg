@@ -501,45 +501,68 @@ Driver<dim, Number>::check_optimal_control_requirements() const
     AssertThrow(condition, dealii::ExcMessage("AccelerationMethod::OptimalControl: " + message));
   };
 
-  // fluid: the step has to be affine in the interface traction, with a symmetric system matrix
-  check(fluid_param.temporal_discretization == IncNS::TemporalDiscretization::BDFCoupledSolution,
-        "the fluid has to use TemporalDiscretization::BDFCoupledSolution.");
-  check(not fluid_param.convective_problem() or
-          fluid_param.treatment_of_convective_term == IncNS::TreatmentOfConvectiveTerm::Explicit,
-        "the convective term has to be treated explicitly.");
-  check(fluid_param.formulation_viscous_term ==
-          IncNS::FormulationViscousTerm::DivergenceFormulation,
-        "the viscous term needs the divergence formulation (natural boundary condition = Cauchy "
-        "traction).");
-  check(not fluid_param.viscosity_is_variable(), "variable viscosity is not supported.");
-  check(not fluid_param.use_scaling_continuity,
-        "scaling of the continuity equation is not supported.");
-  check(not fluid_param.apply_penalty_terms_in_postprocessing_step or
-          (not fluid_param.use_divergence_penalty and not fluid_param.use_continuity_penalty),
-        "penalty terms have to be part of the monolithic system "
-        "(apply_penalty_terms_in_postprocessing_step = false).");
-  if(oc_parameters.formulation == OptimalControl::Formulation::NativeTraction)
+  // derivative-free methods of the native formulation only evaluate the native Dirichlet-Neumann
+  // map and therefore work with any fluid solver (e.g. dual splitting)
+  bool const derivative_free =
+    oc_parameters.formulation == OptimalControl::Formulation::NativeTraction and
+    oc_parameters.method == OptimalControl::Method::InterfaceQuasiNewton and
+    oc_parameters.preconditioner == OptimalControl::Preconditioner::None and
+    not oc_parameters.verify_derivatives;
+
+  if(derivative_free)
   {
     check(not application->fluid->get_boundary_descriptor()->velocity->dirichlet_cached_bc.empty(),
           "Formulation::NativeTraction needs a DirichletCached velocity boundary condition of the "
           "fluid on the interface.");
     check(oc_parameters.control_space == OptimalControl::ControlSpace::Structure,
           "Formulation::NativeTraction requires ControlSpace = Structure.");
-    check(fluid_param.treatment_of_convective_term == IncNS::TreatmentOfConvectiveTerm::Explicit and
-            fluid_param.formulation_convective_term ==
-              IncNS::FormulationConvectiveTerm::ConvectiveFormulation and
-            fluid_param.type_dirichlet_bc_convective == IncNS::TypeDirichletBCs::Mirror,
-          "Formulation::NativeTraction: the linearised convective boundary term assumes the "
-          "convective formulation with the mirror principle.");
-    check(fluid_param.divu_formulation == IncNS::FormulationVelocityDivergenceTerm::Weak,
-          "Formulation::NativeTraction: weak formulation of the velocity divergence required.");
+    check(oc_parameters.qn_initial_jacobian != OptimalControl::QNInitialJacobian::FrozenJacobian,
+          "QNInitialJacobian = FrozenJacobian requires Preconditioner = FrozenJacobian.");
   }
   else
   {
-    check(not application->fluid->get_boundary_descriptor()->velocity->neumann_cached_bc.empty(),
-          "the fluid needs a NeumannCached velocity boundary condition on the interface.");
-    check(application->fluid->get_boundary_descriptor()->velocity->dirichlet_cached_bc.empty(),
-          "the fluid must not have DirichletCached velocity boundary conditions.");
+    // fluid: the step has to be affine in the interface traction, with a symmetric system matrix
+    check(fluid_param.temporal_discretization == IncNS::TemporalDiscretization::BDFCoupledSolution,
+          "the fluid has to use TemporalDiscretization::BDFCoupledSolution.");
+    check(not fluid_param.convective_problem() or
+            fluid_param.treatment_of_convective_term == IncNS::TreatmentOfConvectiveTerm::Explicit,
+          "the convective term has to be treated explicitly.");
+    check(fluid_param.formulation_viscous_term ==
+            IncNS::FormulationViscousTerm::DivergenceFormulation,
+          "the viscous term needs the divergence formulation (natural boundary condition = Cauchy "
+          "traction).");
+    check(not fluid_param.viscosity_is_variable(), "variable viscosity is not supported.");
+    check(not fluid_param.use_scaling_continuity,
+          "scaling of the continuity equation is not supported.");
+    check(not fluid_param.apply_penalty_terms_in_postprocessing_step or
+            (not fluid_param.use_divergence_penalty and not fluid_param.use_continuity_penalty),
+          "penalty terms have to be part of the monolithic system "
+          "(apply_penalty_terms_in_postprocessing_step = false).");
+    if(oc_parameters.formulation == OptimalControl::Formulation::NativeTraction)
+    {
+      check(
+        not application->fluid->get_boundary_descriptor()->velocity->dirichlet_cached_bc.empty(),
+        "Formulation::NativeTraction needs a DirichletCached velocity boundary condition of the "
+        "fluid on the interface.");
+      check(oc_parameters.control_space == OptimalControl::ControlSpace::Structure,
+            "Formulation::NativeTraction requires ControlSpace = Structure.");
+      check(fluid_param.treatment_of_convective_term ==
+                IncNS::TreatmentOfConvectiveTerm::Explicit and
+              fluid_param.formulation_convective_term ==
+                IncNS::FormulationConvectiveTerm::ConvectiveFormulation and
+              fluid_param.type_dirichlet_bc_convective == IncNS::TypeDirichletBCs::Mirror,
+            "Formulation::NativeTraction: the linearised convective boundary term assumes the "
+            "convective formulation with the mirror principle.");
+      check(fluid_param.divu_formulation == IncNS::FormulationVelocityDivergenceTerm::Weak,
+            "Formulation::NativeTraction: weak formulation of the velocity divergence required.");
+    }
+    else
+    {
+      check(not application->fluid->get_boundary_descriptor()->velocity->neumann_cached_bc.empty(),
+            "the fluid needs a NeumannCached velocity boundary condition on the interface.");
+      check(application->fluid->get_boundary_descriptor()->velocity->dirichlet_cached_bc.empty(),
+            "the fluid must not have DirichletCached velocity boundary conditions.");
+    }
   }
 
   // structure: dead load with symmetric tangent stiffness
@@ -660,6 +683,8 @@ Driver<dim, Number>::solve_optimal_control() const
     {
       control_old = control;
     }
+
+    oc_problem->begin_time_step();
 
     if(oc_parameters.preconditioner == OptimalControl::Preconditioner::FrozenJacobian and
        oc_time_steps % oc_parameters.preconditioner_update_interval == 0)

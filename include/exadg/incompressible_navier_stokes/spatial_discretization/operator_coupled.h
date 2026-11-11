@@ -259,6 +259,14 @@ public:
    * scaling_factor_mass has to be specified for unsteady problem and
    * can be omitted for steady problems.
    */
+  void
+  set_solver_tolerance_factor(double const factor) const override
+  {
+    Base::set_solver_tolerance_factor(factor);
+    if(linear_solver)
+      linear_solver->set_tolerance_factor(factor);
+  }
+
   unsigned int
   solve_linear_problem(BlockVectorType &       dst,
                        BlockVectorType const & src,

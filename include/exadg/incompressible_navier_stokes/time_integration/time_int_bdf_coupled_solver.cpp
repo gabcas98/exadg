@@ -207,15 +207,29 @@ TimeIntBDFCoupled<dim, Number>::do_timestep_solve()
 
   // Update divergence and continuity penalty operator in case
   // that these terms are added to the monolithic system of equations.
-  if(this->param.apply_penalty_terms_in_postprocessing_step == false)
+  if(this->param.apply_penalty_terms_in_postprocessing_step == false and
+     (this->param.use_divergence_penalty or this->param.use_continuity_penalty))
   {
+    VectorType velocity_penalty;
+    if(this->use_extrapolation or not this->penalty_velocity_from_extrapolation)
+    {
+      velocity_penalty = solution_np.block(0);
+    }
+    else
+    {
+      velocity_penalty.reinit(solution_np.block(0), true /* omit_zeroing_entries */);
+      velocity_penalty.equ(this->extra.get_beta(0), solution[0].block(0));
+      for(unsigned int i = 1; i < solution.size(); ++i)
+        velocity_penalty.add(this->extra.get_beta(i), solution[i].block(0));
+    }
+
     if(this->param.use_divergence_penalty == true)
     {
-      pde_operator->update_divergence_penalty_operator(solution_np.block(0));
+      pde_operator->update_divergence_penalty_operator(velocity_penalty);
     }
     if(this->param.use_continuity_penalty == true)
     {
-      pde_operator->update_continuity_penalty_operator(solution_np.block(0));
+      pde_operator->update_continuity_penalty_operator(velocity_penalty);
     }
   }
 
@@ -543,7 +557,7 @@ TimeIntBDFCoupled<dim, Number>::penalty_step()
   // calculate the penalty parameter for the divergence and continuity penalty term
   VectorType velocity_extrapolated;
   velocity_extrapolated.reinit(solution_np.block(0), true /* omit_zeroing_entries */);
-  if(this->use_extrapolation)
+  if(this->use_extrapolation or this->penalty_velocity_from_extrapolation)
   {
     velocity_extrapolated.equ(this->extra.get_beta(0), solution[0].block(0));
     for(unsigned int i = 1; i < solution.size(); ++i)

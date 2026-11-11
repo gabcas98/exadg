@@ -98,6 +98,17 @@ protected:
   typedef typename Base::MultigridPoisson MultigridPoisson;
 
 public:
+  void
+  set_solver_tolerance_factor(double const factor) const override
+  {
+    Base::set_solver_tolerance_factor(factor);
+    if(pressure_poisson_solver)
+      pressure_poisson_solver->set_tolerance_factor(factor);
+    if(momentum_linear_solver)
+      momentum_linear_solver->set_tolerance_factor(factor);
+  }
+
+public:
   /*
    * Constructor.
    */

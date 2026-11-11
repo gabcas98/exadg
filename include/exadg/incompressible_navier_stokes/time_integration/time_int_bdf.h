@@ -93,6 +93,19 @@ public:
   void
   ale_update();
 
+  /*
+   * Partitioned iterations (use_extrapolation = false) use the last iterate as initial guess and,
+   * by default, also to compute the penalty parameters of the divergence and continuity penalty
+   * terms. If set to true, the penalty parameters are always computed from the extrapolated
+   * velocity, such that the result of a step depends only on the boundary data and not on the
+   * history of the partitioned iteration (required by secant methods acting on the step).
+   */
+  void
+  set_penalty_velocity_from_extrapolation(bool const flag)
+  {
+    penalty_velocity_from_extrapolation = flag;
+  }
+
   void
   advance_one_timestep_partitioned_solve(bool const use_extrapolation,
                                          bool const update_velocity,
@@ -151,6 +164,7 @@ protected:
   // required for strongly-coupled partitioned iteration
   bool use_extrapolation;
   bool store_solution;
+  bool penalty_velocity_from_extrapolation = false;
   bool update_velocity;
   bool update_pressure;
 

@@ -60,6 +60,17 @@ public:
   virtual void
   update_preconditioner(bool const update_preconditioner) const = 0;
 
+  /*
+   * Runtime scaling of the tolerances (abs_tol and rel_tol are multiplied by this factor, the
+   * relative tolerance is capped at 0.5). Used, e.g., by coupling schemes that solve the single
+   * fields inexactly as long as the coupling residual is large. Default 1.
+   */
+  void
+  set_tolerance_factor(double const factor) const
+  {
+    tolerance_factor = factor;
+  }
+
   template<typename Control>
   void
   do_compute_performance_metrics(Control const & solver_control) const
@@ -91,6 +102,8 @@ public:
   mutable double       n_10; // number of iterations needed to reduce the residual by 1e10
 
 protected:
+  mutable double tolerance_factor = 1.0;
+
   std::shared_ptr<TimerTree> timer_tree;
 };
 
@@ -138,9 +151,10 @@ public:
   {
     dealii::Timer timer;
 
-    dealii::ReductionControl solver_control(solver_data.max_iter,
-                                            solver_data.abs_tol,
-                                            solver_data.rel_tol);
+    dealii::ReductionControl solver_control(
+      solver_data.max_iter,
+      solver_data.abs_tol,
+      std::max(solver_data.rel_tol, std::min(1.e-2, solver_data.rel_tol * this->tolerance_factor)));
 
     dealii::SolverSelector<VectorType> solver(solver_name, solver_control);
 

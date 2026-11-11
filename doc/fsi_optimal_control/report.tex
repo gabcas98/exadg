@@ -69,7 +69,12 @@ native Dirichlet--Neumann scheme, reproduces the reference solution to all digit
 formulation we derive the exact discrete adjoint, including the transposes of the Dirichlet boundary
 terms of the DG fluid and of the nodal stress interpolation, and compare all methods on the native
 solution: the secant method is as fast as IQN-ILS, interface Newton costs about twice as much, and
-Gauss--Newton about six to ten times as much.
+Gauss--Newton about six to ten times as much. Finally, we show that a secant method acting on a
+black-box time step requires a state map without hidden dependence on the iteration history, and
+that its tolerance must lie above the noise floor of the single-field solvers; with a warm-started,
+inexactly solved fluid the secant method is $2.4$ times faster than IQN-ILS at equal accuracy, and
+since it needs no derivatives it also runs with the dual-splitting fluid solver, where it remains
+robust at tolerances at which IQN-ILS fails.
 \end{abstract}
 
 \tableofcontents
@@ -115,6 +120,9 @@ finite element library built on \code{deal.II}. The contributions are:
   \item A native-traction formulation (\cref{sec:native}) whose root coincides with the native DN
   fixed point, with its exact discrete tangent and adjoint (\cref{sec:native_adjoint}), so that all
   methods can be compared on the native solution.
+  \item An analysis of the cost of the secant solver (\cref{sec:speedup}): warm starts and
+  adaptive inner tolerances, the noise floor of the state map, the dual-splitting fluid solver, and
+  multi-vector and frozen initial Jacobians.
 \end{enumerate}
 Negative results (Sobolev metrics, Tikhonov regularisation, a constraint-only stabilisation of the
 multiplier, a Robin penalty) are reported as well, since they delimit the design space.
@@ -791,6 +799,188 @@ steepest descent & 200 (limit) & 201 & 200 & 200 & $11\%$ & & \\
 \end{table}
 
 %=================================================================================================
+\section{Reducing the cost of the secant solver}\label{sec:speedup}
+%=================================================================================================
+
+In all configurations above more than $95\%$ of the run time is spent in the linear solves of the
+fluid step; the interface algebra, the structure and the ALE update are negligible. We therefore
+examine three ways to reduce the cost of \cref{alg:qn} on the native formulation: cheaper state
+evaluations (\cref{sec:inexact}), a cheaper fluid solver (\cref{sec:splitting}) and fewer state
+evaluations (\cref{sec:initial_jacobian}). All runs in this section use fluid refinement 1,
+structure refinement 0, $t\in[0,0.02]$ (11 time steps) and 4 processes; wall times are only
+comparable within one group of simultaneous runs, so every table reports runs started together.
+
+\subsection{Inexact state evaluations and the noise floor of the state map}\label{sec:inexact}
+
+\paragraph{Warm start.} The fluid step is solved by FGMRES with absolute tolerance $10^{-14}$ and
+relative tolerance $10^{-10}$, starting from the extrapolation in time. Within one time step,
+consecutive state evaluations differ only slightly, so starting the fluid solve from the previous
+evaluation (as the Dirichlet--Neumann iteration of ExaDG does after its first iteration) reduces
+the iterations per solve from about $45$ to $28$. Used naively, however, the warm start
+\emph{increases} the number of secant iterations from $9$ to $50$ per step. Two mechanisms are
+responsible, and both are worth stating since they apply to any secant method acting on a
+black-box time step.
+
+\begin{enumerate}
+\item \emph{The discrete operator depended on the initial guess.} When ExaDG does not extrapolate,
+it computes the penalty parameters of the divergence and continuity penalty terms, which depend on
+the local velocity magnitude, from the previous iterate instead of from the extrapolated velocity.
+The state map then depends on the history of the iteration, not only on $g$. For a fixed-point
+iteration this is harmless (the parameters converge with the iterate), but a secant method
+interprets the change of the operator as a change of the Jacobian. We added an opt-in switch
+\code{TimeIntBDF::set_penalty_velocity_from_extrapolation} that keeps the extrapolated velocity
+for the penalty parameters while still using the previous iterate as initial guess; it is enabled
+only by the optimal-control coupling, so the native schemes are unchanged.
+\item \emph{Absolute tolerances suppress small responses.} The Newton solver of the structure
+stops before the first iteration if the residual of the initial guess is below its absolute
+tolerance. With a warm start and a small change of $g$ this happens frequently: the structure does
+not respond at all and the secant pair is wrong. The structure (about $2\%$ of the cost) therefore
+always starts from the extrapolation; only the fluid is warm-started.
+\end{enumerate}
+
+With both corrections the secant method still stagnates at $\|m\|\approx10^{-8}$ in some time
+steps. The reason is the following.
+
+\begin{remark}[Consistent versus history-dependent inexactness]\label{rem:noise}
+Let $\tilde m(g)=m(g)+e$ be the computed residual, where $e$ collects the errors of the iterative
+single-field solvers. If every evaluation starts from the same initial guess (the extrapolation in
+time), $e=e(g)$ is a deterministic, piecewise smooth function of $g$, and the secant method
+converges for the perturbed map $\tilde m$ to arbitrary accuracy; its root differs from the exact
+one by $O(\|e\|)$, which is invisible in $\|\tilde m\|$. If the initial guess is the previous
+iterate, $e$ depends on the iteration history and behaves like noise of size $\varepsilon$
+between evaluations. The differences $\Delta m$ of the secant pairs then carry a relative error
+$\varepsilon/\|\Delta m\|$, and once $\|m\|$ approaches $\varepsilon$ the least-squares model of
+\cref{alg:qn} is dominated by noise and the iteration stagnates. A tolerance below the noise floor
+is meaningless; it is not more accurate, only more expensive.
+\end{remark}
+
+For the coupled fluid solver with tolerances $10^{-14}/10^{-10}$ the noise floor is
+$\varepsilon\approx10^{-8}$ in $\|m\|$ (with $\|m_0\|$ between $1$ and $17$), that is round-off level
+of the saddle-point solve. The cold-start runs with tolerance $10^{-8}$ are not more accurate than
+this: they only satisfy a consistent perturbation of the interface equation. With the tolerance
+$10^{-7}$ the solutions of all variants agree with the $10^{-8}$ cold-start solution to
+$7\cdot10^{-8}$ relative in the tip displacement (\cref{tab:inexact}).
+
+\paragraph{Adaptive inner tolerance.} In the spirit of inexact Newton methods
+\cite{DemboEisenstatSteihaug1982} the relative tolerance of the fluid solve is relaxed while the
+interface residual is large,
+\begin{equation}\label{eq:adaptive_tol}
+  \eta_k=\max\Big(\eta,\ \min\big(10^{-2},\ \eta\,\min(10^8,\max(1,\
+  \sigma\,\|m_k\|/\mathrm{tol}))\big)\Big),\qquad \sigma=10^{-2},
+\end{equation}
+where $\eta$ is the nominal relative tolerance and $\mathrm{tol}$ the interface tolerance; the
+absolute tolerance is not scaled (scaling it truncated the fluid solves at small displacement
+amplitudes and produced wrong solutions). On its own, \eqref{eq:adaptive_tol} does not pay off: the
+evaluations become cheaper, but the changing solver error makes the state map inconsistent in the
+sense of \cref{rem:noise} and the secant method needs more iterations. Together with the warm start
+the inexact early evaluations cost only a few FGMRES iterations each.
+
+\begin{table}[ht]\centering
+\caption{Inexact state evaluations, native formulation, coupled fluid solver, interface tolerance
+$10^{-7}$; four simultaneous runs. ``FGMRES'' is the average number of iterations per fluid solve;
+the last column is the maximum relative deviation of the tip displacement from the cold-start
+solution with tolerance $10^{-8}$.}\label{tab:inexact}
+\begin{tabular}{lcccc}
+\toprule
+variant & wall time & states/step & FGMRES & deviation\\
+\midrule
+cold start, fixed tolerance & 27.4 s & 9.2 & 44.9 & $1.7\cdot10^{-8}$\\
+warm start (fluid) & 18.2 s & 10.9 & 28.1 & $7.1\cdot10^{-8}$\\
+adaptive tolerance & 28.1 s & 12.6 & 31.2 & $5.2\cdot10^{-9}$\\
+warm start + adaptive tolerance & \textbf{15.9 s} & 10.2 & 22.1 & $2.6\cdot10^{-8}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Comparison with IQN-ILS.} The Dirichlet--Neumann IQN-ILS reference stops when the
+displacement residual is below $\mathrm{AbsTol}\sqrt{n}$ or $\mathrm{RelTol}\,\|v_s\|\Delta t$. With
+$\mathrm{AbsTol}=10^{-14}$ it needs $17.2$ iterations per step on this interval; relaxing the
+absolute tolerance saves iterations but costs accuracy ($12.5$ iterations and a deviation of
+$4.9\cdot10^{-3}$ for $10^{-12}$, $10.2$ iterations and $2.4\cdot10^{-2}$ for $10^{-11}$), because
+the displacements during the start-up are of order $10^{-10}$ to $10^{-6}$. At equal accuracy the
+secant method on the native formulation with warm start and adaptive tolerance is $2.4$ times faster
+(\cref{tab:speedup}).
+
+\subsection{A cheaper fluid solver}\label{sec:splitting}
+
+The derivatives of \cref{sec:native_adjoint} require the coupled fluid solver, whose system matrix
+is the symmetric saddle-point matrix. \Cref{alg:qn} needs no derivatives, so on the native
+formulation it can use any time integrator of ExaDG, in particular the dual-splitting scheme with
+its standard solver tolerances ($10^{-8}$ absolute, $10^{-6}$ relative). In this configuration a
+fluid step costs about three pressure-Poisson and five viscous CG iterations. The splitting changes
+the fluid discretisation: the tip displacement at $t=0.02$ differs from the coupled solution by
+$1.4\cdot10^{-3}$ relative.
+
+The loose single-field tolerances raise the noise floor of \cref{rem:noise} accordingly. The warm
+start must therefore not be used with the splitting scheme (the secant method then stagnates at
+about $10^{-6}$), while the cold-start secant method is insensitive to it. IQN-ILS warm-starts both
+fields after its first iteration and suffers directly (\cref{tab:splitting}): with the tolerances
+of the standard input of the application ($\mathrm{AbsTol}=10^{-8}$, $\mathrm{RelTol}=10^{-3}$) it
+stops long before convergence during the start-up and the tip displacement is wrong by a factor
+$46$; with $10^{-11}/10^{-6}$ it needs $13.4$ iterations for a deviation of $4\cdot10^{-3}$; with
+$\mathrm{AbsTol}=10^{-14}$ the iteration diverges in the third time step (the damped Newton solver
+of the structure fails). The secant method reaches a deviation of $2.4\cdot10^{-6}$ with
+$7.9$ state evaluations per step.
+
+\begin{table}[ht]\centering
+\caption{Dual-splitting fluid solver: iterations per time step and maximum and final relative
+deviation of the tip displacement from the secant solution with tolerance $10^{-7}$ (cold start).}
+\label{tab:splitting}
+\begin{tabular}{lccc}
+\toprule
+method, tolerance & iterations & max.\ deviation & final deviation\\
+\midrule
+IQN-ILS, $10^{-8}/10^{-3}$ & 21.1 & $46$ & $46$\\
+IQN-ILS, $10^{-11}/10^{-6}$ & 13.4 & $9.7\cdot10^{-2}$ & $4.3\cdot10^{-3}$\\
+IQN-ILS, $10^{-14}/10^{-10}$ & \multicolumn{3}{c}{diverges in time step 3}\\
+secant, $10^{-4}$ & 7.9 & $1.2\cdot10^{-4}$ & $2.4\cdot10^{-6}$\\
+secant, $10^{-5}$ & 8.6 & $7.5\cdot10^{-6}$ & $1.8\cdot10^{-9}$\\
+secant, $10^{-7}$ & 10.1 & -- & --\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[ht]\centering
+\caption{Summary, four simultaneous runs: total wall time, wall time of the time loop and
+iterations (state evaluations) per time step. The dual-splitting run solves a different fluid
+discretisation (deviation $1.4\cdot10^{-3}$).}\label{tab:speedup}
+\begin{tabular}{lcccc}
+\toprule
+configuration & total & time loop & iterations & speed-up\\
+\midrule
+IQN-ILS, coupled fluid, $10^{-14}/10^{-10}$ & 36.2 s & 34.8 s & 17.2 & 1.0\\
+secant, coupled fluid, cold start & 23.7 s & 22.5 s & 9.2 & 1.5\\
+secant, coupled fluid, warm start + adaptive & 16.0 s & 14.8 s & 10.2 & 2.4\\
+secant, dual splitting, $10^{-5}$ & 2.1 s & 0.8 s & 8.6 & $\approx40$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Initial Jacobians}\label{sec:initial_jacobian}
+
+\Cref{alg:qn} uses the initial inverse Jacobian $H_0=\omega I$. Two alternatives are implemented
+(parameter \code{QNInitialJacobian}); the update of the step is
+$\delta g=-H_0m-\sum_ic_i(\Delta g_i-H_0\Delta m_i)$ with the least-squares coefficients $c$.
+\begin{itemize}
+\item \emph{Multi-vector update} (IQN-IMVJ \cite{Bogaers2014}): after each time step,
+\begin{equation}\label{eq:imvj}
+  H\leftarrow H+(\Delta G-H\Delta M)\big(\Delta M^\top\M\Delta M\big)^{-1}(\M\Delta M)^\top,
+\end{equation}
+with the (filtered) secant pairs of the step, so that $H\Delta M=\Delta G$; $H$ is stored as a dense
+matrix in the interface degrees of freedom ($130$ here) and reset to $\omega I$ when the residual
+grows by more than \code{QNRestartFactor}.
+\item \emph{Frozen Jacobian}: $H_0=J^{-1}$ with the LU factorisation of the assembled interface
+Jacobian of \cref{sec:methods}, refreshed every ten steps.
+\end{itemize}
+Neither pays off during the start-up phase. With \eqref{eq:imvj} the secant method needs
+$10.1$ evaluations per step without reuse of old pairs and $16.4$ with reuse of eight steps, against
+$9.0$ and $10.2$ for $H_0=\omega I$: the Jacobian changes too quickly between time steps. (Reusing
+the pairs of previous steps does not help either here.) The frozen Jacobian reduces the evaluations
+to $6.9$ per step, but its assembly costs $2\times130$ tangent solves per refresh, i.e.\ about
+$24$ per step, and the run takes $78$~s instead of $10$~s. Both options are meant for the periodic
+regime, where the Jacobian changes slowly and the refresh interval can be long.
+
+%=================================================================================================
 \section{Conclusions and outlook}
 %=================================================================================================
 
@@ -812,9 +1002,16 @@ steps.
 residual recovers the native solution exactly. Its exact adjoint requires only local transposes of
 the boundary terms and of the nodal stress interpolation. On the native solution the ranking of the
 methods is the one predicted by the scalar model, and the secant solver matches IQN-ILS in cost.
+\item A secant method needs a state map that depends only on the control. Warm starts are safe
+only if the single-field operators do not depend on the initial guess and the interface tolerance
+lies above the noise floor of the inner solvers; then they make the secant method $2.4$ times
+faster than IQN-ILS at equal accuracy. Without warm start the inexactness of the inner solvers is
+consistent and harmless, which makes the derivative-free secant method on the native formulation
+robust with the cheap dual-splitting fluid solver.
 \end{enumerate}
 Open points are longer simulations into the periodic regime of FSI2 (where the added-mass effect is
-fully developed), preconditioning of the native interface Newton method (the frozen Jacobian of
+fully developed, and where the initial Jacobians of \cref{sec:initial_jacobian} may pay off),
+preconditioning of the native interface Newton method (the frozen Jacobian of
 \cref{sec:methods} applies directly), and three-dimensional problems, where the dense
 frozen-Jacobian and Sobolev constructions must be replaced by low-rank or multilevel
 approximations.
@@ -836,6 +1033,13 @@ interface data container; \code{InterfaceCoupling::add_transpose}; write access 
 \code{apply_linearized}; public time-integration constants; monitor point and interface force
 output in the FSI driver; options \code{TractionCoupling}, \code{CoupledFluidSolver},
 \code{PullBackTraction}, \code{CFL}, \code{EndTime} of the application \code{cylinder_with_flag}.
+For \cref{sec:speedup}: \code{SolverBase::set_tolerance_factor} (relative tolerance of the
+Krylov solvers), \code{SpatialOperatorBase::set_solver_tolerance_factor} (overridden by the coupled
+and projection-type fluid operators), \code{TimeIntBDF::set_penalty_velocity_from_extrapolation},
+and the parameters \code{WarmStart}, \code{AdaptiveInnerTolerance}, \code{InnerToleranceSafety}
+(off by default) and \code{QNInitialJacobian} of the subsection \code{OptimalControl}. The
+derivative-free combination (native formulation, interface quasi-Newton, no preconditioner, no
+derivative verification) accepts every fluid time integrator.
 The variants discussed in \cref{sec:diagnosis} that were removed from the code (constraint-only
 stabilisation, Robin penalty) are preserved in \code{snapshot_all_variants.patch}.
 
@@ -854,6 +1058,8 @@ Exascale Computing -- SPPEXA 2016--2019}, Springer, 2020.
 \bibitem{BarbosaHughes1991} H.~J.~C.~Barbosa, T.~J.~R.~Hughes. The finite element method with
 Lagrange multipliers on the boundary: circumventing the Babu\v{s}ka--Brezzi condition.
 \emph{Comput.\ Methods Appl.\ Mech.\ Engrg.} 85 (1991).
+\bibitem{Bogaers2014} A.~E.~J.~Bogaers, S.~Kok, B.~D.~Reddy, T.~Franz. Quasi-Newton methods for
+implicit black-box FSI coupling. \emph{Comput.\ Methods Appl.\ Mech.\ Engrg.} 279 (2014) 113--132.
 \bibitem{BazilevsHughes2007} Y.~Bazilevs, T.~J.~R.~Hughes. Weak imposition of Dirichlet boundary
 conditions in fluid mechanics. \emph{Comput.\ Fluids} 36 (2007).
 \bibitem{BernardiMadayPatera1994} C.~Bernardi, Y.~Maday, A.~T.~Patera. A new nonconforming approach
@@ -862,6 +1068,8 @@ Applications}, Pitman, 1994.
 \bibitem{CausinGerbeauNobile2005} P.~Causin, J.-F.~Gerbeau, F.~Nobile. Added-mass effect in the
 design of partitioned algorithms for fluid--structure problems. \emph{Comput.\ Methods Appl.\
 Mech.\ Engrg.} 194 (2005).
+\bibitem{DemboEisenstatSteihaug1982} R.~S.~Dembo, S.~C.~Eisenstat, T.~Steihaug. Inexact Newton
+methods. \emph{SIAM J.\ Numer.\ Anal.} 19 (1982) 400--408.
 \bibitem{Degroote2009} J.~Degroote, K.-J.~Bathe, J.~Vierendeels. Performance of a new partitioned
 procedure versus a monolithic procedure in fluid--structure interaction. \emph{Comput.\ Struct.}
 87 (2009).

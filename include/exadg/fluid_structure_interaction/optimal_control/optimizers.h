@@ -315,6 +315,18 @@ public:
     return stats;
   }
 
+  // adaptive accuracy of the state solves: tolerances scaled by safety * ||m|| / tolerance
+  void
+  set_inner_tolerance(double const m_norm)
+  {
+    double factor = 1.0;
+    if(param.adaptive_inner_tolerance and m_norm > 0.0 and param.mismatch_tolerance > 0.0)
+      factor =
+        std::min(1.e8,
+                 std::max(1.0, param.inner_tolerance_safety * m_norm / param.mismatch_tolerance));
+    problem.set_state_tolerance_factor(factor);
+  }
+
   /*
    * Least-squares secant method (Anderson type II / IQN-ILS) for m(g) = 0:
    *   g_{k+1} = g_k - omega m_k - (dG - omega dM) c,  c = argmin ||m_k - dM c||_M,
@@ -329,8 +341,10 @@ public:
 
     VectorType m, g_old, m_old;
     problem.initialize_vector(m);
+    set_inner_tolerance(qn_last_initial_norm);
     evaluate(m, g);
     save_linearization();
+    qn_last_initial_norm = norm_mismatch(m);
 
     std::vector<VectorType> dG_now, dM_now;
 
@@ -364,11 +378,22 @@ public:
         }
       }
 
-      VectorType step;
+      VectorType step, H0x;
       problem.initialize_vector(step);
+      problem.initialize_vector(H0x);
+      // H_0 = omega I (relaxation) or the inverse Jacobian of the problem
+      double const omega    = cols_M.empty() ? qn_relaxation : param.qn_mixing;
+      auto const   apply_H0 = [&](VectorType & dst, VectorType const & src) {
+        if(param.qn_initial_jacobian == QNInitialJacobian::Relaxation or
+           not problem.has_initial_inverse_jacobian(param.qn_initial_jacobian))
+          dst.equ(omega, src);
+        else
+          problem.apply_initial_inverse_jacobian(dst, src, param.qn_initial_jacobian);
+      };
       if(cols_M.empty())
       {
-        step.equ(-qn_relaxation, m);
+        apply_H0(H0x, m);
+        step.equ(-1.0, H0x);
       }
       else
       {
@@ -408,12 +433,13 @@ public:
           c[i] = sum / R[i][i];
         }
 
-        double const omega = param.qn_mixing;
-        step.equ(-omega, m);
+        apply_H0(H0x, m);
+        step.equ(-1.0, H0x);
         for(unsigned int i = 0; i < n; ++i)
         {
           step.add(-c[i], *cols_G[kept[i]]);
-          step.add(omega * c[i], *cols_M[kept[i]]);
+          apply_H0(H0x, *cols_M[kept[i]]);
+          step.add(c[i], H0x);
         }
         stats.krylov_iterations += n; // number of secant pairs used
       }
@@ -421,6 +447,7 @@ public:
       g_old = g;
       m_old = m;
       g.add(1.0, step);
+      set_inner_tolerance(m_norm);
       evaluate(m, g);
       save_linearization();
       ++stats.iterations;
@@ -433,6 +460,7 @@ public:
       {
         if(cols_M.empty())
           qn_relaxation *= 0.5;
+        problem.reset_initial_inverse_jacobian();
         if(not qn_history_M.empty())
         {
           qn_history_G.clear();
@@ -447,6 +475,29 @@ public:
       dG_now.push_back(dg);
       dM_now.push_back(dm);
     }
+
+    // IQN-IMVJ: multi-secant update of the inverse Jacobian with the (filtered) pairs of this solve
+    if(param.qn_initial_jacobian == QNInitialJacobian::PreviousTimeStep and not dM_now.empty())
+    {
+      std::vector<VectorType> kept_G, kept_M, Q;
+      for(int j = int(dM_now.size()) - 1; j >= 0; --j)
+      {
+        VectorType   q(dM_now[j]);
+        double const original = norm_mismatch(q);
+        for(auto const & qi : Q)
+          q.add(-problem.inner_product_mismatch(qi, q), qi);
+        double const q_norm = norm_mismatch(q);
+        if(original == 0.0 or q_norm <= param.qn_filter * original)
+          continue;
+        q *= 1.0 / q_norm;
+        Q.push_back(q);
+        kept_G.push_back(dG_now[j]);
+        kept_M.push_back(dM_now[j]);
+      }
+      problem.update_initial_inverse_jacobian(kept_G, kept_M, qn_relaxation);
+    }
+
+    problem.set_state_tolerance_factor(1.0);
 
     // archive the pairs of this solve
     if(param.qn_reuse > 0 and not dM_now.empty())
@@ -1048,6 +1099,7 @@ private:
   // InterfaceQuasiNewton: secant pairs of previous solves
   std::deque<std::vector<VectorType>> qn_history_G, qn_history_M;
   double                              qn_relaxation;
+  double                              qn_last_initial_norm = 0.0;
 };
 
 } // namespace OptimalControl

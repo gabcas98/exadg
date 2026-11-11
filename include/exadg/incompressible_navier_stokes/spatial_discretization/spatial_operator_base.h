@@ -212,6 +212,14 @@ public:
   std::shared_ptr<ContainerInterfaceData<1, dim, double>>
   get_container_interface_data();
 
+  // Scale the tolerances of the linear solvers of the fluid step (1 = parameters as specified)
+  virtual void
+  set_solver_tolerance_factor(double const factor) const
+  {
+    if(projection_solver)
+      projection_solver->set_tolerance_factor(factor);
+  }
+
   // Access to the operator kernels and parameters (e.g. for the transposes of boundary terms
   // needed by adjoint-based coupling schemes)
   std::shared_ptr<Operators::ViscousKernel<dim, Number>>

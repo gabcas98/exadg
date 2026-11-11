@@ -150,8 +150,10 @@ public:
   {
     operator_coupled =
       std::dynamic_pointer_cast<IncNS::OperatorCoupled<dim, Number>>(fluid->pde_operator);
-    AssertThrow(operator_coupled.get(),
-                dealii::ExcMessage("Optimal-control FSI coupling requires the coupled fluid "
+    // derivatives (tangent, adjoint) require the coupled fluid solver; derivative-free methods
+    // with Formulation::NativeTraction work with any fluid solver
+    AssertThrow(operator_coupled.get() or formulation_in == Formulation::NativeTraction,
+                dealii::ExcMessage("Formulation::VelocityMismatch requires the coupled fluid "
                                    "solver (TemporalDiscretization::BDFCoupledSolution)."));
 
     structure_space.matrix_free = structure->pde_operator->get_matrix_free().get();
@@ -243,7 +245,11 @@ public:
   void
   configure(Parameters const & param)
   {
-    geometry_in_state        = param.geometry_in_state;
+    geometry_in_state = param.geometry_in_state;
+    warm_start        = param.warm_start and param.method == Method::InterfaceQuasiNewton;
+    // warm start: the step has to remain a function of the boundary data only
+    fluid->time_integrator->set_penalty_velocity_from_extrapolation(warm_start);
+    qn_initial_relaxation    = param.qn_initial_relaxation;
     tangent_difference       = param.tangent_difference;
     preconditioner           = param.preconditioner;
     preconditioner_tolerance = param.preconditioner_tolerance;
@@ -276,8 +282,14 @@ public:
                 dealii::ExcMessage("Sobolev metrics and the structure Dirichlet-to-Neumann "
                                    "preconditioner are implemented for ControlSpace::Structure."));
 
-    if(use_dense_metrics or preconditioner == Preconditioner::FrozenJacobian)
+    if(use_dense_metrics or preconditioner == Preconditioner::FrozenJacobian or
+       param.qn_initial_jacobian != QNInitialJacobian::Relaxation)
       setup_interface_numbering();
+
+    AssertThrow(param.qn_initial_jacobian != QNInitialJacobian::FrozenJacobian or
+                  preconditioner == Preconditioner::FrozenJacobian,
+                dealii::ExcMessage("QNInitialJacobian = FrozenJacobian requires Preconditioner = "
+                                   "FrozenJacobian."));
 
     if(use_dense_metrics)
       setup_dense_metrics(s_m, s_c, param.sobolev_length_scale);
@@ -425,15 +437,22 @@ public:
       return;
     }
 
+    bool const extrapolate = not(warm_start and evaluations_in_step > 0);
+    ++evaluations_in_step;
+
     // structure: nominal traction j * g
     fill_structure_load(g);
+    // the structure always starts from the extrapolation: a warm start lets the Newton solver
+    // stop without iteration for small changes of g (absolute tolerance), which makes m(g) noisy
     structure->time_integrator->advance_one_timestep_partitioned_solve(true);
 
     update_geometry_from_state();
 
     // fluid: kinematic formulation, nu F(u) n - p n = -g / rho_f  ->  h = -g / (rho_f nu)
     fill_fluid_neumann_data(g, -1.0 / (fluid_density * viscosity));
-    fluid->time_integrator->advance_one_timestep_partitioned_solve(true, true, true);
+    fluid->pde_operator->set_solver_tolerance_factor(state_tolerance_factor);
+    fluid->time_integrator->advance_one_timestep_partitioned_solve(extrapolate, true, true);
+    fluid->pde_operator->set_solver_tolerance_factor(1.0);
 
     // linearization point of the structure: mid-point displacement
     auto & ti = *structure->time_integrator;
@@ -683,6 +702,103 @@ public:
   set_mesh_update(std::function<void(VectorType const &)> const & function)
   {
     mesh_update = function;
+  }
+
+  /*
+   * Control of the state solves (used by InterfaceQuasiNewton)
+   */
+  void
+  begin_time_step()
+  {
+    evaluations_in_step = 0;
+  }
+
+  void
+  set_state_tolerance_factor(double const factor)
+  {
+    state_tolerance_factor = factor;
+  }
+
+  /*
+   * Initial inverse Jacobian H_0 of InterfaceQuasiNewton
+   */
+  bool
+  has_initial_inverse_jacobian(QNInitialJacobian const type) const
+  {
+    if(type == QNInitialJacobian::PreviousTimeStep)
+      return H_previous.m() > 0;
+    if(type == QNInitialJacobian::FrozenJacobian)
+      return preconditioner == Preconditioner::FrozenJacobian;
+    return false;
+  }
+
+  void
+  apply_initial_inverse_jacobian(VectorType &            dst,
+                                 VectorType const &      src,
+                                 QNInitialJacobian const type) const
+  {
+    if(type == QNInitialJacobian::FrozenJacobian)
+    {
+      apply_preconditioner(dst, src);
+      return;
+    }
+    dense_apply(dst, H_previous, src);
+  }
+
+  /*
+   * IQN-IMVJ: H <- H_0 + (dG - H_0 dM) (dM^T M dM)^{-1} (M dM)^T, with H_0 the current inverse
+   * Jacobian (omega I before the first update).
+   */
+  void
+  update_initial_inverse_jacobian(std::vector<VectorType> const & dG,
+                                  std::vector<VectorType> const & dM,
+                                  double const                    omega)
+  {
+    unsigned int const n = n_dense;
+    unsigned int const k = dM.size();
+    if(H_previous.m() == 0)
+    {
+      H_previous.reinit(n, n);
+      for(unsigned int i = 0; i < n; ++i)
+        H_previous(i, i) = omega;
+    }
+    if(k == 0)
+      return;
+
+    dealii::FullMatrix<double> X(n, k), MDM(n, k), Z(k, k);
+    VectorType                 tmp;
+    initialize_vector(tmp);
+    for(unsigned int j = 0; j < k; ++j)
+    {
+      dealii::Vector<double> const g_col = gather(dG[j]), m_col = gather(dM[j]);
+      dealii::Vector<double>       Hm(n);
+      H_previous.vmult(Hm, m_col);
+      apply_mass(control(), tmp, dM[j]);
+      dealii::Vector<double> const Mm = gather(tmp);
+      for(unsigned int i = 0; i < n; ++i)
+      {
+        X(i, j)   = g_col[i] - Hm[i];
+        MDM(i, j) = Mm[i];
+      }
+      for(unsigned int l = 0; l < k; ++l)
+        Z(l, j) = gather(dM[l]) * Mm;
+    }
+    Z.gauss_jordan();
+    dealii::FullMatrix<double> T(k, n), update(n, n);
+    Z.mTmult(T, MDM); // T = Z^{-1} MDM^T
+    X.mmult(update, T);
+    H_previous.add(1.0, update);
+  }
+
+  void
+  reset_initial_inverse_jacobian()
+  {
+    if(H_previous.m() > 0)
+    {
+      H_previous = 0.0;
+      for(unsigned int i = 0; i < H_previous.m(); ++i)
+        H_previous(i, i) = qn_initial_relaxation;
+    }
   }
 
   // FrozenJacobian: re-assemble at the next application of the preconditioner
@@ -1129,17 +1245,24 @@ private:
 
   // fluid step with the native Dirichlet data v (structure velocity) and its native traction
   void
-  native_fluid_response(VectorType & traction, VectorType const & v) const
+  native_fluid_response(VectorType &       traction,
+                        VectorType const & v,
+                        bool const         extrapolate = true) const
   {
     structure_to_fluid->update_data(v);
-    fluid->time_integrator->advance_one_timestep_partitioned_solve(true, true, true);
+    fluid->time_integrator->advance_one_timestep_partitioned_solve(extrapolate, true, true);
     native_fluid_traction(traction);
   }
 
   void
   evaluate_native(VectorType & m, VectorType const & g)
   {
+    bool const extrapolate = not(warm_start and evaluations_in_step > 0);
+    ++evaluations_in_step;
+
     fill_structure_load(g);
+    // the structure always starts from the extrapolation: a warm start lets the Newton solver
+    // stop without iteration for small changes of g (absolute tolerance), which makes m(g) noisy
     structure->time_integrator->advance_one_timestep_partitioned_solve(true);
 
     update_geometry_from_state();
@@ -1151,12 +1274,15 @@ private:
 
     VectorType traction;
     initialize_vector(traction);
-    native_fluid_response(traction, native_velocity);
+    fluid->pde_operator->set_solver_tolerance_factor(state_tolerance_factor);
+    native_fluid_response(traction, native_velocity, extrapolate);
+    fluid->pde_operator->set_solver_tolerance_factor(1.0);
     native_traction = traction;
 
     // data of the linearisation of the fluid boundary terms: Dirichlet data of the state and the
     // extrapolated velocity of the explicit convective term
     native_base_data = *fluid_neumann;
+    if(operator_coupled)
     {
       std::vector<VectorType const *> velocities;
       std::vector<double>             times;
@@ -1179,6 +1305,8 @@ private:
   void
   apply_S_native(VectorType & dst, VectorType const & src) const
   {
+    AssertThrow(operator_coupled.get() or tangent_difference != TangentDifference::Analytic,
+                dealii::ExcMessage("The analytic tangent requires the coupled fluid solver."));
     VectorType load, y;
     structure->pde_operator->initialize_dof_vector(load);
     structure->pde_operator->initialize_dof_vector(y);
@@ -1240,6 +1368,8 @@ private:
   void
   apply_S_adjoint_native(VectorType & dst, VectorType const & src) const
   {
+    AssertThrow(operator_coupled.get(),
+                dealii::ExcMessage("The adjoint requires the coupled fluid solver."));
     // R_T^T src: structure weights -> P_f^T -> (-I_sigma)^T
     fill_weighted_trace(structure_space, *fluid_at_structure, src, false);
     VectorType stress_dual;
@@ -2368,6 +2498,15 @@ private:
   dealii::FullMatrix<double>                         A_dense, G_dense, pre_dense, post_dense;
 
   int component = 0; // 0: full S, 1: fluid part only, 2: structure part only (diagnostics)
+
+  // control of the state solves
+  bool         warm_start             = false;
+  unsigned int evaluations_in_step    = 0;
+  double       state_tolerance_factor = 1.0;
+
+  // IQN-IMVJ inverse Jacobian (dense, interface dofs)
+  dealii::FullMatrix<double> H_previous;
+  double                     qn_initial_relaxation = 0.3;
 
   // FrozenJacobian preconditioner
   mutable bool                             jacobian_needs_update = true;

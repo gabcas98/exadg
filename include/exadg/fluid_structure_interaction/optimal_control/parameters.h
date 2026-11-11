@@ -58,6 +58,20 @@ enum class Method
   InterfaceQuasiNewton
 };
 
+/*
+ * Initial (inverse) Jacobian H_0 of InterfaceQuasiNewton, g+ = g - H_0 m - (dG - H_0 dM) c:
+ *   Relaxation: H_0 = omega I (Anderson type II / IQN-ILS),
+ *   PreviousTimeStep: H_0 = multi-secant inverse Jacobian of the previous time step (IQN-IMVJ),
+ *   FrozenJacobian: H_0 = S_0^{-1} with the assembled Jacobian (requires Preconditioner =
+ *   FrozenJacobian and derivatives).
+ */
+enum class QNInitialJacobian
+{
+  Relaxation,
+  PreviousTimeStep,
+  FrozenJacobian
+};
+
 enum class TangentDifference
 {
   Analytic, // linearised boundary terms and one linear fluid solve, consistent with the adjoint
@@ -160,6 +174,10 @@ struct Parameters
       qn_mixing(1.0),
       qn_filter(1.e-4),
       qn_restart_factor(2.0),
+      qn_initial_jacobian(QNInitialJacobian::Relaxation),
+      warm_start(false),
+      adaptive_inner_tolerance(false),
+      inner_tolerance_safety(1.e-2),
       control_space(ControlSpace::Fluid),
       control_degree_reduction(0),
       preconditioner(Preconditioner::None),
@@ -322,6 +340,35 @@ struct Parameters
                         "than this factor in one iteration.",
                         dealii::Patterns::Double(1.0),
                         false);
+      prm.add_parameter("QNInitialJacobian",
+                        qn_initial_jacobian,
+                        "InterfaceQuasiNewton: initial inverse Jacobian (Relaxation, "
+                        "PreviousTimeStep = IQN-IMVJ, FrozenJacobian).",
+                        Patterns::Enum<QNInitialJacobian>(),
+                        false);
+      prm.add_parameter("WarmStart",
+                        warm_start,
+                        "InterfaceQuasiNewton: start the fluid solve of a state evaluation from "
+                        "the previous evaluation of the same time step (instead of the "
+                        "extrapolation in time). The state map then shows the round-off noise "
+                        "of the fluid solver, so MismatchTolerance has to lie above it (about "
+                        "1e-8 relative for the coupled solver with tolerances 1e-14/1e-10); not "
+                        "suited for solvers with loose tolerances (e.g. dual splitting).",
+                        dealii::Patterns::Bool(),
+                        false);
+      prm.add_parameter("AdaptiveInnerTolerance",
+                        adaptive_inner_tolerance,
+                        "InterfaceQuasiNewton: solve the fluid with the relative tolerance scaled "
+                        "by min(1e8, max(1, safety * ||m|| / MismatchTolerance)) (capped at "
+                        "1e-2, never tighter than the original one). Pays off together with "
+                        "WarmStart.",
+                        dealii::Patterns::Bool(),
+                        false);
+      prm.add_parameter("InnerToleranceSafety",
+                        inner_tolerance_safety,
+                        "Safety factor of AdaptiveInnerTolerance.",
+                        dealii::Patterns::Double(0.0),
+                        false);
       prm.add_parameter("ControlSpace",
                         control_space,
                         "Interface space of the traction control (Fluid or Structure trace).",
@@ -401,6 +448,10 @@ struct Parameters
   double            qn_mixing;
   double            qn_filter;
   double            qn_restart_factor;
+  QNInitialJacobian qn_initial_jacobian;
+  bool              warm_start;
+  bool              adaptive_inner_tolerance;
+  double            inner_tolerance_safety;
   ControlSpace      control_space;
   unsigned int      control_degree_reduction;
   Preconditioner    preconditioner;
