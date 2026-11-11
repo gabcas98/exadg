@@ -63,6 +63,8 @@ struct Parameters
       initial_guess_coupling_scheme(
         InitialGuessCouplingScheme::SolutionExtrapolatedToEndOfTimeStep),
       reused_time_steps(0),
+      iqn_restart_factor(2.0),
+      penalty_velocity_from_extrapolation(false),
       partitioned_iter_max(100),
       geometric_tolerance(1.e-10),
       update_ale(true),
@@ -100,6 +102,19 @@ struct Parameters
                         reused_time_steps,
                         "Number of time steps reused for acceleration.",
                         dealii::Patterns::Integer(0, 100),
+                        false);
+      prm.add_parameter("IQNRestartFactor",
+                        iqn_restart_factor,
+                        "IQN-ILS: discard the secant pairs of previous time steps if the residual "
+                        "grows by more than this factor within a partitioned iteration (0: never).",
+                        dealii::Patterns::Double(0.0),
+                        false);
+      prm.add_parameter("PenaltyVelocityFromExtrapolation",
+                        penalty_velocity_from_extrapolation,
+                        "Partitioned iterations: compute the penalty parameters of the fluid from "
+                        "the extrapolated velocity in every iteration (default: from the last "
+                        "iterate, which makes the discrete problem depend on the iteration count).",
+                        dealii::Patterns::Bool(),
                         false);
       prm.add_parameter("PartitionedIterMax",
                         partitioned_iter_max,
@@ -142,6 +157,8 @@ struct Parameters
   double                     omega_init;
   InitialGuessCouplingScheme initial_guess_coupling_scheme;
   unsigned int               reused_time_steps;
+  double                     iqn_restart_factor;
+  bool                       penalty_velocity_from_extrapolation;
   unsigned int               partitioned_iter_max;
 
   // tolerance used to locate points at the fluid-structure interface

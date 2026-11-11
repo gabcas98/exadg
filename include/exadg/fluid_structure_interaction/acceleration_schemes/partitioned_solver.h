@@ -86,6 +86,9 @@ private:
   // required for quasi-Newton methods
   std::vector<std::shared_ptr<std::vector<VectorType>>> D_history, R_history, Z_history;
 
+  // number of restarts of IQN-ILS (history of previous time steps discarded)
+  unsigned int iqn_restarts = 0;
+
   // Computation time (wall clock time).
   std::shared_ptr<TimerTree> timer_tree;
 
@@ -166,6 +169,12 @@ PartitionedSolver<dim, Number>::print_iterations(dealii::ConditionalOStream cons
   iterations_avg.resize(1);
   iterations_avg[0] =
     (double)partitioned_iterations.second / std::max(1.0, (double)partitioned_iterations.first);
+
+  if(parameters.acceleration_method == AccelerationMethod::IQN_ILS)
+  {
+    names.push_back("IQN-ILS restarts (total)");
+    iterations_avg.push_back((double)iqn_restarts);
+  }
 
   print_list_of_iterations(pcout, names, iterations_avg);
 }
@@ -328,6 +337,16 @@ PartitionedSolver<dim, Number>::solve(
       r.add(-1.0, d);
       converged = check_convergence(r);
 
+      // restart: if the residual grows strongly, the secant information of previous time steps
+      // is considered outdated and discarded (the pairs of the current time step are kept)
+      if(not(converged) and k >= 1 and parameters.iqn_restart_factor > 0.0 and
+         not R_history.empty() and r.l2_norm() > parameters.iqn_restart_factor * r_old.l2_norm())
+      {
+        D_history.clear();
+        R_history.clear();
+        ++iqn_restarts;
+      }
+
       // relaxation
       if(not(converged))
       {
@@ -352,15 +371,22 @@ PartitionedSolver<dim, Number>::solve(
             R->push_back(delta_r);
           }
 
-          // fill vectors (including reuse)
-          std::vector<VectorType> Q = *R;
-          for(auto R_q : R_history)
-            for(auto delta_r : *R_q)
-              Q.push_back(delta_r);
-          std::vector<VectorType> D_all = *D;
-          for(auto D_q : D_history)
-            for(auto delta_d : *D_q)
-              D_all.push_back(delta_d);
+          // fill vectors (including reuse), newest first: current time step (newest iteration
+          // first), then the previous time steps (newest time step first). The QR decomposition
+          // drops nearly linearly dependent columns that come later in this order, i.e., the
+          // older secant information.
+          std::vector<VectorType> Q, D_all;
+          for(auto it = R->rbegin(); it != R->rend(); ++it)
+            Q.push_back(*it);
+          for(auto it = D->rbegin(); it != D->rend(); ++it)
+            D_all.push_back(*it);
+          for(int s = int(R_history.size()) - 1; s >= 0; --s)
+          {
+            for(auto it = R_history[s]->rbegin(); it != R_history[s]->rend(); ++it)
+              Q.push_back(*it);
+            for(auto it = D_history[s]->rbegin(); it != D_history[s]->rend(); ++it)
+              D_all.push_back(*it);
+          }
 
           AssertThrow(D_all.size() == Q.size(),
                       dealii::ExcMessage("D, Q vectors must have same size."));

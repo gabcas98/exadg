@@ -82,6 +82,11 @@ Driver<dim, Number>::setup()
 
   partitioned_solver->setup(fluid, structure);
 
+  // partitioned iterations: penalty parameters from the extrapolated velocity (as in the first
+  // partitioned iteration), such that the discrete problem does not depend on the iteration count
+  if(parameters.penalty_velocity_from_extrapolation)
+    fluid->time_integrator->set_penalty_velocity_from_extrapolation(true);
+
   if(use_optimal_control())
     setup_optimal_control();
   else
