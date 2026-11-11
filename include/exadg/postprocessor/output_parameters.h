@@ -32,7 +32,8 @@ namespace ExaDG
 {
 struct OutputParameters
 {
-  OutputParameters() : directory("output/"), filename("solution"), write(false)
+  OutputParameters()
+    : directory("output/"), filename("solution"), write(false), n_vtu_files(0), write_pvd(false)
   {
   }
 
@@ -44,6 +45,15 @@ struct OutputParameters
       prm.add_parameter("OutputDirectory", directory, "Directory where output is written.");
       prm.add_parameter("OutputName", filename, "Name of output files.");
       prm.add_parameter("WriteOutput", write, "Decides whether output is written.");
+      prm.add_parameter("NumberOfVtuFiles",
+                        n_vtu_files,
+                        "Number of .vtu files per output time: 0 = one per MPI process (plus "
+                        ".pvtu), 1 = a single file (MPI-IO, no .pvtu), n > 1 = n files (plus "
+                        ".pvtu). Only used by applications that pass it to their output data.");
+      prm.add_parameter("WritePvd",
+                        write_pvd,
+                        "Write a .pvd record collecting all output times (time series for "
+                        "ParaView). Only used by applications that pass it to their output data.");
     }
     prm.leave_subsection();
   }
@@ -51,6 +61,9 @@ struct OutputParameters
   std::string directory;
   std::string filename;
   bool        write;
+
+  unsigned int n_vtu_files;
+  bool         write_pvd;
 };
 } // namespace ExaDG
 

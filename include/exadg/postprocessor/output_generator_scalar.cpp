@@ -96,7 +96,7 @@ OutputGenerator<dim, Number>::evaluate(VectorType const & solution,
 
   vector_writer.write_aspect_ratio(*dof_handler, *mapping);
 
-  vector_writer.write_pvtu(&(*mapping));
+  vector_writer.write_pvtu(&(*mapping), time, &pvd_records);
 }
 
 template class OutputGenerator<2, float>;

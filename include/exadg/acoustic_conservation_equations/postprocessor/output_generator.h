@@ -72,6 +72,9 @@ public:
   TimeControl time_control;
 
 private:
+  // output times and files for the .pvd record
+  mutable std::vector<std::pair<double, std::string>> pvd_records;
+
   MPI_Comm const mpi_comm;
 
   OutputData output_data;

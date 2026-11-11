@@ -120,7 +120,7 @@ OutputGenerator<dim, Number>::evaluate(
 
   vector_writer.add_fields(additional_fields);
 
-  vector_writer.write_pvtu(&(*mapping));
+  vector_writer.write_pvtu(&(*mapping), time, &pvd_records);
 }
 
 template class OutputGenerator<2, float>;

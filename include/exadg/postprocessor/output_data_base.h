@@ -39,7 +39,9 @@ struct OutputDataBase
       write_aspect_ratio(false),
       write_processor_id(false),
       write_higher_order(true),
-      degree(1)
+      degree(1),
+      n_vtu_files(0),
+      write_pvd(false)
   {
   }
 
@@ -61,6 +63,8 @@ struct OutputDataBase
 
       print_parameter(pcout, "Write higher order", write_higher_order);
       print_parameter(pcout, "Polynomial degree", degree);
+      print_parameter(pcout, "Number of vtu files per output", n_vtu_files);
+      print_parameter(pcout, "Write pvd record", write_pvd);
     }
   }
 
@@ -100,6 +104,15 @@ struct OutputDataBase
   // case of write_higher_order = false, this variable defines the number of subdivisions of a cell,
   // with ParaView using linear interpolation for visualization on these subdivided cells.
   unsigned int degree;
+
+  // number of .vtu files written per output time: 0 = one file per MPI process plus a .pvtu
+  // record; 1 = a single .vtu file (written with MPI-IO) without .pvtu record; n > 1 = n files
+  // (MPI-IO) plus a .pvtu record
+  unsigned int n_vtu_files;
+
+  // write a .pvd record collecting all output times (one file per output generator, rewritten at
+  // every output), which ParaView opens as a time series
+  bool write_pvd;
 };
 
 } // namespace ExaDG

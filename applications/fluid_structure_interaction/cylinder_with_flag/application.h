@@ -654,6 +654,8 @@ private:
     pp_data.output_data.time_control_data.trigger_interval = OUTPUT_INTERVAL_TIME;
     pp_data.output_data.directory          = this->output_parameters.directory + "vtu/";
     pp_data.output_data.filename           = this->output_parameters.filename + "_fluid";
+    pp_data.output_data.n_vtu_files        = this->output_parameters.n_vtu_files;
+    pp_data.output_data.write_pvd          = this->output_parameters.write_pvd;
     pp_data.output_data.write_boundary_IDs = true;
     pp_data.output_data.write_processor_id = true;
     pp_data.output_data.write_higher_order = true;
@@ -1260,8 +1262,10 @@ private:
     pp_data.output_data.time_control_data.is_active        = this->output_parameters.write;
     pp_data.output_data.time_control_data.start_time       = 0.0;
     pp_data.output_data.time_control_data.trigger_interval = OUTPUT_INTERVAL_TIME;
-    pp_data.output_data.directory = this->output_parameters.directory + "vtu/";
-    pp_data.output_data.filename  = this->output_parameters.filename + "_structure";
+    pp_data.output_data.directory   = this->output_parameters.directory + "vtu/";
+    pp_data.output_data.filename    = this->output_parameters.filename + "_structure";
+    pp_data.output_data.n_vtu_files = this->output_parameters.n_vtu_files;
+    pp_data.output_data.write_pvd   = this->output_parameters.write_pvd;
 
     pp_data.output_data.write_processor_id = true;
     pp_data.output_data.write_higher_order = true;

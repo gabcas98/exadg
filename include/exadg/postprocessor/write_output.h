@@ -261,8 +261,15 @@ public:
     }
   }
 
+  /*
+   * Writes the data of one output time. If output_data.write_pvd is set and a list of records is
+   * provided, the file written here is appended to the list together with the time, and the .pvd
+   * record of all output times is rewritten.
+   */
   void
-  write_pvtu(dealii::Mapping<dim> const * mapping = nullptr)
+  write_pvtu(dealii::Mapping<dim> const *                  mapping     = nullptr,
+             double const                                  time        = 0.0,
+             std::vector<std::pair<double, std::string>> * pvd_records = nullptr)
   {
     // Build patches, vectors to export must stay in scope until after this call.
     if(mapping == nullptr)
@@ -276,9 +283,37 @@ public:
                              dealii::DataOut<dim>::curved_inner_cells);
     }
 
-    unsigned int constexpr n_groups = 4;
-    data_out.write_vtu_with_pvtu_record(
-      output_data.directory, output_data.filename, output_counter, mpi_comm, n_groups);
+    unsigned int constexpr n_digits_counter = 4;
+    std::string const name                  = output_data.filename + "_" +
+                             dealii::Utilities::int_to_string(output_counter, n_digits_counter);
+
+    std::string record;
+    if(output_data.n_vtu_files == 1)
+    {
+      // a single file, no .pvtu record
+      record = name + ".vtu";
+      data_out.write_vtu_in_parallel(output_data.directory + record, mpi_comm);
+    }
+    else
+    {
+      record = name + ".pvtu";
+      data_out.write_vtu_with_pvtu_record(output_data.directory,
+                                          output_data.filename,
+                                          output_counter,
+                                          mpi_comm,
+                                          n_digits_counter,
+                                          output_data.n_vtu_files);
+    }
+
+    if(output_data.write_pvd and pvd_records != nullptr)
+    {
+      pvd_records->emplace_back(time, record);
+      if(dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)
+      {
+        std::ofstream pvd(output_data.directory + output_data.filename + ".pvd");
+        dealii::DataOutBase::write_pvd_record(pvd, *pvd_records);
+      }
+    }
   }
 
 private:
