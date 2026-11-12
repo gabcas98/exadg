@@ -74,7 +74,10 @@ black-box time step requires a state map without hidden dependence on the iterat
 that its tolerance must lie above the noise floor of the single-field solvers; with a warm-started,
 inexactly solved fluid the secant method is $2.4$ times faster than IQN-ILS at equal accuracy, and
 since it needs no derivatives it also runs with the dual-splitting fluid solver, where it remains
-robust at tolerances at which IQN-ILS fails.
+robust at tolerances at which IQN-ILS fails. Long simulations of the FSI2 benchmark into the
+periodic regime show that all couplings reach the same limit cycle, within $2$ to $5\%$ of the
+reference amplitudes, while during the growth of the instability the Dirichlet--Neumann
+iteration is sensitive to the accuracy of warm-started fluid solves and the secant method is not.
 \end{abstract}
 
 \tableofcontents
@@ -123,6 +126,10 @@ finite element library built on \code{deal.II}. The contributions are:
   \item An analysis of the cost of the secant solver (\cref{sec:speedup}): warm starts and
   adaptive inner tolerances, the noise floor of the state map, the dual-splitting fluid solver, and
   multi-vector and frozen initial Jacobians.
+  \item Long simulations of FSI2 (\cref{sec:longruns}): a robustness fix of the IQN-ILS
+  implementation of ExaDG, the effect of inexact fluid solves on the growth of the instability,
+  stopping criteria of the secant method above the noise floor, and a comparison of the periodic
+  regime with the benchmark reference.
 \end{enumerate}
 Negative results (Sobolev metrics, Tikhonov regularisation, a constraint-only stabilisation of the
 multiplier, a Robin penalty) are reported as well, since they delimit the design space.
@@ -914,17 +921,21 @@ $1.4\cdot10^{-3}$ relative.
 The loose single-field tolerances raise the noise floor of \cref{rem:noise} accordingly. The warm
 start must therefore not be used with the splitting scheme (the secant method then stagnates at
 about $10^{-6}$), while the cold-start secant method is insensitive to it. IQN-ILS warm-starts both
-fields after its first iteration and suffers directly (\cref{tab:splitting}): with the tolerances
-of the standard input of the application ($\mathrm{AbsTol}=10^{-8}$, $\mathrm{RelTol}=10^{-3}$) it
-stops long before convergence during the start-up and the tip displacement is wrong by a factor
-$46$; with $10^{-11}/10^{-6}$ it needs $13.4$ iterations for a deviation of $4\cdot10^{-3}$; with
-$\mathrm{AbsTol}=10^{-14}$ the iteration diverges in the third time step (the damped Newton solver
-of the structure fails). The secant method reaches a deviation of $2.4\cdot10^{-6}$ with
-$7.9$ state evaluations per step.
+fields after its first iteration, so its result depends on the inexactness of the fluid solves
+(\cref{sec:fluid_accuracy}). In addition, its stopping criterion is effectively absolute during the
+start-up, where the displacements are of order $10^{-11}$ to $10^{-6}$ (\cref{tab:splitting}): with
+the tolerances of the standard input of the application ($\mathrm{AbsTol}=10^{-8}$,
+$\mathrm{RelTol}=10^{-3}$) the first time steps are accepted after a single Dirichlet--Neumann
+pass and the tip displacement is wrong by a factor $46$ (the error decays and is below $1\%$ from
+$t\approx0.03$ on); with $10^{-11}/10^{-6}$ it needs $13.4$ iterations for a deviation of
+$4\cdot10^{-3}$; with $\mathrm{AbsTol}=10^{-14}$ the original implementation diverged in the third
+time step (see \cref{sec:iqn_fix} for the modifications). The secant method reaches a deviation of
+$2.4\cdot10^{-6}$ with $7.9$ state evaluations per step.
 
 \begin{table}[ht]\centering
-\caption{Dual-splitting fluid solver: iterations per time step and maximum and final relative
-deviation of the tip displacement from the secant solution with tolerance $10^{-7}$ (cold start).}
+\caption{Dual-splitting fluid solver, $t\in[0,0.02]$: iterations per time step and maximum and
+final relative deviation of the tip displacement from the secant solution with tolerance $10^{-7}$
+(cold start). IQN-ILS before the modifications of \cref{sec:iqn_fix}.}
 \label{tab:splitting}
 \begin{tabular}{lccc}
 \toprule
@@ -981,6 +992,260 @@ $24$ per step, and the run takes $78$~s instead of $10$~s. Both options are mean
 regime, where the Jacobian changes slowly and the refresh interval can be long.
 
 %=================================================================================================
+\section{Long simulations of FSI2}\label{sec:longruns}
+%=================================================================================================
+
+We now run the FSI2 configuration over the end time of the ExaDG application, $T=4L/U=10$~s,
+and beyond, with the dual-splitting fluid solver (the default of the application). Two
+resolutions are used: fluid $Q_3$ with one refinement and structure $Q_2$ without refinement (the
+resolution of the previous sections), and fluid $Q_6$, structure $Q_4$, both without refinement
+(the resolution of the Aitken input of the application). Each run uses 4 processes; the time step
+is adaptive (CFL $0.5$), about $4150$ and $5900$ steps for $10$~s, respectively. The tip
+displacement is recorded at point $A=(0.6,0.2)$ in every time step.
+
+\subsection{Robustness of IQN-ILS}\label{sec:iqn_fix}
+
+With the coarser resolution and the tolerances of the standard input ($\mathrm{AbsTol}=10^{-8}$,
+$\mathrm{RelTol}=10^{-3}$, eight reused time steps, $\omega_0=0.3$), the IQN-ILS implementation of
+ExaDG diverged at $t\approx0.055$ (the damped Newton solver of the structure failed). Aitken
+relaxation with the same tolerances, IQN-ILS at the finer resolution, and IQN-ILS with zero or one
+reused time step, with $\omega_0=0.5$ or with $\mathrm{AbsTol}=10^{-12}$ all ran through. The
+mechanism is the one of \cref{sec:splitting}: during the start-up the absolute criterion accepts
+the first Dirichlet--Neumann pass, and the secant pairs of these non-converged steps are reused for
+eight steps. The implementation appended the reused columns oldest first, and the QR filter, which
+drops a column that is nearly dependent on the preceding ones, therefore kept the oldest
+information. We changed two points:
+\begin{enumerate}
+\item the columns are assembled newest first (current step, newest iteration first, then the
+reused steps, newest first), so that outdated columns are the ones filtered out; this alone removes
+the divergence;
+\item if the residual grows by more than a factor (\code{FSI/IQNRestartFactor}, default $2$)
+within a partitioned iteration, the pairs of the previous time steps are discarded.
+\end{enumerate}
+With these changes the standard-tolerance run completes the $10$~s with $2.52$ iterations per step,
+and the run with $10^{-11}/10^{-6}$ needs $3.32$ instead of $3.78$ iterations per step with an
+unchanged solution (deviation $\le2\cdot10^{-3}$).
+
+\subsection{Accuracy of the fluid solves}\label{sec:fluid_accuracy}
+
+Over $10$~s, the converged secant solution and the converged Dirichlet--Neumann solution first
+seemed to differ by up to $30\%$ in the tip displacement. The difference is not a property of the
+formulations. It is already present after the first time step, where the vertical displacement is
+of order $10^{-13}$ and consists of numerical noise that breaks the symmetry of the flow; the FSI2
+instability grows from this seed, so that its phase depends on perturbations at round-off level.
+The noise comes from the linear solvers of the dual-splitting scheme, whose absolute tolerance
+$10^{-8}$ dominates during the start-up. Tightening the fluid tolerances to $10^{-12}/10^{-9}$
+(parameters \code{FluidSolverAbsTol}, \code{FluidSolverRelTol} of the application) makes the two
+schemes coincide (\cref{tab:fluid_tol_startup}).
+
+\begin{table}[ht]\centering
+\caption{Relative difference of the tip displacement between the converged secant solution
+($\|m\|\le10^{-9}$) and the converged Dirichlet--Neumann solution ($\mathrm{RelTol}=10^{-10}$),
+fluid $Q_3$, refinement 1. Each scheme is converged with respect to its own tolerance (tolerances
+$10^{-9}$ and $10^{-11}$, resp.\ $10^{-8}$ and $10^{-10}$, give the same digits).}
+\label{tab:fluid_tol_startup}
+\begin{tabular}{ccccc}
+\toprule
+& \multicolumn{2}{c}{fluid tolerances $10^{-8}/10^{-6}$} & \multicolumn{2}{c}{fluid tolerances $10^{-12}/10^{-9}$}\\
+step & $d_x$ & $d_y$ & $d_x$ & $d_y$\\
+\midrule
+1 & $1.4\cdot10^{-3}$ & $9.5\cdot10^{-2}$ & $6.1\cdot10^{-7}$ & $6.5\cdot10^{-5}$\\
+2 & $5.9\cdot10^{-2}$ & $1.5\cdot10^{-1}$ & $1.5\cdot10^{-5}$ & $2.9\cdot10^{-4}$\\
+9 & $4.2\cdot10^{-3}$ & $9.1\cdot10^{-1}$ & $5.8\cdot10^{-7}$ & $1.3\cdot10^{-4}$\\
+16 & $6.3\cdot10^{-4}$ & $6.6\cdot10^{-2}$ & $1.6\cdot10^{-7}$ & $1.9\cdot10^{-4}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Over the whole simulation the two schemes react very differently to the inexact fluid solves
+(\cref{tab:fluid_tol_long}). The secant method starts every fluid solve from the extrapolation in
+time, so the solver error is consistent in the sense of \cref{rem:noise}; with the default fluid
+tolerances it stays within $3\cdot10^{-4}$ of the accurate solution. The Dirichlet--Neumann
+iteration restarts the fluid solvers from the previous iterate, whose residual is often already
+below the absolute tolerance; the fluid then hardly responds to small changes of the interface
+velocity, and the fixed point depends on the iteration path. Accordingly, its deviation grows with
+the number of warm-started iterations: $3\%$ for IQN-ILS with the standard tolerances ($2.7$
+iterations per step), $17\%$ for Aitken ($5.8$) and $30\%$ for IQN-ILS with tight tolerances
+($3.5$). A tight Dirichlet--Neumann tolerance is therefore
+only meaningful together with accurate fluid solves.
+
+\begin{table}[ht]\centering
+\caption{Fluid $Q_6$, structure $Q_4$: maximum deviation of $d_y(A)$ from the Dirichlet--Neumann
+solution with accurate fluid solves ($10^{-12}/10^{-9}$, IQN-ILS $10^{-11}/10^{-6}$), relative to
+the maximum of $|d_y|$ in each time window. The reference run stopped at $t=8.88$ because the
+pressure-Poisson solver could not reach the absolute tolerance $10^{-12}$ at large amplitudes.}
+\label{tab:fluid_tol_long}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llccccc}
+\toprule
+method & fluid tolerances & $[0,2)$ & $[2,4)$ & $[4,6)$ & $[6,8)$ & $[8,8.88]$\\
+\midrule
+secant, $\|m\|\le10^{-5}+10^{-6}\|g\|$ & $10^{-12}/10^{-9}$ & $1.3\cdot10^{-5}$ & $3.6\cdot10^{-5}$ & $1.0\cdot10^{-4}$ & $1.6\cdot10^{-4}$ & $1.4\cdot10^{-4}$\\
+secant, $\|m\|\le10^{-5}$ & default & $8.6\cdot10^{-5}$ & $1.0\cdot10^{-4}$ & $1.7\cdot10^{-4}$ & $2.4\cdot10^{-4}$ & $2.3\cdot10^{-4}$\\
+secant, $\|m\|\le10^{-5}\max(1,\|g\|)$, stagnation stop & default & $9.3\cdot10^{-5}$ & $1.2\cdot10^{-4}$ & $2.3\cdot10^{-4}$ & $3.1\cdot10^{-4}$ & $3.1\cdot10^{-4}$\\
+IQN-ILS, $10^{-8}/10^{-3}$ & default & $2.8\cdot10^{-3}$ & $7.2\cdot10^{-3}$ & $2.9\cdot10^{-2}$ & $3.4\cdot10^{-2}$ & $2.8\cdot10^{-2}$\\
+Aitken, $10^{-8}/10^{-3}$ & default & $5.7\cdot10^{-3}$ & $4.5\cdot10^{-2}$ & $1.4\cdot10^{-1}$ & $1.6\cdot10^{-1}$ & $1.7\cdot10^{-1}$\\
+IQN-ILS, $10^{-11}/10^{-6}$ & default & $1.6\cdot10^{-2}$ & $6.7\cdot10^{-2}$ & $1.9\cdot10^{-1}$ & $3.0\cdot10^{-1}$ & $2.7\cdot10^{-1}$\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Stopping criteria of the secant method}\label{sec:stopping}
+
+At the finer resolution the secant method with the absolute tolerance $\|m\|\le10^{-5}$ needed
+$22.8$ state evaluations per step on average, five times as long as IQN-ILS. A run with iteration
+output shows why: between $t=2$ and $t=7$ it needs $3.4$ to $4.7$ evaluations per step, but during
+the start-up and when the amplitude grows it stagnates at $\|m\|\approx2\cdot10^{-5}$ to
+$3\cdot10^{-4}$, just above the tolerance, and $96$ steps reach the limit of $200$ iterations.
+With $Q_6$ elements the stress amplifies the error of the fluid solves, and the noise floor of the
+state map (\cref{rem:noise}) exceeds the absolute tolerance. Two options remedy this:
+\begin{itemize}
+\item \code{MismatchToleranceRelative}: stop if $\|m\|_\M\le\max(\mathrm{tol},\
+\mathrm{rtol}\,\|g\|_\M)$, i.e.\ relative to the size of the traction (the analogue of the relative
+criterion of the Dirichlet--Neumann iteration; the interface forces are between $3$ and
+$30$~N/m here);
+\item \code{StagnationIterations}: stop if the smallest residual has not decreased by $10\%$
+within $N$ iterations, and return the best iterate.
+\end{itemize}
+With $\mathrm{rtol}=10^{-5}$ and $N=10$ the secant method needs $2.20$ evaluations per step and
+$376$~s instead of $1653$~s, with the accuracy of \cref{tab:fluid_tol_long}; with accurate fluid
+solves and $\mathrm{rtol}=10^{-6}$ it needs $2.55$ evaluations and $424$~s. For comparison, in a
+different group of simultaneous runs IQN-ILS needed $2.69$ iterations and $316$~s (standard
+tolerances), $3.45$ and $338$~s (tight tolerances), and Aitken $5.77$ and $469$~s. The secant method
+needs fewer state evaluations than IQN-ILS, but each one starts from the extrapolation and costs
+more fluid iterations; at equal accuracy (accurate fluid solves for the Dirichlet--Neumann
+iteration) the costs are comparable.
+
+\subsection{Periodic regime and comparison with the benchmark}\label{sec:benchmark}
+
+To reach the periodic regime we extend the simulation to $t=25$~s (fluid $Q_6$, structure $Q_4$)
+and compare four couplings: the secant method on the native formulation with the stopping
+criteria of \cref{sec:stopping} and the default fluid tolerances, IQN-ILS with the standard
+tolerances, Aitken relaxation with the input of the application, and IQN-ILS with tight
+tolerances and accurate fluid solves ($10^{-10}/10^{-9}$). For each period of $d_y(A)$, delimited
+by two upward zero crossings, we record the mean, the amplitude (half the peak-to-peak value) and
+the frequency. The reference values are those of Turek and Hron \cite{TurekHron2006} for FSI2:
+$d_x(A)=(-14.58\pm12.44)\cdot10^{-3}$ at $3.8$~Hz and $d_y(A)=(1.23\pm80.6)\cdot10^{-3}$ at
+$2.0$~Hz (quoted from memory, see the note in the references).
+
+\pgfplotsset{
+  fsiqn/.style={blue!70!black, thick},
+  fsiiqn/.style={red!75!black, thick, densely dashed},
+  fsiaitken/.style={green!50!black, thick, densely dotted},
+  fsiacc/.style={orange!90!black, thick, dashdotted},
+  fsiref/.style={black, thin, dashed},
+}
+
+\begin{figure}[ht]\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.98\textwidth, height=5.2cm, xlabel={$t$ [s]}, ylabel={$d_y(A)$ [m]},
+  xmin=0, xmax=25, ymin=-0.1, ymax=0.1, grid=major, legend pos=south west,
+  legend style={font=\scriptsize}, every axis plot/.append style={line width=0.4pt}]
+\addplot[fsiqn] table[x=t, y=uy] {data/u25_qn_signal.dat};
+\addlegendentry{secant (native traction)}
+\addplot[fsiref, domain=0:25] {0.00123+0.0806};
+\addlegendentry{Turek--Hron, mean $\pm$ amplitude}
+\addplot[fsiref, domain=0:25, forget plot] {0.00123-0.0806};
+\end{axis}
+\end{tikzpicture}
+
+\begin{tikzpicture}
+\begin{axis}[width=0.98\textwidth, height=5.2cm, xlabel={$t$ [s]}, ylabel={$d_y(A)$ [m]},
+  xmin=24, xmax=25, ymin=-0.1, ymax=0.1, grid=major,
+  legend columns=3, legend style={font=\scriptsize, at={(0.5,1.03)}, anchor=south},
+  restrict x to domain=24:25]
+\addplot[fsiqn] table[x=t, y=uy] {data/u25_qn_signal.dat};
+\addlegendentry{secant}
+\addplot[fsiiqn] table[x=t, y=uy] {data/u25_iqn_signal.dat};
+\addlegendentry{IQN-ILS}
+\addplot[fsiaitken] table[x=t, y=uy] {data/u25_aitken_signal.dat};
+\addlegendentry{Aitken}
+\addplot[fsiacc] table[x=t, y=uy] {data/u25_iqn_acc_signal.dat};
+\addlegendentry{IQN-ILS, accurate fluid}
+\addplot[fsiref, domain=24:25] {0.00123+0.0806};
+\addlegendentry{Turek--Hron}
+\addplot[fsiref, domain=24:25, forget plot] {0.00123-0.0806};
+\end{axis}
+\end{tikzpicture}
+\caption{Vertical tip displacement $d_y(A)$: whole simulation (secant method, top) and the last
+second of all four couplings (bottom), with the band mean $\pm$ amplitude of the reference
+\cite{TurekHron2006}.}\label{fig:signal}
+\end{figure}
+
+\begin{figure}[ht]\centering
+\begin{tikzpicture}
+\begin{semilogyaxis}[width=0.44\textwidth, height=5.5cm, xlabel={$t$ [s]},
+  ylabel={amplitude of $d_y(A)$ [m]}, xmin=0, xmax=25, ymin=1e-3, ymax=0.2, grid=major,
+  legend style={font=\scriptsize}, legend pos=south east]
+\addplot[fsiqn] table[x=t, y=uyamp] {data/u25_qn_periods.dat};
+\addlegendentry{secant}
+\addplot[fsiiqn] table[x=t, y=uyamp] {data/u25_iqn_periods.dat};
+\addlegendentry{IQN-ILS}
+\addplot[fsiaitken] table[x=t, y=uyamp] {data/u25_aitken_periods.dat};
+\addlegendentry{Aitken}
+\addplot[fsiacc] table[x=t, y=uyamp] {data/u25_iqn_acc_periods.dat};
+\addlegendentry{IQN-ILS, acc.}
+\addplot[fsiref, domain=0:25] {0.0806};
+\addlegendentry{Turek--Hron}
+\end{semilogyaxis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[width=0.44\textwidth, height=5.5cm, xlabel={$t$ [s]},
+  ylabel={frequency of $d_y(A)$ [Hz]}, xmin=0, xmax=25, ymin=1.6, ymax=2.2, grid=major]
+\addplot[fsiqn] table[x=t, y=fuy] {data/u25_qn_periods.dat};
+\addplot[fsiiqn] table[x=t, y=fuy] {data/u25_iqn_periods.dat};
+\addplot[fsiaitken] table[x=t, y=fuy] {data/u25_aitken_periods.dat};
+\addplot[fsiacc] table[x=t, y=fuy] {data/u25_iqn_acc_periods.dat};
+\addplot[fsiref, domain=0:25] {2.0};
+\end{axis}
+\end{tikzpicture}
+\caption{Amplitude (left, logarithmic scale) and frequency (right) of $d_y(A)$ per oscillation
+period, compared with the periodic values of the reference \cite{TurekHron2006}.}
+\label{fig:amplitude_frequency}
+\end{figure}
+
+All four runs reach the periodic regime: the amplitude of $d_y(A)$ grows exponentially until
+$t\approx10$~s and stays within $1\%$ of its final value from $t\approx11$~s on
+(\cref{fig:amplitude_frequency}); the end time $T=10$~s of the application stops just before the
+saturation. In the periodic regime the four couplings agree to three or four digits
+(\cref{tab:benchmark}), although they differed by up to $30\%$ during the growth phase
+(\cref{sec:fluid_accuracy}): the limit cycle is an attractor and forgets the perturbations that
+seeded the instability. Compared with the reference, the amplitudes are within $2$ to $5\%$ and the
+mean values within $3\%$; the frequency is $1.87$~Hz instead of $2.0$~Hz ($6.7\%$ lower; the
+frequency of $d_x$ is exactly twice that of $d_y$ here, whereas the reference values $3.8$ and
+$2.0$~Hz are rounded). Since all couplings agree, these deviations are due to the spatial and
+temporal discretisation (coarse grid without refinement, CFL $0.5$), not to the coupling; a
+resolution study is left for future work.
+
+\begin{table}[ht]\centering
+\caption{Periodic regime of FSI2, fluid $Q_6$, structure $Q_4$: mean $\pm$ amplitude
+$[\text{frequency}]$ of the tip displacement over the last nine periods ($t\in[20,25]$), compared
+with \cite{TurekHron2006}, and cost of the runs over $t\in[0,25]$ (four simultaneous runs with 4
+processes each, about $18200$ time steps).}\label{tab:benchmark}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+& $d_x(A)\ [10^{-3}]$ & $d_y(A)\ [10^{-3}]$ & iterations & wall time\\
+\midrule
+Turek--Hron \cite{TurekHron2006} & $-14.58\pm12.44\ [3.8]$ & $1.23\pm80.6\ [2.0]$ & & \\
+secant, native traction & $-14.17\pm11.80\ [3.73]$ & $1.32\pm79.03\ [1.87]$ & 3.56 & 1591 s\\
+IQN-ILS, $10^{-8}/10^{-3}$ & $-14.17\pm11.80\ [3.73]$ & $1.32\pm79.03\ [1.87]$ & 2.84 & 1248 s\\
+IQN-ILS, $10^{-11}/10^{-6}$, accurate fluid & $-14.17\pm11.80\ [3.73]$ & $1.32\pm79.03\ [1.87]$ & 3.65 & 1433 s\\
+Aitken, $10^{-8}/10^{-3}$ & $-14.14\pm11.79\ [3.73]$ & $1.31\pm79.03\ [1.87]$ & 7.04 & 1920 s\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+In the large-amplitude regime the secant method needs $3.56$ state evaluations per step (against
+$2.2$ over the first $10$~s). It is $27\%$ slower than IQN-ILS with the standard tolerances, $11\%$
+slower than IQN-ILS with accurate fluid solves and $17\%$ faster than Aitken relaxation. In the
+periodic regime the choice of the coupling therefore affects the cost but not the solution; during
+the growth phase, only the secant method and the Dirichlet--Neumann iteration with accurate fluid
+solves give the same trajectory.
+
+
+
+%=================================================================================================
 \section{Conclusions and outlook}
 %=================================================================================================
 
@@ -1008,10 +1273,16 @@ lies above the noise floor of the inner solvers; then they make the secant metho
 faster than IQN-ILS at equal accuracy. Without warm start the inexactness of the inner solvers is
 consistent and harmless, which makes the derivative-free secant method on the native formulation
 robust with the cheap dual-splitting fluid solver.
+\item In long FSI2 simulations all couplings reach the same limit cycle, within $2$ to $5\%$ of the
+reference amplitudes and $7\%$ of the reference frequency at the resolution used. During the growth
+of the instability the trajectory depends on round-off-level perturbations; the Dirichlet--Neumann
+iteration then needs accurate fluid solves to be reproducible, whereas the secant method is
+insensitive to the fluid tolerances. Stopping criteria must lie above the noise floor of the state
+map (relative tolerance, stagnation stop); IQN-ILS needs the newest-first ordering of its secant
+columns to be robust in the start-up phase.
 \end{enumerate}
-Open points are longer simulations into the periodic regime of FSI2 (where the added-mass effect is
-fully developed, and where the initial Jacobians of \cref{sec:initial_jacobian} may pay off),
-preconditioning of the native interface Newton method (the frozen Jacobian of
+Open points are a resolution study of the periodic regime of FSI2 (where the initial Jacobians of
+\cref{sec:initial_jacobian} may pay off), preconditioning of the native interface Newton method (the frozen Jacobian of
 \cref{sec:methods} applies directly), and three-dimensional problems, where the dense
 frozen-Jacobian and Sobolev constructions must be replaced by low-rank or multilevel
 approximations.
@@ -1040,6 +1311,14 @@ and the parameters \code{WarmStart}, \code{AdaptiveInnerTolerance}, \code{InnerT
 (off by default) and \code{QNInitialJacobian} of the subsection \code{OptimalControl}. The
 derivative-free combination (native formulation, interface quasi-Newton, no preconditioner, no
 derivative verification) accepts every fluid time integrator.
+For \cref{sec:longruns}: \code{FSI/IQNRestartFactor}, \code{FSI/PenaltyVelocityFromExtrapolation}
+and the newest-first column ordering in \code{PartitionedSolver} (IQN-ILS);
+\code{MismatchToleranceRelative} and \code{StagnationIterations} of the subsection
+\code{OptimalControl}; \code{FluidSolverAbsTol} and \code{FluidSolverRelTol} of the application;
+single-file output with a time-series record (\code{Output/NumberOfVtuFiles},
+\code{Output/WritePvd}). The analysis of the tip displacement (periods, amplitude, frequency) is
+done by \code{doc/fsi_optimal_control/fsi2_analysis.py} (run from the root directory of the
+repository; it reads \code{output/<run>/run.log}).
 The variants discussed in \cref{sec:diagnosis} that were removed from the code (constraint-only
 stabilisation, Robin penalty) are preserved in \code{snapshot_all_variants.patch}.
 
