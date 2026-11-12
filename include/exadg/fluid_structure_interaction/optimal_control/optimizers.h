@@ -348,15 +348,48 @@ public:
 
     std::vector<VectorType> dG_now, dM_now;
 
+    // stagnation safeguard: best iterate so far
+    VectorType   g_best(g);
+    double       best_norm = norm_mismatch(m), reference_norm = best_norm;
+    unsigned int last_improvement = 0;
+
     for(unsigned int k = 0; k < param.max_iterations; ++k)
     {
       double const m_norm = norm_mismatch(m);
       print_iteration(k, cost(m, g), m_norm, 0.0);
-      stats.mismatch_norm = m_norm;
-      if(m_norm <= param.mismatch_tolerance)
+      stats.mismatch_norm    = m_norm;
+      double const tolerance = std::max(param.mismatch_tolerance,
+                                        param.mismatch_tolerance_relative > 0.0 ?
+                                          param.mismatch_tolerance_relative * norm_mismatch(g) :
+                                          0.0);
+      if(m_norm <= tolerance)
       {
         stats.converged = true;
         stats.reason    = "mismatch tolerance";
+        break;
+      }
+
+      if(m_norm < best_norm)
+      {
+        best_norm = m_norm;
+        g_best    = g;
+      }
+      if(best_norm < 0.9 * reference_norm)
+      {
+        reference_norm   = best_norm;
+        last_improvement = k;
+      }
+      if(param.stagnation_iterations > 0 and k >= last_improvement + param.stagnation_iterations)
+      {
+        // noise floor of the state map reached: return the best iterate (and its state)
+        if(best_norm < m_norm)
+        {
+          g = g_best;
+          evaluate(m, g);
+          save_linearization();
+          stats.mismatch_norm = norm_mismatch(m);
+        }
+        stats.reason = "stagnation";
         break;
       }
 

@@ -148,6 +148,8 @@ struct Parameters
       regularization(0.0),
       max_iterations(50),
       mismatch_tolerance(1.e-10),
+      mismatch_tolerance_relative(0.0),
+      stagnation_iterations(0),
       gradient_tolerance_relative(1.e-8),
       armijo_c1(1.e-4),
       line_search_max_iterations(20),
@@ -211,6 +213,20 @@ struct Parameters
                         mismatch_tolerance,
                         "Stop if ||m||_M <= MismatchTolerance (absolute).",
                         dealii::Patterns::Double(0.0),
+                        false);
+      prm.add_parameter("MismatchToleranceRelative",
+                        mismatch_tolerance_relative,
+                        "InterfaceQuasiNewton: stop if ||m||_M <= max(MismatchTolerance, "
+                        "MismatchToleranceRelative * ||g||_M), i.e. relative to the size of the "
+                        "control (0: absolute tolerance only).",
+                        dealii::Patterns::Double(0.0),
+                        false);
+      prm.add_parameter("StagnationIterations",
+                        stagnation_iterations,
+                        "InterfaceQuasiNewton: stop if the smallest ||m|| has not decreased by 10% "
+                        "within this number of iterations (noise floor of the state map); the "
+                        "best iterate is restored (0: off).",
+                        dealii::Patterns::Integer(0),
                         false);
       prm.add_parameter("GradientToleranceRelative",
                         gradient_tolerance_relative,
@@ -421,6 +437,8 @@ struct Parameters
   double       regularization;
   unsigned int max_iterations;
   double       mismatch_tolerance;
+  double       mismatch_tolerance_relative;
+  unsigned int stagnation_iterations;
   double       gradient_tolerance_relative;
   double       armijo_c1;
   unsigned int line_search_max_iterations;

@@ -187,6 +187,16 @@ private:
                         "Use the fluid discretization of the traction coupling (coupled solver, "
                         "divergence formulation) also for Dirichlet-Neumann schemes.",
                         dealii::Patterns::Bool());
+      prm.add_parameter("FluidSolverAbsTol",
+                        fluid_abs_tol,
+                        "Absolute tolerance of the linear solvers of the projection-type fluid "
+                        "schemes (dual splitting, pressure correction).",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("FluidSolverRelTol",
+                        fluid_rel_tol,
+                        "Relative tolerance of the linear solvers of the projection-type fluid "
+                        "schemes (dual splitting, pressure correction).",
+                        dealii::Patterns::Double(0.0));
     }
     prm.leave_subsection();
   }
@@ -196,6 +206,8 @@ private:
   bool   coupled_fluid_solver = false;
   double cfl                  = 0.5;
   bool   pull_back_traction   = true;
+  double fluid_abs_tol        = ABS_TOL;
+  double fluid_rel_tol        = REL_TOL;
 
   void
   set_parameters() final
@@ -281,7 +293,8 @@ private:
     // PROJECTION METHODS
 
     // pressure Poisson equation
-    param.solver_data_pressure_poisson = SolverData(1000, ABS_TOL, REL_TOL, LinearSolver::CG, 100);
+    param.solver_data_pressure_poisson =
+      SolverData(1000, fluid_abs_tol, fluid_rel_tol, LinearSolver::CG, 100);
     param.preconditioner_pressure_poisson      = PreconditionerPressurePoisson::Multigrid;
     param.multigrid_data_pressure_poisson.type = MultigridType::cphMG;
     param.multigrid_data_pressure_poisson.smoother_data.smoother = MultigridSmoother::Chebyshev;
@@ -292,7 +305,7 @@ private:
       MultigridCoarseGridPreconditioner::AMG;
 
     // projection step
-    param.solver_data_projection    = SolverData(1000, ABS_TOL, REL_TOL, LinearSolver::CG);
+    param.solver_data_projection = SolverData(1000, fluid_abs_tol, fluid_rel_tol, LinearSolver::CG);
     param.preconditioner_projection = PreconditionerProjection::InverseMassMatrix;
 
     // HIGH-ORDER DUAL SPLITTING SCHEME
@@ -304,7 +317,8 @@ private:
 
     if(this->param.temporal_discretization == TemporalDiscretization::BDFDualSplitting)
     {
-      this->param.solver_data_momentum    = SolverData(1000, ABS_TOL, REL_TOL, LinearSolver::CG);
+      this->param.solver_data_momentum =
+        SolverData(1000, fluid_abs_tol, fluid_rel_tol, LinearSolver::CG);
       this->param.preconditioner_momentum = MomentumPreconditioner::InverseMassMatrix;
     }
 
