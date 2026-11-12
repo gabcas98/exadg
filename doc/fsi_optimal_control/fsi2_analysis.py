@@ -2,13 +2,16 @@
 """
 Periodic-regime analysis of the FSI2 tip displacement (point A = (0.6, 0.2)).
 
-usage: python3 output/fsi2_analysis.py <out_dir> <t_window> run1 [run2 ...]
+usage: python3 doc/fsi_optimal_control/fsi2_analysis.py <out_dir> <window> run1 [run2 ...]
+
+<window> is either a duration (e.g. 5: the last 5 seconds of each run) or an absolute time
+interval (e.g. 12.5:15).
 
 Reads output/<run>/run.log ("FSI monitor point" lines) and writes to <out_dir>:
   <run>_signal.dat   t ux uy (downsampled, for plots)
   <run>_periods.dat  per period of uy (between upward zero crossings):
                      t_mid  uy_mean  uy_amp  ux_mean  ux_amp  f_uy
-  summary.txt        mean +- amplitude [frequency] over the last <t_window> seconds,
+  summary.txt        mean +- amplitude [frequency] over the window,
                      compared with the reference values of Turek & Hron (2006), FSI2.
 """
 import os
@@ -72,7 +75,7 @@ def local_maxima_frequency(t, y, t0, min_distance):
 
 
 def main():
-    out_dir, t_window, runs = sys.argv[1], float(sys.argv[2]), sys.argv[3:]
+    out_dir, window, runs = sys.argv[1], sys.argv[2], sys.argv[3:]
     os.makedirs(out_dir, exist_ok=True)
     lines = ['%-14s %-34s %-34s' % ('run', 'ux [1e-3]: mean +- amp [f]', 'uy [1e-3]: mean +- amp [f]')]
     r = REFERENCE
@@ -92,9 +95,12 @@ def main():
             f.write('t uymean uyamp uxmean uxamp fuy\n')
             for row in rows:
                 f.write(' '.join('%.6e' % v for v in row) + '\n')
-        # last t_window seconds
-        t0 = t[-1] - t_window
-        last = [row for row in rows if row[0] >= t0]
+        # evaluation window
+        if ':' in window:
+            t0, t1 = (float(v) for v in window.split(':'))
+        else:
+            t0, t1 = t[-1] - float(window), t[-1]
+        last = [row for row in rows if t0 <= row[0] <= t1]
         if last:
             n = len(last)
             uym = sum(x[1] for x in last) / n
@@ -102,11 +108,13 @@ def main():
             uxm = sum(x[3] for x in last) / n
             uxa = sum(x[4] for x in last) / n
             fy = sum(x[5] for x in last) / n
-            fx = local_maxima_frequency(t, ux, t0, 0.5 / (2.0 * fy))
-            lines.append('%-14s %8.2f +- %6.2f [%4.2f Hz]          %8.2f +- %6.2f [%4.2f Hz]   (%d periods, t >= %.1f)' %
-                         (run, 1e3 * uxm, 1e3 * uxa, fx, 1e3 * uym, 1e3 * uya, fy, n, t0))
+            ti = [i for i in range(len(t)) if t[i] <= t1]
+            fx = local_maxima_frequency([t[i] for i in ti], [ux[i] for i in ti], t0,
+                                        0.5 / (2.0 * fy))
+            lines.append('%-14s %8.2f +- %6.2f [%4.2f Hz]          %8.2f +- %6.2f [%5.3f Hz]   (%d periods, t in [%.1f, %.1f])' %
+                         (run, 1e3 * uxm, 1e3 * uxa, fx, 1e3 * uym, 1e3 * uya, fy, n, t0, t1))
         else:
-            lines.append('%-14s no complete period in the last %.1f s' % (run, t_window))
+            lines.append('%-14s no complete period in [%.1f, %.1f]' % (run, t0, t1))
     open(os.path.join(out_dir, 'summary.txt'), 'w').write('\n'.join(lines) + '\n')
     print('\n'.join(lines))
 

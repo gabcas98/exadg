@@ -197,17 +197,39 @@ private:
                         "Relative tolerance of the linear solvers of the projection-type fluid "
                         "schemes (dual splitting, pressure correction).",
                         dealii::Patterns::Double(0.0));
+      prm.add_parameter("CoupledSolverAbsTol",
+                        coupled_abs_tol,
+                        "Absolute tolerance of the linear solver of the coupled fluid solver "
+                        "(TractionCoupling or CoupledFluidSolver).",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("CoupledSolverRelTol",
+                        coupled_rel_tol,
+                        "Relative tolerance of the linear solver of the coupled fluid solver "
+                        "(TractionCoupling or CoupledFluidSolver).",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("PenaltyTerms",
+                        penalty_terms,
+                        "Divergence and continuity penalty terms of the fluid.",
+                        dealii::Patterns::Bool());
+      prm.add_parameter("ContinuityPenaltyUseBoundaryData",
+                        continuity_penalty_use_boundary_data,
+                        "Continuity penalty: use the Dirichlet data on boundary faces.",
+                        dealii::Patterns::Bool());
     }
     prm.leave_subsection();
   }
 
-  double end_time             = END_TIME;
-  bool   traction_coupling    = false;
-  bool   coupled_fluid_solver = false;
-  double cfl                  = 0.5;
-  bool   pull_back_traction   = true;
-  double fluid_abs_tol        = ABS_TOL;
-  double fluid_rel_tol        = REL_TOL;
+  double end_time                             = END_TIME;
+  bool   traction_coupling                    = false;
+  bool   coupled_fluid_solver                 = false;
+  double cfl                                  = 0.5;
+  bool   pull_back_traction                   = true;
+  double fluid_abs_tol                        = ABS_TOL;
+  double fluid_rel_tol                        = REL_TOL;
+  double coupled_abs_tol                      = 1.e-14;
+  double coupled_rel_tol                      = 1.e-10;
+  bool   penalty_terms                        = true;
+  bool   continuity_penalty_use_boundary_data = true;
 
   void
   set_parameters() final
@@ -277,12 +299,12 @@ private:
     param.divu_formulation  = FormulationVelocityDivergenceTerm::Weak;
 
     // div-div and continuity penalty
-    param.use_divergence_penalty                     = true;
+    param.use_divergence_penalty                     = penalty_terms;
     param.divergence_penalty_factor                  = 1.0e0;
-    param.use_continuity_penalty                     = true;
+    param.use_continuity_penalty                     = penalty_terms;
     param.continuity_penalty_factor                  = param.divergence_penalty_factor;
     param.continuity_penalty_components              = ContinuityPenaltyComponents::Normal;
-    param.continuity_penalty_use_boundary_data       = true;
+    param.continuity_penalty_use_boundary_data       = continuity_penalty_use_boundary_data;
     param.apply_penalty_terms_in_postprocessing_step = true;
 
     // NUMERICAL PARAMETERS
@@ -381,7 +403,8 @@ private:
       param.treatment_of_convective_term = TreatmentOfConvectiveTerm::Explicit;
       param.apply_penalty_terms_in_postprocessing_step = false;
       // sensitivities and adjoints are only as accurate as the linear solves
-      param.solver_data_coupled = SolverData(1e4, 1.e-14, 1.e-10, LinearSolver::FGMRES, 100);
+      param.solver_data_coupled =
+        SolverData(1e4, coupled_abs_tol, coupled_rel_tol, LinearSolver::FGMRES, 100);
     }
   }
 
@@ -891,6 +914,10 @@ private:
                         "Use the fluid discretization of the traction coupling (coupled solver, "
                         "divergence formulation) also for Dirichlet-Neumann schemes.",
                         dealii::Patterns::Bool());
+      prm.add_parameter("SpectralRadius",
+                        spectral_radius,
+                        "Spectral radius of the generalized-alpha (Bossak) structure integrator.",
+                        dealii::Patterns::Double(0.0, 1.0));
     }
     prm.leave_subsection();
   }
@@ -900,6 +927,7 @@ private:
   bool   coupled_fluid_solver = false;
   double cfl                  = 0.5;
   bool   pull_back_traction   = true;
+  double spectral_radius      = 0.8;
 
   // Structure
   void
@@ -923,7 +951,7 @@ private:
     param.end_time                             = end_time;
     param.time_step_size                       = END_TIME / 100.0;
     param.gen_alpha_type                       = GenAlphaType::BossakAlpha;
-    param.spectral_radius                      = 0.8;
+    param.spectral_radius                      = spectral_radius;
     param.solver_info_data.interval_time_steps = OUTPUT_SOLVER_INFO_EVERY_TIME_STEPS;
 
     param.grid.triangulation_type     = TriangulationType::Distributed;
