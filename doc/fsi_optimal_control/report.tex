@@ -75,9 +75,11 @@ that its tolerance must lie above the noise floor of the single-field solvers; w
 inexactly solved fluid the secant method is $2.4$ times faster than IQN-ILS at equal accuracy, and
 since it needs no derivatives it also runs with the dual-splitting fluid solver, where it remains
 robust at tolerances at which IQN-ILS fails. Long simulations of the FSI2 benchmark into the
-periodic regime show that all couplings reach the same limit cycle, within $2$ to $5\%$ of the
-reference amplitudes, while during the growth of the instability the Dirichlet--Neumann
-iteration is sensitive to the accuracy of warm-started fluid solves and the secant method is not.
+periodic regime show that all couplings reach the same limit cycle, while during the growth of
+the instability the Dirichlet--Neumann iteration is sensitive to the accuracy of warm-started
+fluid solves and the secant method is not. Fine resolutions require a structure integrator with
+dissipation at mid frequencies and a mesh motion stiffened towards the flag; with these, the
+secant method reproduces the reference amplitudes and mean values to within $1\%$.
 \end{abstract}
 
 \tableofcontents
@@ -1253,10 +1255,10 @@ regime on $t\in[12.5,15]$ (the values on $[20,25]$ of the base run agree to $2\c
 \Cref{tab:resolution,fig:resolution} show that the structure is resolved (refining it changes the
 results by less than $0.1\%$) and that the frequency is controlled by the spatial resolution of
 the fluid: one refinement of the fluid grid raises it from $1.865$ to $1.925$~Hz, the degree $8$
-instead of $6$ to $1.906$~Hz, while halving the time step leaves it unchanged. The amplitude of
-$d_y$ decreases by about $2\%$ under both fluid and temporal refinement, i.e.\ away from the
-reference value; the deviation of the amplitude is therefore not a resolution effect of the same
-kind, and at this resolution we cannot decide whether it would change sign on finer grids.
+instead of $6$ to $1.906$~Hz, while halving the time step leaves it unchanged. On these grids the amplitude of $d_y$
+decreases by about $2\%$ under both fluid and temporal refinement; finer fluid grids, which first
+required the remedies of \cref{sec:instabilities}, bring it back to the reference
+(\cref{sec:final_comparison}).
 
 \begin{table}[ht]\centering
 \caption{Resolution study, periodic regime $t\in[12.5,15]$: mean $\pm$ amplitude
@@ -1280,69 +1282,82 @@ fluid refined once & 13328 & $0.5$ & $-13.52\pm11.59\ [3.85]$ & $0.98\pm77.52\ [
 \begin{figure}[ht]\centering
 \begin{tikzpicture}
 \begin{semilogxaxis}[width=0.44\textwidth, height=5.2cm, xlabel={$N_u$ (fluid)},
-  ylabel={frequency of $d_y(A)$ [Hz]}, xmin=2500, xmax=20000, ymin=1.84, ymax=2.02, grid=major,
-  xtick={3332,5508,13328}, xticklabels={3332,5508,13328}, xticklabel style={font=\scriptsize}]
-\addplot[only marks, mark=*, blue!70!black] coordinates {(3332,1.865) (13328,1.925)};
-\addplot[only marks, mark=square*, red!75!black] coordinates {(5508,1.906)};
+  ylabel={frequency of $d_y(A)$ [Hz]}, xmin=2500, xmax=70000, ymin=1.84, ymax=2.02, grid=major,
+  xtick={3332,13328,53312}, xticklabels={3332,13328,53312}, xticklabel style={font=\scriptsize}]
+\addplot[only marks, mark=o, black!60] coordinates {(3332,1.865) (5508,1.906) (13328,1.925)};
 \addplot[only marks, mark=triangle*, green!50!black] coordinates {(3332,1.863)};
-\addplot[black, dashed, domain=2500:20000] {2.0};
+\addplot[only marks, mark=square*, red!75!black] coordinates {(13328,1.926) (22032,1.937)};
+\addplot[only marks, mark=*, blue!70!black] coordinates {(22032,1.936) (53312,1.935)};
+\addplot[black, dashed, domain=2500:70000] {2.0};
 \end{semilogxaxis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
 \begin{semilogxaxis}[width=0.44\textwidth, height=5.2cm, xlabel={$N_u$ (fluid)},
-  ylabel={amplitude of $d_y(A)$ [$10^{-3}$ m]}, xmin=2500, xmax=20000, ymin=66, ymax=82,
-  xtick={3332,5508,13328}, xticklabels={3332,5508,13328}, xticklabel style={font=\scriptsize},
-  grid=major, legend style={font=\scriptsize}, legend pos=south east]
-\addplot[only marks, mark=*, blue!70!black] coordinates {(3332,79.04) (13328,77.52)};
-\addlegendentry{$Q_6$, $h$-refinement}
-\addplot[only marks, mark=square*, red!75!black] coordinates {(5508,76.89)};
-\addlegendentry{$Q_8$}
+  ylabel={amplitude of $d_y(A)$ [$10^{-3}$ m]}, xmin=2500, xmax=70000, ymin=62, ymax=82,
+  xtick={3332,13328,53312}, xticklabels={3332,13328,53312}, xticklabel style={font=\scriptsize},
+  grid=major, legend style={font=\tiny}, legend pos=south east]
+\addplot[only marks, mark=o, black!60] coordinates {(3332,79.04) (5508,76.89) (13328,77.52)};
+\addlegendentry{original setup}
 \addplot[only marks, mark=triangle*, green!50!black] coordinates {(3332,77.60)};
-\addlegendentry{$Q_6$, CFL $0.25$}
-\addplot[black, dashed, domain=2500:20000] {80.6};
+\addlegendentry{original, CFL $0.25$}
+\addplot[only marks, mark=square*, red!75!black] coordinates {(13328,77.46) (22032,80.23)};
+\addlegendentry{$\rho_\infty=0$, mapping 4}
+\addplot[only marks, mark=*, blue!70!black] coordinates {(22032,80.62) (53312,80.87)};
+\addlegendentry{+ ALE stiffening}
+\addplot[black, dashed, domain=2500:70000] {80.6};
 \addlegendentry{Turek--Hron}
 \end{semilogxaxis}
 \end{tikzpicture}
 \caption{Resolution study: frequency (left) and amplitude (right) of $d_y(A)$ in the periodic
-regime against the number of velocity degrees of freedom of the fluid.}\label{fig:resolution}
+regime against the number of velocity degrees of freedom of the fluid. Original setup: Bossak
+$\rho_\infty=0.8$, mapping of the degree of the fluid velocity, band-stiffened mesh motion
+($Q_6$ and $Q_8$ without refinement, $Q_6$ refined once); the remedies of
+\cref{sec:instabilities} allow the finer grids.}\label{fig:resolution}
 \end{figure}
 
-\paragraph{An instability for small time steps.} The combined refinements could not be completed.
-All runs with $\Delta t\lesssim0.3\,\Delta t_{\mathrm{base}}$ diverged: fluid refined twice and
-fluid $Q_8$ refined once at $t\approx8.63$~s, fluid refined once with CFL $0.25$ at $t=4$ to
-$6$~s. The failure is independent of the coupling algorithm: with fluid $Q_8$ refined once, the
-secant method and IQN-ILS start to oscillate at the same time ($8.630$ and $8.634$~s), and with
-fluid refined once and CFL $0.25$ IQN-ILS fails first ($3.9$~s against $5.4$~s). Tightening the
-coupling tolerances by two orders of magnitude only delays the onset ($6.2$~s for IQN-ILS, $6.7$~s
-for the secant method). A run with iteration output shows the mechanism: the converged interface
-traction develops a component that alternates from step to step and grows over several seconds
-(the initial residual of the step, i.e.\ the error of the extrapolated traction, grows from $1$ at
-$t\approx2.5$~s to $10^4$ at $t\approx5.6$~s) while the displacement stays smooth, until the
-structure solver fails. The instability can be reproduced cheaply on the coarsest grid (fluid
-$Q_3$, structure $Q_2$, no refinement): with CFL $0.12$ ($\Delta t\approx1.2\cdot10^{-3}$) the run
-is stable over $10$~s, with CFL $0.03$ ($\Delta t\approx3\cdot10^{-4}$) it diverges at
-$t\approx2.2$~s with the secant method and at $t\approx2.0$~s with IQN-ILS. On this reproducer we tested
-several candidate causes (\cref{tab:instability}). Neither the fluid splitting nor its interface
-terms are responsible: the coupled fluid solver (with IQN-ILS) diverges as well, earlier than the
-splitting scheme; replacing the BDF time derivative of the interface velocity in the pressure
-Neumann condition of the splitting scheme by the transferred acceleration of the structure, or
-switching off the divergence and continuity penalty terms (or their boundary data), does not
-change the onset; imposing on the fluid an interface velocity consistent with the ALE grid
-velocity (BDF derivative of the structure displacement instead of the velocity of the structure
-integrator) has no effect either. The only parameter that moves the onset is the numerical
-dissipation of the structure integrator: with the spectral radius $\rho_\infty=1$, $0.8$, $0.5$ of
-the Bossak scheme the oscillation starts at $1.39$, $2.14$ and $4.11$~s. Since this dissipation
-acts on modes with large $\omega\Delta t$, a smaller time step leaves high-frequency structure
-modes less damped; together with the step-to-step alternation of the growing component this
-points to an instability of the coupled time discretisation involving weakly damped
-high-frequency modes of the structure, which remains to be confirmed. Consistently, a richer structure discretisation (one
-refinement, or degree $4$), which has higher eigenfrequencies, diverges earlier ($1.84$ and $1.92$~s).
+\subsection{Two instabilities at fine resolution}\label{sec:instabilities}
+
+The combined refinements (fluid refined twice, fluid $Q_8$ refined once, fluid refined once with
+CFL $0.25$) initially diverged. Two distinct phenomena are involved; both are independent of the
+coupling algorithm and of the optimal-control formulation.
+
+\paragraph{A. Small time steps.} All runs with $\Delta t\lesssim0.3\,\Delta t_{\mathrm{base}}$
+develop an oscillation of the interface traction that grows over several seconds while the
+displacement stays smooth (the initial residual of the step, i.e.\ the error of the extrapolated
+traction, grows from $1$ at $t\approx2.5$~s to $10^4$ at $t\approx5.6$~s), until the structure
+solver fails. With fluid refined once and CFL $0.25$, IQN-ILS fails first ($3.9$~s against $5.4$~s
+for the secant method), and tightening the coupling tolerances by two orders of magnitude only
+delays the onset. The instability can be reproduced cheaply on the coarsest grid (fluid $Q_3$,
+structure $Q_2$, no refinement): with CFL $0.12$ ($\Delta t\approx1.2\cdot10^{-3}$) the run is
+stable over $10$~s, with CFL $0.03$ ($\Delta t\approx3\cdot10^{-4}$) it diverges at $t\approx2.2$~s.
+The growing component is not a two-step (Nyquist) mode: its period is $8$ to $10$ time steps, i.e.\
+about $300$~Hz (about $420$~Hz with a finer structure), and it grows by $1$ to $2\%$ per step. It
+is therefore a mode resolved by the time step, with $\omega\Delta t\approx0.6$, far above the
+frequency of the flag oscillation ($\approx2$~Hz).
+
+\Cref{tab:instability} summarises the candidate causes tested on the reproducer. Neither the fluid
+splitting nor its interface terms are responsible: the coupled fluid solver diverges as well;
+replacing the BDF time derivative of the interface velocity in the pressure Neumann condition by
+the transferred acceleration of the structure, switching off the penalty terms or their boundary
+data, and imposing an interface velocity consistent with the ALE grid velocity do not change the
+onset. A richer structure discretisation, which has higher eigenfrequencies, diverges earlier. The
+decisive parameter is the numerical dissipation of the structure integrator at
+$\omega\Delta t\approx0.6$: the second-order generalized-$\alpha$ schemes with $\rho_\infty\ge0.5$,
+whose dissipation there is only of order $(\omega\Delta t)^3$, and the energy-conserving
+trapezoidal rule diverge; the first-order Newmark scheme that ExaDG obtains for $\rho_\infty=0.8$
+($\gamma=0.61$) and the second-order Bossak and generalized-$\alpha$ schemes with $\rho_\infty=0$
+are stable. The Bossak scheme with $\rho_\infty=0$ is the remedy of choice: it remains second
+order, its dissipation at the frequency of the flag ($\omega\Delta t\approx0.004$) is negligible,
+and the periodic regime of the base run is unchanged ($d_y=1.33\pm79.13$ against $1.33\pm79.04$,
+same frequency), whereas the first-order Newmark scheme reduces the amplitude by $0.5\%$. Some
+part of the coupled time discretisation still feeds energy into this mode; we have not identified
+it, and the structural dissipation only suppresses its effect.
 
 \begin{table}[ht]\centering
 \caption{Small-time-step instability on the reproducer (fluid $Q_3$, structure $Q_2$, no
-refinement, CFL $0.03$): onset of the step-to-step oscillation of the tip velocity. Unless stated
-otherwise, secant method with the dual-splitting fluid and Bossak $\rho_\infty=0.8$.}
-\label{tab:instability}
+refinement, CFL $0.03$): onset of the oscillation of the tip velocity, or run time without
+instability. Unless stated otherwise, secant method with the dual-splitting fluid and the Bossak
+scheme with $\rho_\infty=0.8$.}\label{tab:instability}
 \begin{tabular}{lc}
 \toprule
 variant & onset [s]\\
@@ -1354,16 +1369,78 @@ structure acceleration in the pressure Neumann condition & 2.24\\
 no divergence/continuity penalty & 2.12\\
 continuity penalty without boundary data & 2.13\\
 interface velocity from the displacement (BDF) & 2.10\\
-Bossak $\rho_\infty=1.0$ & 1.39\\
-Bossak $\rho_\infty=0.5$ & 4.11\\
 structure refined once ($Q_2$) & 1.84\\
 structure $Q_4$ & 1.92\\
+\midrule
+generalized-$\alpha$, $\rho_\infty=0.8$ & 0.66\\
+Bossak, $\rho_\infty=1.0$ & 1.39\\
+Newmark, trapezoidal ($\rho_\infty=1$) & 1.38\\
+HHT, $\rho_\infty=0.8$ & 1.72\\
+Bossak, $\rho_\infty=0.5$ & 4.11\\
+Newmark, $\rho_\infty=0.8$ ($\gamma=0.61$, first order) & stable to $t=6$~s\\
+Bossak, $\rho_\infty=0$ & stable to $t=6$~s\\
+generalized-$\alpha$, $\rho_\infty=0$ & stable to $t=6$~s\\
+\midrule
 CFL $0.12$ ($\Delta t\approx1.2\cdot10^{-3}$) & stable to $t=10$~s\\
 \bottomrule
 \end{tabular}
 \end{table}
 
+\paragraph{B. Large deflections on fine fluid grids.} With $\rho_\infty=0$ the run with fluid
+refined once and CFL $0.25$ completes, but the runs with fluid $Q_8$ refined once and with fluid
+refined twice still collapse at $t\approx8.63$~s, at the same instant as with $\rho_\infty=0.8$
+and with IQN-ILS, when the flag approaches its maximum deflection: within a few tens of steps the
+tip velocity jumps to several m/s, the adaptive time step collapses and a single-field solver
+fails. The cause is the geometry of the fluid mesh. The mapping of the fluid uses by default the
+polynomial degree of the velocity; with degree $8$, the strongly deformed curved cells near the
+flag tip degenerate. With a mapping of degree $4$ (parameter \code{MappingDegree}) the run with
+fluid $Q_8$ refined once is stable. The run with fluid refined twice then collapses later
+($t\approx8.86$~s, at the maximum negative deflection), because the ALE mesh motion itself
+degenerates near the tip: the linear elasticity problem that moves the mesh uses a Young's
+modulus that is increased only in a horizontal band $|y-H/2|<H/8$ along the whole channel,
+independent of the distance from the flag. We therefore added a stiffness that grows towards the
+flag,
+\begin{equation}\label{eq:ale_stiffening}
+  E(\mathbf X)=1+E_{\max}\Big(\frac{r_0}{r_0+d(\mathbf X)}\Big)^2,\qquad E_{\max}=1000,\ r_0=0.02,
+\end{equation}
+where $d$ is the distance from the flag in the reference configuration, so that the cells around
+the flag move almost rigidly with it and the deformation is absorbed further away (parameter
+\code{ALEStiffening}). With \eqref{eq:ale_stiffening} the run with fluid refined twice completes,
+and fluid $Q_8$ refined once is stable even with the mapping of degree $8$. The concentration of
+the stiffness matters: with $r_0=0.05$ the run with fluid refined twice still fails; a Poisson
+mesh motion fails earlier ($6.5$~s) and a nonlinear (large-deformation) elasticity problem for the
+mesh motion does not help either ($8.06$~s).
 
+\subsection{Comparison with the benchmark at the finest resolution}\label{sec:final_comparison}
+
+\Cref{tab:final,fig:resolution} collect the periodic regime with the remedies of
+\cref{sec:instabilities} (Bossak $\rho_\infty=0$, mapping of degree $4$). With fluid $Q_8$ refined
+once and fluid $Q_6$ refined twice, both with the stiffened mesh motion, amplitudes and means agree
+with the reference to within $1\%$; the ALE stiffening itself changes the solution by $0.5\%$
+($80.23$ against $80.62$ for fluid $Q_8$ refined once). The frequency converges to $1.935$~Hz,
+$3\%$ below the reference value $2.0$~Hz for $d_y$; for $d_x$ we obtain $3.87$~Hz against
+$3.8$~Hz. Since the frequency of $d_x$ is twice that of $d_y$, the two reference frequencies are
+not consistent with each other at the given number of digits, and the remaining deviation of the
+frequency is of the order of their rounding. The secant method needs $2.6$ state evaluations per
+time step on the finest grid ($7635$~s for $15$~s of simulated time, $4$ processes).
+
+\begin{table}[ht]\centering
+\caption{Periodic regime of FSI2, $t\in[12.5,15]$, secant method on the native formulation, Bossak
+$\rho_\infty=0$, structure $Q_4$, mapping of degree $4$: mean $\pm$ amplitude [frequency] of the
+tip displacement.}\label{tab:final}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+fluid & ALE stiffening & $N_u$ & $d_x(A)\ [10^{-3}]$ & $d_y(A)\ [10^{-3}]$ & evaluations/step\\
+\midrule
+Turek--Hron \cite{TurekHron2006} & & & $-14.58\pm12.44\ [3.8]$ & $1.23\pm80.6\ [2.0]$ & \\
+$Q_6$, refined once & band & 13328 & $-13.51\pm11.60\ [3.85]$ & $0.97\pm77.46\ [1.926]$ & 3.04\\
+$Q_8$, refined once & band & 22032 & $-14.38\pm12.36\ [3.87]$ & $1.20\pm80.23\ [1.937]$ & 3.29\\
+$Q_8$, refined once & \eqref{eq:ale_stiffening} & 22032 & $-14.53\pm12.46\ [3.87]$ & $1.21\pm80.62\ [1.936]$ & 2.63\\
+$Q_6$, refined twice & \eqref{eq:ale_stiffening} & 53312 & $-14.61\pm12.53\ [3.87]$ & $1.24\pm80.87\ [1.935]$ & 2.62\\
+\bottomrule
+\end{tabular}}
+\end{table}
 
 %=================================================================================================
 \section{Conclusions and outlook}
@@ -1393,19 +1470,22 @@ lies above the noise floor of the inner solvers; then they make the secant metho
 faster than IQN-ILS at equal accuracy. Without warm start the inexactness of the inner solvers is
 consistent and harmless, which makes the derivative-free secant method on the native formulation
 robust with the cheap dual-splitting fluid solver.
-\item In long FSI2 simulations all couplings reach the same limit cycle, within $2$ to $5\%$ of the
-reference amplitudes and $7\%$ of the reference frequency at the resolution used; the frequency
-deviation is controlled by the spatial resolution of the fluid and halves with one refinement of
-the fluid grid. During the growth
+\item In long FSI2 simulations all couplings reach the same limit cycle. The frequency is
+controlled by the spatial resolution of the fluid; at the finest resolution amplitudes and means
+agree with the reference to within $1\%$ and the frequency is $1.935$~Hz. Two instabilities had to
+be removed first: a mode of about $300$~Hz that grows for small time steps unless the structure
+integrator dissipates at $\omega\Delta t\approx0.6$ (Bossak with $\rho_\infty=0$), and the
+degeneration of the fluid mesh at large deflections (high-order mapping, mesh motion not
+stiffened near the flag). During the growth
 of the instability the trajectory depends on round-off-level perturbations; the Dirichlet--Neumann
 iteration then needs accurate fluid solves to be reproducible, whereas the secant method is
 insensitive to the fluid tolerances. Stopping criteria must lie above the noise floor of the state
 map (relative tolerance, stagnation stop); IQN-ILS needs the newest-first ordering of its secant
 columns to be robust in the start-up phase.
 \end{enumerate}
-Open points are the instability of the partitioned dual-splitting scheme for small time steps
-(\cref{sec:resolution}), which affects all couplings and currently prevents finer resolutions of
-FSI2, the periodic regime as a test case for the initial Jacobians of
+Open points are the source of the energy that feeds the high-frequency mode of
+\cref{sec:instabilities}, which the dissipation of the structure integrator only suppresses, the
+periodic regime as a test case for the initial Jacobians of
 \cref{sec:initial_jacobian}, preconditioning of the native interface Newton method (the frozen Jacobian of
 \cref{sec:methods} applies directly), and three-dimensional problems, where the dense
 frozen-Jacobian and Sobolev constructions must be replaced by low-rank or multilevel
@@ -1440,7 +1520,14 @@ and the newest-first column ordering in \code{PartitionedSolver} (IQN-ILS);
 \code{MismatchToleranceRelative} and \code{StagnationIterations} of the subsection
 \code{OptimalControl}; \code{FluidSolverAbsTol} and \code{FluidSolverRelTol} of the application;
 single-file output with a time-series record (\code{Output/NumberOfVtuFiles},
-\code{Output/WritePvd}). The analysis of the tip displacement (periods, amplitude, frequency) is
+\code{Output/WritePvd}). Parameters of the application \code{cylinder_with_flag} used in
+\cref{sec:resolution,sec:instabilities,sec:final_comparison}: \code{GenAlphaType} and
+\code{SpectralRadius} (structure integrator), \code{MappingDegree}, \code{MeshMovementType},
+\code{ALELargeDeformation}, \code{ALEStiffening}, \code{ALEStiffeningMax} and
+\code{ALEStiffeningRadius} (fluid mesh), \code{CoupledSolverAbsTol}, \code{CoupledSolverRelTol},
+\code{PenaltyTerms} and \code{ContinuityPenaltyUseBoundaryData} (diagnostics); all defaults keep
+the original behaviour. The configuration of \cref{tab:final} uses \code{GenAlphaType =
+BossakAlpha}, \code{SpectralRadius = 0}, \code{MappingDegree = 4} and \code{ALEStiffening = 1}. The analysis of the tip displacement (periods, amplitude, frequency) is
 done by \code{doc/fsi_optimal_control/fsi2_analysis.py} (run from the root directory of the
 repository; it reads \code{output/<run>/run.log}).
 The variants discussed in \cref{sec:diagnosis} that were removed from the code (constraint-only

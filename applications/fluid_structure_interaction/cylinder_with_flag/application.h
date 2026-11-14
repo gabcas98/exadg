@@ -127,7 +127,15 @@ template<int dim>
 class SpatiallyVaryingE : public dealii::Function<dim>
 {
 public:
-  SpatiallyVaryingE() : dealii::Function<dim>(1, 0.0)
+  /*
+   * stiffening = 0: band |y - H/2| < H/8 along the whole channel (original model)
+   * stiffening = 1: E = 1 + E_max (r_0 / (r_0 + d))^2, d = distance to the flag (reference
+   *                 configuration), so that the cells around the flag move almost rigidly with it
+   */
+  SpatiallyVaryingE(unsigned int const stiffening = 0,
+                    double const       e_max      = 1000.0,
+                    double const       r_0        = 0.02)
+    : dealii::Function<dim>(1, 0.0), stiffening(stiffening), e_max(e_max), r_0(r_0)
   {
   }
 
@@ -136,12 +144,25 @@ public:
   {
     (void)component;
 
+    if(stiffening == 1)
+    {
+      // distance to the flag rectangle [X_C, X_C + R + L_FLAG] x [Y_C - T/2, Y_C + T/2]
+      double const dx = std::max({X_C - p[0], 0.0, p[0] - (X_C + R + L_FLAG)});
+      double const dy = std::max({(Y_C - T / 2.0) - p[1], 0.0, p[1] - (Y_C + T / 2.0)});
+      double const d  = std::sqrt(dx * dx + dy * dy);
+      return 1.0 + e_max * std::pow(r_0 / (r_0 + d), 2.0);
+    }
+
     double const value =
       (std::abs(p[1] - H / 2.) < H / 8.) ? std::cos(4.0 * p[1] / H * dealii::numbers::PI) : 0.0;
     double result = 1. + 100. * value * value;
 
     return result;
   }
+
+private:
+  unsigned int const stiffening;
+  double const       e_max, r_0;
 };
 
 namespace FluidFSI
@@ -207,6 +228,31 @@ private:
                         "Relative tolerance of the linear solver of the coupled fluid solver "
                         "(TractionCoupling or CoupledFluidSolver).",
                         dealii::Patterns::Double(0.0));
+      prm.add_parameter("MeshMovementType",
+                        mesh_movement_type,
+                        "ALE mesh motion of the fluid.",
+                        Patterns::Enum<IncNS::MeshMovementType>());
+      prm.add_parameter("MappingDegree",
+                        mapping_degree,
+                        "Degree of the fluid mapping (0: degree of the fluid velocity).",
+                        dealii::Patterns::Integer(0));
+      prm.add_parameter("ALEStiffening",
+                        ale_stiffening,
+                        "Stiffness distribution of the ALE elasticity: 0 = band along the channel "
+                        "(original), 1 = growing towards the flag.",
+                        dealii::Patterns::Integer(0, 1));
+      prm.add_parameter("ALEStiffeningMax",
+                        ale_stiffening_max,
+                        "ALEStiffening = 1: maximum relative stiffness at the flag.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("ALEStiffeningRadius",
+                        ale_stiffening_radius,
+                        "ALEStiffening = 1: decay length r_0 of the stiffness.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("ALELargeDeformation",
+                        ale_large_deformation,
+                        "Nonlinear (large-deformation) elasticity for the ALE mesh motion.",
+                        dealii::Patterns::Bool());
       prm.add_parameter("PenaltyTerms",
                         penalty_terms,
                         "Divergence and continuity penalty terms of the fluid.",
@@ -219,17 +265,23 @@ private:
     prm.leave_subsection();
   }
 
-  double end_time                             = END_TIME;
-  bool   traction_coupling                    = false;
-  bool   coupled_fluid_solver                 = false;
-  double cfl                                  = 0.5;
-  bool   pull_back_traction                   = true;
-  double fluid_abs_tol                        = ABS_TOL;
-  double fluid_rel_tol                        = REL_TOL;
-  double coupled_abs_tol                      = 1.e-14;
-  double coupled_rel_tol                      = 1.e-10;
-  bool   penalty_terms                        = true;
-  bool   continuity_penalty_use_boundary_data = true;
+  double                  end_time              = END_TIME;
+  bool                    traction_coupling     = false;
+  bool                    coupled_fluid_solver  = false;
+  double                  cfl                   = 0.5;
+  bool                    pull_back_traction    = true;
+  double                  fluid_abs_tol         = ABS_TOL;
+  double                  fluid_rel_tol         = REL_TOL;
+  double                  coupled_abs_tol       = 1.e-14;
+  double                  coupled_rel_tol       = 1.e-10;
+  bool                    penalty_terms         = true;
+  IncNS::MeshMovementType mesh_movement_type    = IncNS::MeshMovementType::Elasticity;
+  unsigned int            mapping_degree        = 0;
+  bool                    ale_large_deformation = false;
+  unsigned int            ale_stiffening        = 0;
+  double                  ale_stiffening_max    = 1000.0;
+  double                  ale_stiffening_radius = 0.02;
+  bool                    continuity_penalty_use_boundary_data = true;
 
   void
   set_parameters() final
@@ -248,7 +300,7 @@ private:
 
     // ALE
     param.ale_formulation                     = true;
-    param.mesh_movement_type                  = MeshMovementType::Elasticity;
+    param.mesh_movement_type                  = mesh_movement_type;
     param.neumann_with_variable_normal_vector = false;
 
     // PHYSICAL QUANTITIES
@@ -284,7 +336,7 @@ private:
 
     // SPATIAL DISCRETIZATION
     param.grid.triangulation_type     = TriangulationType::Distributed;
-    param.mapping_degree              = param.degree_u;
+    param.mapping_degree              = mapping_degree > 0 ? mapping_degree : param.degree_u;
     param.mapping_degree_coarse_grids = param.mapping_degree;
     param.degree_p                    = DegreePressure::MixedOrder;
 
@@ -772,7 +824,7 @@ private:
     param.problem_type         = ProblemType::Steady;
     param.body_force           = false;
     param.pull_back_body_force = false;
-    param.large_deformation    = false;
+    param.large_deformation    = ale_large_deformation;
     param.pull_back_traction   = false;
     param.material_type        = MaterialType::StVenantKirchhoff;
 
@@ -851,7 +903,8 @@ private:
     double const                           youngs_modulus = 1.0;
     double const                           poissons_ratio = 0.3;
     std::shared_ptr<dealii::Function<dim>> youngs_modulus_function;
-    youngs_modulus_function.reset(new SpatiallyVaryingE<dim>());
+    youngs_modulus_function.reset(
+      new SpatiallyVaryingE<dim>(ale_stiffening, ale_stiffening_max, ale_stiffening_radius));
     material_descriptor->insert(
       Pair(0,
            new StVenantKirchhoffData<dim>(
@@ -914,6 +967,10 @@ private:
                         "Use the fluid discretization of the traction coupling (coupled solver, "
                         "divergence formulation) also for Dirichlet-Neumann schemes.",
                         dealii::Patterns::Bool());
+      prm.add_parameter("GenAlphaType",
+                        gen_alpha_type,
+                        "Time integrator of the structure (generalized-alpha family).",
+                        Patterns::Enum<GenAlphaType>());
       prm.add_parameter("SpectralRadius",
                         spectral_radius,
                         "Spectral radius of the generalized-alpha (Bossak) structure integrator.",
@@ -922,12 +979,13 @@ private:
     prm.leave_subsection();
   }
 
-  double end_time             = END_TIME;
-  bool   traction_coupling    = false;
-  bool   coupled_fluid_solver = false;
-  double cfl                  = 0.5;
-  bool   pull_back_traction   = true;
-  double spectral_radius      = 0.8;
+  double       end_time             = END_TIME;
+  bool         traction_coupling    = false;
+  bool         coupled_fluid_solver = false;
+  double       cfl                  = 0.5;
+  bool         pull_back_traction   = true;
+  double       spectral_radius      = 0.8;
+  GenAlphaType gen_alpha_type       = GenAlphaType::BossakAlpha;
 
   // Structure
   void
@@ -950,7 +1008,7 @@ private:
     param.start_time                           = 0.0;
     param.end_time                             = end_time;
     param.time_step_size                       = END_TIME / 100.0;
-    param.gen_alpha_type                       = GenAlphaType::BossakAlpha;
+    param.gen_alpha_type                       = gen_alpha_type;
     param.spectral_radius                      = spectral_radius;
     param.solver_info_data.interval_time_steps = OUTPUT_SOLVER_INFO_EVERY_TIME_STEPS;
 
