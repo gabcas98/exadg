@@ -1,0 +1,35 @@
+{
+  "General": {
+    "Precision": "double",
+    "Dim": "2",
+    "IsTest": "false"
+  },
+  "SpatialResolutionFluid": {
+    "Degree": "3",
+    "RefineSpace": "1"
+  },
+  "SpatialResolutionStructure": {
+    "Degree": "4",
+    "RefineSpace": "0"
+  },
+  "FSI": {
+    "AccelerationMethod": "IQN_ILS",
+    "AbsTol": "1.e-11",
+    "RelTol": "1.e-6",
+    "OmegaInit": "0.3",
+    "ReusedTimeSteps": "8",
+    "PartitionedIterMax": "100",
+    "MonitorPoint": "0.6,0.2"
+  },
+  "Application": {
+    "EndTime": "1.0",
+    "CoupledFluidSolver": "true",
+    "SpectralRadius": "0.0",
+    "AdaptiveTimeStepping": "true"
+  },
+  "Output": {
+    "OutputDirectory": "output/rb_iqnils/",
+    "OutputName": "rb_iqnils",
+    "WriteOutput": "false"
+  }
+}

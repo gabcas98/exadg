@@ -45,6 +45,7 @@
 #include <exadg/functions_and_boundary_conditions/interface_coupling.h>
 #include <exadg/grid/marked_vertices.h>
 #include <exadg/incompressible_navier_stokes/spatial_discretization/operator_coupled.h>
+#include <exadg/incompressible_navier_stokes/time_integration/time_int_bdf_coupled_solver.h>
 #include <exadg/matrix_free/integrators.h>
 
 namespace ExaDG
@@ -245,10 +246,27 @@ public:
   void
   configure(Parameters const & param)
   {
-    geometry_in_state = param.geometry_in_state;
-    warm_start        = param.warm_start and param.method == Method::InterfaceQuasiNewton;
-    // warm start: the step has to remain a function of the boundary data only
-    fluid->time_integrator->set_penalty_velocity_from_extrapolation(warm_start);
+    geometry_in_state           = param.geometry_in_state;
+    warm_start                  = param.warm_start;
+    linearized_tolerance_factor = param.linearized_tolerance_factor;
+    linearized_factor_current   = linearized_tolerance_factor;
+    linearized_initial_guess    = param.linearized_initial_guess;
+    linearized_history          = param.linearized_history;
+    tangent_state_prediction    = param.tangent_state_prediction;
+    affine_state_prediction     = param.affine_state_prediction;
+    affine_max_pairs            = param.affine_prediction_max_pairs;
+    warm_start_absolute_tolerance =
+      param.warm_start and param.warm_start_absolute_tolerance and operator_coupled.get();
+    // warm start, predicted initial guess: the step has to remain a function of the boundary data
+    // only
+    fluid->time_integrator->set_penalty_velocity_from_extrapolation(
+      warm_start or tangent_state_prediction or affine_state_prediction);
+    time_integrator_coupled =
+      std::dynamic_pointer_cast<IncNS::TimeIntBDFCoupled<dim, Number>>(fluid->time_integrator);
+    if(tangent_state_prediction or affine_state_prediction)
+      AssertThrow(time_integrator_coupled.get() and operator_coupled.get(),
+                  dealii::ExcMessage("TangentStatePrediction and AffineStatePrediction require "
+                                     "the coupled fluid solver."));
     qn_initial_relaxation    = param.qn_initial_relaxation;
     tangent_difference       = param.tangent_difference;
     preconditioner           = param.preconditioner;
@@ -387,6 +405,8 @@ public:
   {
     geometry_displacement = displacement;
     setup_trace_space(fluid_space);
+    // new geometry of the outer loop: the affine pairs belong to another fluid operator
+    clear_affine_pairs();
   }
 
   /*
@@ -597,6 +617,33 @@ public:
    * dst = P^{-1} src ~ S^{-1} src (structure control space only):
    * S_s ~ -c_v Sigma_s^{-1} M  ->  S_s^{-1} = -(1/c_v) M^{-1} Sigma_s
    */
+  /*
+   * Preconditioner of the Gauss-Newton normal operator S^* S (L2 metrics, S^* = M^{-1} S^T M) with
+   * the frozen Jacobian J ~ S: (S^* S)^{-1} ~ J^{-1} M^{-1} J^{-T} M.
+   */
+  bool
+  has_normal_preconditioner() const
+  {
+    return preconditioner == Preconditioner::FrozenJacobian and not use_dense_metrics;
+  }
+
+  void
+  apply_normal_preconditioner(VectorType & dst, VectorType const & src) const
+  {
+    if(jacobian_needs_update)
+      assemble_frozen_jacobian();
+    VectorType tmp;
+    initialize_vector(tmp);
+    apply_mass(control(), tmp, src);
+    dealii::Vector<double> y = gather(tmp);
+    jacobian_lu.solve(y, true /* transposed */);
+    scatter(tmp, y);
+    solve_mass(control(), dst, tmp);
+    dealii::Vector<double> x = gather(dst);
+    jacobian_lu.solve(x);
+    scatter(dst, x);
+  }
+
   void
   apply_preconditioner(VectorType & dst, VectorType const & src) const
   {
@@ -710,13 +757,185 @@ public:
   void
   begin_time_step()
   {
-    evaluations_in_step = 0;
+    evaluations_in_step   = 0;
+    prediction_valid      = false;
+    cold_initial_residual = 0.0;
+    clear_affine_pairs();
+  }
+
+  /*
+   * AffineStatePrediction: for a frozen geometry the fluid step is affine in its Dirichlet data
+   * w (the structure velocity on the interface). Every state solve of the time step yields a pair
+   * (w_i, u_i), every tangent solve a pair (dw_j, du_j) with u(w + dw_j) = u(w) + du_j. The state
+   * of a new w is predicted by least squares in the span of these pairs.
+   */
+  void
+  clear_affine_pairs()
+  {
+    affine_state_w.clear();
+    affine_state_u.clear();
+    affine_tangent_w.clear();
+    affine_tangent_u.clear();
+  }
+
+  void
+  predict_affine_state(BlockVectorType & u0, VectorType const & w) const
+  {
+    unsigned int const k = affine_state_w.size() - 1;
+    u0                   = affine_state_u[k];
+
+    VectorType r(w);
+    r.add(-1.0, affine_state_w[k]);
+    double const r_norm = r.l2_norm();
+    if(r_norm == 0.0)
+      return;
+
+    // directions: the other states relative to the base k (accurate), then the tangent pairs,
+    // newest first
+    std::vector<VectorType> E;
+    std::vector<int>        source; // >= 0: state index, < 0: -(tangent index) - 1
+    for(unsigned int i = k; i-- > 0;)
+    {
+      E.emplace_back(affine_state_w[i]);
+      E.back().add(-1.0, affine_state_w[k]);
+      source.push_back(int(i));
+    }
+    for(unsigned int j = affine_tangent_w.size(); j-- > 0;)
+    {
+      E.emplace_back(affine_tangent_w[j]);
+      source.push_back(-int(j) - 1);
+    }
+
+    // modified Gram-Schmidt (twice) with the transformation Q = E T
+    unsigned int const               n = E.size();
+    std::vector<VectorType>          Q;
+    std::vector<std::vector<double>> T;
+    for(unsigned int l = 0; l < n; ++l)
+    {
+      double const e_norm = E[l].l2_norm();
+      if(e_norm == 0.0)
+        continue;
+      VectorType          v(E[l]);
+      std::vector<double> c(n, 0.0);
+      c[l] = 1.0;
+      for(unsigned int pass = 0; pass < 2; ++pass)
+        for(unsigned int i = 0; i < Q.size(); ++i)
+        {
+          double const h = Q[i] * v;
+          v.add(-h, Q[i]);
+          for(unsigned int m = 0; m < n; ++m)
+            c[m] -= h * T[i][m];
+        }
+      double const rho = v.l2_norm();
+      if(rho <= 1.e-6 * e_norm)
+        continue;
+      v /= rho;
+      for(double & cm : c)
+        cm /= rho;
+      Q.push_back(std::move(v));
+      T.push_back(std::move(c));
+    }
+
+    std::vector<double> a(n, 0.0);
+    VectorType          remainder(r);
+    for(unsigned int i = 0; i < Q.size(); ++i)
+    {
+      double const h = Q[i] * r;
+      remainder.add(-h, Q[i]);
+      for(unsigned int m = 0; m < n; ++m)
+        a[m] += h * T[i][m];
+    }
+    affine_remainder_sum += remainder.l2_norm() / r_norm;
+
+    for(unsigned int l = 0; l < n; ++l)
+    {
+      if(a[l] == 0.0)
+        continue;
+      if(source[l] >= 0)
+      {
+        u0.add(a[l], affine_state_u[source[l]]);
+        u0.add(-a[l], affine_state_u[k]);
+      }
+      else
+        u0.add(a[l], affine_tangent_u[-source[l] - 1]);
+    }
+  }
+
+  // accumulated Krylov iterations of the fluid (state solves of the coupled solver and linear
+  // solves of S, S*); 0 for other fluid solvers
+  unsigned long long
+  fluid_krylov_iterations() const
+  {
+    unsigned long long n = linearized_krylov_iterations;
+    if(time_integrator_coupled)
+      n += time_integrator_coupled->get_linear_iterations_accumulated();
+    return n;
+  }
+
+  /*
+   * TangentStatePrediction: record the fluid responses du_j of the tangent applications of a
+   * Krylov solve, then set the prediction u(g + a d) ~ u(g) + a sum_j c_j du_j for d = sum_j c_j
+   * z_j (the coefficients refer to the recorded applications in their order).
+   */
+  bool
+  uses_state_prediction() const
+  {
+    return tangent_state_prediction;
+  }
+
+  void
+  begin_tangent_record() const
+  {
+    tangent_record.clear();
+    recording_tangents = tangent_state_prediction;
+  }
+
+  void
+  set_state_prediction(VectorType const &          g,
+                       VectorType const &          d,
+                       std::vector<double> const & coefficients)
+  {
+    recording_tangents = false;
+    prediction_valid   = false;
+    if(tangent_state_prediction and coefficients.size() == tangent_record.size() and
+       not coefficients.empty() and last_evaluated_control.size() == g.size())
+    {
+      // the fluid state has to be the one of g
+      VectorType diff(g);
+      diff.add(-1.0, last_evaluated_control);
+      if(diff.l2_norm() <= 1.e-14 * std::max<double>(1.0, g.l2_norm()))
+      {
+        prediction_u = time_integrator_coupled->get_solution_np();
+        prediction_du.reinit(prediction_u);
+        for(unsigned int j = 0; j < coefficients.size(); ++j)
+          if(tangent_record[j].n_blocks() > 0)
+            prediction_du.add(coefficients[j], tangent_record[j]);
+        prediction_g     = g;
+        prediction_d     = d;
+        prediction_valid = true;
+      }
+    }
   }
 
   void
   set_state_tolerance_factor(double const factor)
   {
     state_tolerance_factor = factor;
+  }
+
+  /*
+   * Relative tolerance of the linear fluid solves in S, S* for the next derivative evaluations
+   * (LinearizedToleranceTarget): never more accurate than needed, never less accurate than
+   * LinearizedToleranceFactor, at most 1e-2.
+   */
+  void
+  set_linearized_relative_tolerance(double const target) const
+  {
+    if(not operator_coupled)
+      return;
+    double const rel_nominal = fluid->pde_operator->get_parameters().solver_data_coupled.rel_tol;
+    double const rel = std::min(1.e-2, std::max(rel_nominal * linearized_tolerance_factor, target));
+    linearized_factor_current = rel / rel_nominal;
   }
 
   /*
@@ -1216,7 +1435,10 @@ private:
     AssertThrow(mesh_update, dealii::ExcMessage("No mesh update function set."));
     VectorType const & d = structure->time_integrator->get_displacement_np();
     mesh_update(d);
-    set_geometry(d);
+    // the affine pairs of the time step are kept: the geometry changes only by the small
+    // displacement differences of the iterates, and the prediction is an initial guess
+    geometry_displacement = d;
+    setup_trace_space(fluid_space);
   }
 
   /*
@@ -1272,12 +1494,78 @@ private:
     linearization.add(ti.get_alpha_f(), ti.get_displacement_n());
     native_velocity = ti.get_velocity_np();
 
+    VectorType w;
+    if(affine_state_prediction)
+    {
+      w = native_velocity;
+      w.scale(structure_space.mask);
+    }
+
+    // predicted initial guess of the fluid state (TangentStatePrediction), g = g_k + a d
+    bool use_prediction = false;
+    if(affine_state_prediction)
+    {
+      if(not affine_state_w.empty() and cold_initial_residual > 0.0)
+      {
+        BlockVectorType u0;
+        predict_affine_state(u0, w);
+        time_integrator_coupled->set_solution_np(u0);
+        operator_coupled->set_linear_solver_absolute_tolerance(
+          fluid->pde_operator->get_parameters().solver_data_coupled.rel_tol *
+          cold_initial_residual);
+        use_prediction = true;
+        ++predicted_states;
+      }
+    }
+    else if(prediction_valid and evaluations_in_step > 1 and cold_initial_residual > 0.0)
+    {
+      double const dd = prediction_d.norm_sqr();
+      if(dd > 0.0)
+      {
+        VectorType diff(g);
+        diff.add(-1.0, prediction_g);
+        double const alpha = (diff * prediction_d) / dd;
+        diff.add(-alpha, prediction_d);
+        if(diff.l2_norm() <= 1.e-12 * std::max<double>(1.0, g.l2_norm()))
+        {
+          BlockVectorType u0(prediction_u);
+          u0.add(alpha, prediction_du);
+          time_integrator_coupled->set_solution_np(u0);
+          double const rel_nominal =
+            fluid->pde_operator->get_parameters().solver_data_coupled.rel_tol;
+          operator_coupled->set_linear_solver_absolute_tolerance(rel_nominal *
+                                                                 cold_initial_residual);
+          use_prediction = true;
+          ++predicted_states;
+        }
+      }
+    }
+
+    bool const absolute_target =
+      use_prediction or
+      (warm_start_absolute_tolerance and not extrapolate and cold_initial_residual > 0.0);
+    if(absolute_target and not use_prediction)
+      operator_coupled->set_linear_solver_absolute_tolerance(
+        fluid->pde_operator->get_parameters().solver_data_coupled.rel_tol * cold_initial_residual);
+
     VectorType traction;
     initialize_vector(traction);
     fluid->pde_operator->set_solver_tolerance_factor(state_tolerance_factor);
-    native_fluid_response(traction, native_velocity, extrapolate);
+    native_fluid_response(traction, native_velocity, use_prediction ? false : extrapolate);
     fluid->pde_operator->set_solver_tolerance_factor(1.0);
     native_traction = traction;
+
+    if(absolute_target)
+      operator_coupled->set_linear_solver_absolute_tolerance(0.0);
+    else if(extrapolate and operator_coupled and evaluations_in_step == 1)
+      cold_initial_residual = operator_coupled->get_linear_solver_initial_residual();
+    if(tangent_state_prediction)
+      last_evaluated_control = g;
+    if(affine_state_prediction)
+    {
+      affine_state_w.push_back(w);
+      affine_state_u.push_back(time_integrator_coupled->get_solution_np());
+    }
 
     // data of the linearisation of the fluid boundary terms: Dirichlet data of the state and the
     // extrapolated velocity of the explicit convective term
@@ -1314,6 +1602,8 @@ private:
     solve_structure(y, load);
     y *= velocity_factor();
 
+    BlockVectorType response; // fluid response (recorded for TangentStatePrediction)
+
     dst                 = src;
     double const y_norm = y.l2_norm();
     if(y_norm > 0.0 and tangent_difference == TangentDifference::Analytic)
@@ -1326,6 +1616,19 @@ private:
       native_boundary_terms(rhs_fluid, *fluid_neumann);
       *fluid_neumann = native_base_data;
       solve_fluid(sol_fluid, rhs_fluid);
+      if(recording_tangents)
+        response = sol_fluid;
+      if(affine_state_prediction)
+      {
+        affine_tangent_w.push_back(y);
+        affine_tangent_w.back().scale(structure_space.mask);
+        affine_tangent_u.push_back(sol_fluid);
+        if(affine_tangent_w.size() > affine_max_pairs)
+        {
+          affine_tangent_w.erase(affine_tangent_w.begin());
+          affine_tangent_u.erase(affine_tangent_u.begin());
+        }
+      }
 
       VectorType traction;
       initialize_vector(traction);
@@ -1358,6 +1661,9 @@ private:
       }
     }
     dst.scale(structure_space.mask);
+
+    if(recording_tangents)
+      tangent_record.push_back(std::move(response));
   }
 
   /*
@@ -2137,12 +2443,90 @@ private:
     rhs_scaled *= 1.0 / factor;
 
     VectorType dummy_transport_velocity;
-    operator_coupled->solve_linear_problem(
-      dst,
-      rhs_scaled,
-      dummy_transport_velocity,
-      false /* update_preconditioner */,
-      fluid->time_integrator->get_scaling_factor_time_derivative_term());
+
+    if(not linearized_initial_guess)
+    {
+      fluid->pde_operator->set_solver_tolerance_factor(linearized_factor_current);
+      ++linearized_solves;
+      linearized_krylov_iterations += operator_coupled->solve_linear_problem(
+        dst,
+        rhs_scaled,
+        dummy_transport_velocity,
+        false /* update_preconditioner */,
+        fluid->time_integrator->get_scaling_factor_time_derivative_term());
+      fluid->pde_operator->set_solver_tolerance_factor(1.0);
+      dst *= factor;
+      return;
+    }
+
+    /*
+     * Projected initial guess: x0 = sum_i (b_i, b) x_i with the l2-orthonormal previous
+     * right-hand sides b_i and the corresponding solutions x_i (A x_i ~ b_i, the matrix is the same
+     * for S and S^* and changes only slightly within and across time steps), true residual
+     * r0 = b - A x0, and a correction solve whose tolerance refers to ||b|| = 1.
+     */
+    double const rel_nominal = fluid->pde_operator->get_parameters().solver_data_coupled.rel_tol;
+    double const target      = std::min(1.e-2, rel_nominal * linearized_factor_current);
+
+    BlockVectorType x0, residual, tmp;
+    operator_coupled->initialize_block_vector_velocity_pressure(x0);
+    operator_coupled->initialize_block_vector_velocity_pressure(tmp);
+    std::vector<double> coefficients(fluid_history_b.size());
+    for(unsigned int i = 0; i < fluid_history_b.size(); ++i)
+    {
+      coefficients[i] = fluid_history_b[i] * rhs_scaled;
+      x0.add(coefficients[i], fluid_history_x[i]);
+    }
+    residual = rhs_scaled;
+    if(not fluid_history_b.empty())
+    {
+      operator_coupled->apply_linearized_problem(tmp, x0);
+      residual.add(-1.0, tmp);
+    }
+    double const r0 = residual.l2_norm();
+    ++linearized_solves;
+
+    BlockVectorType x(x0);
+    if(r0 > target)
+    {
+      fluid->pde_operator->set_solver_tolerance_factor(std::max(1.0, target / r0 / rel_nominal));
+      tmp = 0.0;
+      linearized_krylov_iterations += operator_coupled->solve_linear_problem(
+        tmp,
+        residual,
+        dummy_transport_velocity,
+        false /* update_preconditioner */,
+        fluid->time_integrator->get_scaling_factor_time_derivative_term());
+      fluid->pde_operator->set_solver_tolerance_factor(1.0);
+      x.add(1.0, tmp);
+    }
+    else
+      ++linearized_solves_skipped;
+
+    // store the pair, orthonormalized against the previous right-hand sides
+    {
+      BlockVectorType b_new(rhs_scaled), x_new(x);
+      for(unsigned int i = 0; i < fluid_history_b.size(); ++i)
+      {
+        b_new.add(-coefficients[i], fluid_history_b[i]);
+        x_new.add(-coefficients[i], fluid_history_x[i]);
+      }
+      double const b_norm = b_new.l2_norm();
+      if(b_norm > 1.e-8)
+      {
+        b_new *= 1.0 / b_norm;
+        x_new *= 1.0 / b_norm;
+        fluid_history_b.push_back(b_new);
+        fluid_history_x.push_back(x_new);
+        if(fluid_history_b.size() > linearized_history)
+        {
+          fluid_history_b.erase(fluid_history_b.begin());
+          fluid_history_x.erase(fluid_history_x.begin());
+        }
+      }
+    }
+
+    dst = x;
     dst *= factor;
   }
 
@@ -2265,6 +2649,8 @@ private:
     preconditioner_setup_solves += n;
     ++preconditioner_assemblies;
     jacobian_needs_update = false;
+    jacobian_time_step    = fluid->time_integrator->get_time_step_size();
+    ++jacobian_assemblies;
   }
 
   /*
@@ -2499,17 +2885,57 @@ private:
 
   int component = 0; // 0: full S, 1: fluid part only, 2: structure part only (diagnostics)
 
+  // projected initial guesses of the linear fluid solves (LinearizedInitialGuess)
+  bool                                 linearized_initial_guess = false;
+  unsigned int                         linearized_history       = 30;
+  mutable std::vector<BlockVectorType> fluid_history_b, fluid_history_x;
+
+  // predicted fluid states from the tangent solves (TangentStatePrediction)
+  bool                                                   tangent_state_prediction      = false;
+  bool                                                   warm_start_absolute_tolerance = false;
+  std::shared_ptr<IncNS::TimeIntBDFCoupled<dim, Number>> time_integrator_coupled;
+  mutable bool                                           recording_tangents = false;
+  mutable std::vector<BlockVectorType>                   tangent_record;
+  bool                                                   prediction_valid      = false;
+  double                                                 cold_initial_residual = 0.0;
+  BlockVectorType                                        prediction_u, prediction_du;
+  VectorType prediction_g, prediction_d, last_evaluated_control;
+
+  // AffineStatePrediction: pairs of the current time step (frozen geometry)
+  bool                                 affine_state_prediction = false;
+  unsigned int                         affine_max_pairs        = 64;
+  std::vector<VectorType>              affine_state_w;
+  std::vector<BlockVectorType>         affine_state_u;
+  mutable std::vector<VectorType>      affine_tangent_w;
+  mutable std::vector<BlockVectorType> affine_tangent_u;
+
+public:
+  mutable unsigned int linearized_solves = 0, linearized_solves_skipped = 0,
+                       linearized_krylov_iterations = 0, predicted_states = 0;
+  // sum over the affine predictions of the relative part of w outside the span of the pairs
+  mutable double affine_remainder_sum = 0.0;
+
+private:
   // control of the state solves
-  bool         warm_start             = false;
-  unsigned int evaluations_in_step    = 0;
-  double       state_tolerance_factor = 1.0;
+  double         linearized_tolerance_factor = 1.0;
+  mutable double linearized_factor_current   = 1.0;
+  bool           warm_start                  = false;
+  unsigned int   evaluations_in_step         = 0;
+  double         state_tolerance_factor      = 1.0;
 
   // IQN-IMVJ inverse Jacobian (dense, interface dofs)
   dealii::FullMatrix<double> H_previous;
   double                     qn_initial_relaxation = 0.3;
 
   // FrozenJacobian preconditioner
-  mutable bool                             jacobian_needs_update = true;
+  mutable bool jacobian_needs_update = true;
+
+public:
+  // time step size of the last assembly of the frozen Jacobian and number of assemblies
+  mutable double       jacobian_time_step  = 0.0;
+  mutable unsigned int jacobian_assemblies = 0;
+
+private:
   mutable dealii::LAPACKFullMatrix<double> jacobian_lu;
 };
 

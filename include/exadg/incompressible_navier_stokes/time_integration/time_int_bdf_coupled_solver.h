@@ -59,6 +59,26 @@ public:
   void
   postprocessing_stability_analysis();
 
+  // solution of the current time step, also the initial guess of a solve without extrapolation
+  BlockVectorType const &
+  get_solution_np() const
+  {
+    return solution_np;
+  }
+
+  void
+  set_solution_np(BlockVectorType const & solution)
+  {
+    solution_np = solution;
+  }
+
+  // accumulated number of linear iterations of the coupled system
+  unsigned long long
+  get_linear_iterations_accumulated() const
+  {
+    return std::get<1>(iterations.second);
+  }
+
   void
   print_iterations() const final;
 

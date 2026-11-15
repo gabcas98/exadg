@@ -79,7 +79,18 @@ periodic regime show that all couplings reach the same limit cycle, while during
 the instability the Dirichlet--Neumann iteration is sensitive to the accuracy of warm-started
 fluid solves and the secant method is not. Fine resolutions require a structure integrator with
 dissipation at mid frequencies and a mesh motion stiffened towards the flag; with these, the
-secant method reproduces the reference amplitudes and mean values to within $1\%$.
+secant method reproduces the reference amplitudes and mean values to within $1\%$. Finally,
+matrix-free recycling of the exact tangent and adjoint pairs, derivative and Krylov tolerances tied
+to the mismatch tolerance, and a prediction of the fluid state from the tangent solves make
+interface Newton, Gauss--Newton, Levenberg--Marquardt and trust region as cheap as the secant method
+in the start-up phase and at most $12\%$ more expensive on the limit cycle. A Lagrange predictor of
+the control, an affine prediction of the fluid state from all solves of the time step and a fluid
+tolerance matched to the coupling error reduce the cost of all methods by another $38$--$67\%$ on
+the limit cycle without changing the solution; the secant method profits most and becomes three
+times faster, and twice as cheap as interface Newton. A further factor of $6$--$8$ comes from the
+coarse-grid solver of the Schur-complement preconditioner of the fluid; with the dual-splitting
+fluid solver, whose step is affine in the interface data as well, the methods without adjoint
+run with exact difference tangents and are another $9$--$27\%$ cheaper.
 \end{abstract}
 
 \tableofcontents
@@ -132,6 +143,17 @@ finite element library built on \code{deal.II}. The contributions are:
   implementation of ExaDG, the effect of inexact fluid solves on the growth of the instability,
   stopping criteria of the secant method above the noise floor, and a comparison of the periodic
   regime with the benchmark reference.
+  \item Matrix-free accelerations of the derivative-based methods (\cref{sec:fast}): recycled
+  inverses from the exact tangent and adjoint pairs, a target forcing term, adaptive accuracy of the
+  derivatives, a prediction of the fluid state from the tangent solves, and Gauss--Newton,
+  Levenberg--Marquardt and trust-region steps in the Krylov subspace of the interface equation. With
+  them IN, GN, LM and TR cost as much as the secant method in the start-up phase and $9$--$12\%$
+  more on the limit cycle, and SD and L-BFGS about as much as IQN-ILS. Predictors of the control
+  and of the fluid state and tolerances matched to the time discretisation error reduce the cost by
+  another $42$--$65\%$ in the start-up phase and $38$--$67\%$ on the limit cycle; the secant method
+  profits most and is then the cheapest method. A suitable coarse-grid solver in the fluid
+  preconditioner gains another factor $6$--$8$, and the methods without adjoint also run with the
+  dual-splitting fluid solver.
 \end{enumerate}
 Negative results (Sobolev metrics, Tikhonov regularisation, a constraint-only stabilisation of the
 multiplier, a Robin penalty) are reported as well, since they delimit the design space.
@@ -1443,6 +1465,548 @@ $Q_6$, refined twice & \eqref{eq:ale_stiffening} & 53312 & $-14.61\pm12.53\ [3.8
 \end{table}
 
 %=================================================================================================
+\section{Derivative-based methods at the cost of the secant method}\label{sec:fast}
+%=================================================================================================
+
+On the native formulation all methods of \cref{sec:methods} converge to the same solution, but at
+very different cost. At the start of this study (exact linear solves, no preconditioner), the
+first $20$ steps of the start-up phase of FSI2 cost, in seconds per time step, $1.68$ for the
+secant method, $1.62$ for IQN-ILS, $2.60$ for IN, $13.6$ for GN, $14.5$ for LM, $14.1$ for TR,
+$12.8$ for L-BFGS and $108.6$ for SD. This section shows how the gap is closed without giving up
+exact derivatives and without assembling any matrix: every ingredient below is matrix-free and
+works with interface vectors (a few hundred degrees of freedom) or with fluid vectors that the
+method computes anyway.
+
+\paragraph{Setting.} Native-traction formulation with the coupled fluid solver (required for $S$
+and $S^*$), fluid $Q_3$ refined once, structure $Q_4$, Bossak $\rho_\infty=0$, tolerance
+$\|m\|_{\M}\le\max\{10^{-5},10^{-6}\|g\|_{\M}\}$, $8$ processes, one run at a time. Two
+benchmarks: (a) $100$ steps with the constant time step $\Delta t=6.25\cdot10^{-4}$ of the CFL
+condition for the maximum inflow velocity; (b) the start-up phase $t\in[0,1]$ with the adaptive time
+step of the application ($101$ steps, $\Delta t$ between $6\cdot10^{-4}$ and $3.4\cdot10^{-2}$,
+changes of up to $20\%$ per step). More than $95\%$ of the run time is spent in the linear solves
+of the fluid. Since the wall times of identical runs varied by up to $20\%$ on the workstation used,
+the cost is measured by the number of Krylov iterations of the fluid solver per time step (state
+solves and the linear solves inside $S$ and $S^*$); wall times are given for orientation.
+
+\subsection{Ingredients}\label{sec:fast_ingredients}
+
+\paragraph{Recycled inverses from exact derivative pairs.} Every application of $S$ yields an
+exact pair $(v,\,y=Sv)$. With the pairs of the current solve and of the last $q$ time steps
+(newest first), the images are orthonormalised by modified Gram--Schmidt in the $A$ inner product
+(dropping nearly dependent ones as in \cref{alg:qn}), $Y=QR$, and
+\begin{equation}\label{eq:recycled}
+  H = I + (V-Y)R^{-1}Q^{\top}A, \qquad H y_i = v_i,
+\end{equation}
+is the identity on the $A$-orthogonal complement of $\operatorname{span}Y$. $H$ is the right
+preconditioner of GMRES in IN. It is the multi-secant construction of IQN-IMVJ \cite{Bogaers2014}
+with \emph{exact tangent pairs} instead of secant pairs, so that it does not see the noise floor of
+the state map (\cref{sec:inexact}). In the same way the adjoint pairs $(w,\,S^*w)$ of the gradient
+evaluations define $H_A\approx S^{-*}$ (orthonormalisation in the $G$ inner product), and
+$P=H H_A\approx(S^*S)^{-1}$ preconditions the gradient methods. The symmetric choice $HH^*$ does
+not work: $H^*$ is no approximation of $S^{-*}$ outside $\operatorname{span}Y$, and GN needed about
+$80$ CG iterations per Gauss--Newton iteration and stagnated. Storage: $q=16$ time steps
+($40$ for the gradient methods), at most $240$ pairs of interface vectors.
+
+\paragraph{Target forcing term.} With $H$, one GMRES iteration reduces the linear residual by about
+$10^{-5}$. With $\eta=10^{-2}$ GMRES stops there, and the Newton step gives
+$\|m_1\|/\|m_0\|\approx1.2\cdot10^{-5}$ (median); tangent solves accurate to $10^{-10}$ instead of
+$10^{-6}$ give the same ratio ($1.1\cdot10^{-5}$), so the GMRES residual, not the accuracy of $S$,
+limits the step. Whenever this lands just above the tolerance $\tau$, a second Newton iteration
+costs a state and three to four tangent solves, whereas one more GMRES iteration costs one tangent
+solve. The forcing term $\eta_k=\min\{\eta_{\max},\theta\tau/\|m_k\|\}$, $\theta=1$, makes the linear
+model reach the tolerance: $1.01$ instead of $1.5$ Newton iterations per step.
+
+\paragraph{Accuracy of the derivatives.} The linear fluid solves inside $S$ and $S^*$ use the
+relative tolerance $\varepsilon_k=\min\{10^{-2},\max\{10^{-5},\kappa\tau/\|m_k\|\}\}$, $\kappa=1$:
+the step needs $S$ only to the accuracy that brings the residual below $\tau$. A fixed
+$\varepsilon=10^{-4}$ is too loose ($1.67$ Newton iterations per step); $\varepsilon=10^{-5}$ needs
+$23$ fluid iterations per solve at constant $\Delta t$ instead of $27$ for $10^{-6}$; the adaptive
+choice pays off in the start-up phase (IN: $294\to251$ fluid iterations per step).
+
+\paragraph{State prediction from the tangent solves.} For frozen geometry the fluid step is affine
+in the interface data (\cref{lem:affine}). The tangent solves of the GMRES directions $z_j$ provide
+the fluid responses $\delta u_j$, and for the step $d=\sum_jc_jz_j$
+\begin{equation}\label{eq:prediction}
+  u(g+\alpha d)\approx u(g)+\alpha\sum_jc_j\,\delta u_j
+\end{equation}
+up to the nonlinearity of the structure and of the geometry. The state solve of the trial point
+starts from \eqref{eq:prediction}. To keep the state map a function of $g$ only
+(\cref{sec:inexact}), it stops at the absolute accuracy of a solve from the extrapolation,
+$\tau_f\|r_0^{\mathrm{extr}}\|$ with the initial residual of the first (extrapolated) state of the
+time step, and not at a reduction of its own, much smaller, initial residual. A predicted state
+costs $15$ instead of $32$ fluid iterations at constant $\Delta t$. The gradient methods predict
+their trial state from the tangent solve of their step length. The same stopping rule makes warm
+starts of the secant method consistent (\code{WarmStartAbsoluteTolerance}); it is used for the
+second QN row of \cref{tab:fast_methods}.
+
+\paragraph{GN, LM and TR in the Krylov subspace.} For a square, invertible $S$ the Gauss--Newton step
+solves $Sd=-m$, so GN can use the GMRES solve of IN and needs no adjoint. LM and TR solve their
+subproblems in the GMRES subspace (hybrid Krylov methods \cite{BrownSaad1990}): with the search
+directions $Z$, the Arnoldi relation $SZ=V\bar H$ and $-m=\beta v_1$,
+\begin{equation}\label{eq:subspace}
+  \tfrac12\|m+SZy\|_A^2=\tfrac12\|\bar Hy-\beta e_1\|^2,
+\end{equation}
+and the subproblems are of size $k\times k$ ($k=1$--$3$ here):
+$y_{\mathrm{LM}}=(\bar H^{\top}\bar H+\lambda G_Z)^{-1}\beta\bar H^{\top}e_1$ with
+$G_Z=Z^{\top}GZ$, and for TR the same with $\lambda\ge0$ such that $\|Zy\|_G=\Delta$ (bisection) if
+the Gauss--Newton step lies outside the trust region. Gain ratio and update of $\lambda$ or $\Delta$
+are those of \cref{sec:methods} with the predicted reduction of \eqref{eq:subspace}; a rejected
+trial costs a state but no tangent solve.
+
+\paragraph{Preconditioned gradient methods.} SD uses $d=-HH_Ar$ and the step length of the exact
+quadratic model along $d$, $\alpha=-(r,d)_G/\|Sd\|_A^2$ (one tangent solve, which also adds a pair
+to $H$ and predicts the trial state); L-BFGS uses $HH_A$ as initial inverse Hessian and the same
+step length. Since $HH_A$ is not symmetric, $-HH_Ar$ need not be a descent direction when the
+recycled pairs are outdated (large changes of $\Delta t$): if the angle condition
+$(r,d)_G\le-10^{-4}\|r\|_G\|d\|_G$ fails, the pairs of previous time steps are discarded and $d$ is
+recomputed, finally $d=-r$. Without this safeguard $7$ of $66$ steps of L-BFGS ended with a failed
+line search in the start-up phase. For all methods, a failed line search is repeated once with
+accurate derivatives and without recycled pairs, and no gradient is computed at the converged
+point.
+
+\subsection{Results}\label{sec:fast_results}
+
+\Cref{tab:fast_progress} shows the effect of the ingredients on IN at constant time step. Each
+ingredient removes a specific cost: the recycled preconditioner the Krylov iterations, the target
+forcing term the second Newton iteration, the state prediction half of the cost of the second state.
+With all ingredients IN needs $1.02$ Newton iterations, $2.02$ states and $1.55$ tangent solves per
+time step, and $6\%$ fewer fluid iterations than the secant method.
+
+\begin{table}[ht]\centering
+\caption{Interface Newton at constant time step ($100$ steps, $\Delta t=6.25\cdot10^{-4}$): per time
+step Newton iterations, state evaluations, tangent solves, fluid Krylov iterations and wall time
+($8$ processes; the fluid iterations of the first two rows were not recorded).}
+\label{tab:fast_progress}
+\small
+\begin{tabular}{lccccc}
+\toprule
+variant & it. & states & $S$ & fluid it. & s/step\\
+\midrule
+no preconditioner, $\varepsilon=10^{-4}$ ($31$ steps) & 2.52 & 3.52 & 7.81 & -- & 1.07\\
+recycled $H$, $\eta=10^{-2}$, $\varepsilon=10^{-6}$, $q=4$ & 1.50 & 2.50 & 2.50 & -- & 0.48\\
++ target forcing term, $\theta=0.3$ & 1.03 & 2.03 & 2.14 & 123.7 & 0.43\\
++ $\varepsilon=10^{-5}$ & 1.01 & 2.01 & 2.06 & 112.2 & 0.44\\
++ state prediction \eqref{eq:prediction} & 1.01 & 2.01 & 2.09 & 94.9 & 0.37\\
++ $\theta=1$, $q=16$ & 1.01 & 2.01 & 1.53 & 82.4 & 0.28\\
++ adaptive $\varepsilon_k$, $\kappa=1$ & 1.02 & 2.02 & 1.55 & 81.7 & 0.30\\
+\midrule
+secant method (\cref{alg:qn}) & 1.69 & 2.69 & 0 & 87.2 & 0.30\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\Cref{tab:fast_methods} compares all methods in both benchmarks with the final settings
+($\theta=\kappa=1$, $\varepsilon\ge10^{-5}$, $q=16$, $40$ for the gradient methods, state prediction,
+GN, LM and TR in the Krylov subspace). All runs reach the tolerance in every time step. In the
+start-up phase the tip trajectories of all methods differ from that of the secant method by at most
+$4\cdot10^{-4}$ of the maximal deflection, i.e.\ within the tolerance of the coupling.
+\begin{itemize}
+\item GN coincides with IN (its step is the IN step), and LM and TR take the full step in almost
+every time step, so that the three Gauss--Newton-type methods cost the same as IN. At constant time
+step they need $81$--$82$ fluid iterations per step against $87$ for the secant method, $79$ for the
+secant method with warm start and $111$ for IQN-ILS; the wall times are $0.28$--$0.34$~s per step
+against $0.30$--$0.36$~s for the secant method. Before, without preconditioner, GN and TR needed
+$6.0$ and $6.3$~s per step, LM with the dense frozen Jacobian $1.7$~s.
+\item In the start-up phase IN and GN are the cheapest of all methods ($251$ fluid iterations per
+step against $265$ for the secant method with warm start and $334$ without), although the time step
+changes by up to $20\%$ per step and the recycled pairs age quickly. LM and TR pay for a few
+rejected or shortened steps ($1.26$ and $1.11$ iterations).
+\item SD and L-BFGS need an adjoint and a tangent solve per iteration and therefore cost more per
+iteration than IN, but with the preconditioner $HH_A$ they converge in $1.4$--$2.7$ iterations
+per step, against $150$ and $25$ iterations without (start-up, first $20$ steps). At constant time
+step SD needs $5\%$ fewer and L-BFGS $1\%$ more fluid iterations than IQN-ILS. In the start-up
+phase L-BFGS is cheaper than the secant method without warm start ($301$ against $334$), SD costs
+$1.17$ times as much; the safeguards of \cref{sec:fast_ingredients} are active in a few steps
+(up to seven discarded histories).
+\end{itemize}
+
+\begin{table}[ht]\centering
+\caption{All methods with the ingredients of \cref{sec:fast_ingredients}: per time step iterations,
+state evaluations, tangent and adjoint solves and fluid Krylov iterations. Left: constant time
+step, $100$ steps; right: start-up phase $t\in[0,1]$ with adaptive time step, $101$ steps. IQN-ILS:
+partitioned iterations of the Dirichlet--Neumann solver of ExaDG.}
+\label{tab:fast_methods}
+\small
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccccccc}
+\toprule
+& \multicolumn{5}{c}{constant $\Delta t$} & \multicolumn{5}{c}{start-up, adaptive $\Delta t$}\\
+\cmidrule(lr){2-6}\cmidrule(lr){7-11}
+method & it. & states & $S$ & $S^*$ & fluid it. & it. & states & $S$ & $S^*$ & fluid it.\\
+\midrule
+secant (\cref{alg:qn}) & 1.69 & 2.69 & 0 & 0 & 87.2 & 2.44 & 3.44 & 0 & 0 & 334.4\\
+secant, warm start & 1.69 & 2.69 & 0 & 0 & 79.2 & 2.57 & 3.57 & 0 & 0 & 265.2\\
+IQN-ILS & 3.68 & 3.68 & -- & -- & 110.8 & 4.05 & 4.05 & -- & -- & 350.4\\
+IN & 1.02 & 2.02 & 1.55 & 0 & 81.7 & 1.09 & 2.09 & 2.17 & 0 & 251.4\\
+GN & 1.02 & 2.02 & 1.55 & 0 & 81.7 & 1.09 & 2.09 & 2.17 & 0 & 251.4\\
+LM & 1.04 & 2.04 & 1.57 & 0 & 81.4 & 1.26 & 2.45 & 2.47 & 0 & 265.1\\
+TR & 1.02 & 2.02 & 1.55 & 0 & 81.7 & 1.11 & 2.11 & 2.21 & 0 & 258.1\\
+SD & 1.39 & 2.39 & 1.39 & 1.39 & 105.2 & 2.69 & 3.89 & 2.69 & 2.69 & 391.6\\
+L-BFGS & 1.62 & 2.62 & 1.62 & 1.62 & 112.2 & 1.72 & 2.72 & 1.72 & 1.72 & 300.8\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\paragraph{What did not help.} (i) Projected initial guesses for the linear solves of $S$ and
+$S^*$ from the previous right-hand sides and solutions (\code{LinearizedInitialGuess}): the fluid
+matrix changes with the geometry from step to step, the projection residual is large, and the
+correction solve needed $33$ instead of $23$ iterations. (ii) The Morales--Nocedal limited-memory
+preconditioner from exact CG pairs $(p,S^*Sp)$ for GN and LM on the normal equations: $31$ tangent
+and $35$ adjoint solves per step ($5.2$~s), the squared condition number remains. (iii) $HH^*$ as
+preconditioner of the normal equations or of the gradient (see above). (iv) A longer recycling
+memory than $16$ time steps for IN, and tangent solves looser than $10^{-5}$ at constant $\Delta t$.
+
+\subsection{Periodic regime}\label{sec:fast_periodic}
+
+The two benchmarks above have small time steps and small deflections. To test the methods on the
+limit cycle of FSI2, one run with the setting above and the adaptive time step is integrated to
+$t=21$~s: with the secant method up to $t=14$~s, then with each method for one second (about $510$
+steps of $\Delta t\approx1.96\cdot10^{-3}$, three times the time step of benchmark (a)), in the order
+IN, GN, LM, TR, SD, L-BFGS, and finally again with the secant method on $[20,21]$ as reference
+(parameter \code{MethodSchedule}; $2.2$~h on $8$ processes). The amplitude saturates at
+$t\approx15$~s, so that the window of IN still lies at the end of the growth phase ($1\%$ below the
+final amplitude) and all later windows lie on the limit cycle.
+
+\begin{table}[ht]\centering
+\caption{Periodic regime of FSI2, coupled fluid solver ($Q_3$, refinement 1), adaptive time step
+$\Delta t\approx1.96\cdot10^{-3}$: one run, one method per window of one second. Per time step
+iterations, state evaluations, tangent and adjoint solves, fluid Krylov iterations and wall time;
+mean $\pm$ amplitude [frequency] of the tip displacement over the window. Last row: dual-splitting
+fluid solver on the same grid, $t\in[15,20]$.}
+\label{tab:fast_periodic}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llcccccccc}
+\toprule
+method & window & it. & states & $S$ & $S^*$ & fluid it. & s/step & $d_x(A)\ [10^{-3}]$ & $d_y(A)\ [10^{-3}]$\\
+\midrule
+secant (\cref{alg:qn}) & $[20,21]$ & 2.77 & 3.77 & 0 & 0 & 287.3 & 1.07 & $-11.77\pm10.38\ [3.82]$ & $0.92\pm70.69\ [1.913]$\\
+IN & $[14,15]$ & 2.00 & 3.00 & 4.83 & 0 & 313.9 & 1.24 & $-11.65\pm10.31\ [3.83]$ & $0.70\pm70.01\ [1.914]$\\
+GN & $[15,16]$ & 2.01 & 3.01 & 4.97 & 0 & 320.5 & 1.14 & $-11.75\pm10.37\ [3.82]$ & $0.89\pm70.64\ [1.913]$\\
+LM & $[16,17]$ & 2.01 & 3.01 & 5.01 & 0 & 321.4 & 1.12 & $-11.77\pm10.38\ [3.83]$ & $0.92\pm70.70\ [1.913]$\\
+TR & $[17,18]$ & 2.01 & 3.01 & 5.04 & 0 & 322.7 & 1.13 & $-11.77\pm10.38\ [3.83]$ & $0.92\pm70.69\ [1.913]$\\
+SD & $[18,19]$ & 3.70 & 4.74 & 3.70 & 3.70 & 438.9 & 1.59 & $-11.77\pm10.38\ [3.83]$ & $0.92\pm70.69\ [1.913]$\\
+L-BFGS & $[19,20]$ & 3.69 & 4.73 & 3.69 & 3.69 & 437.6 & 1.80 & $-11.77\pm10.38\ [3.83]$ & $0.92\pm70.69\ [1.913]$\\
+\midrule
+Turek--Hron \cite{TurekHron2006} & & & & & & & & $-14.58\pm12.44\ [3.8]$ & $1.23\pm80.6\ [2.0]$\\
+secant, dual splitting & $[15,20]$ & & & & & & & $-13.83\pm11.99\ [3.83]$ & $0.88\pm77.26\ [1.917]$\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+All methods reach the tolerance in every one of the $9605$ time steps; the safeguards discard the
+recycled history nine times in the whole run. On the limit cycle all windows give the same
+oscillation to four digits (\cref{tab:fast_periodic}), so that switching the method does not
+perturb the solution. The cost, however, is ordered differently than in the start-up phase: IN
+needs $9\%$ and GN, LM and TR $12\%$ more fluid iterations than the secant method, SD and L-BFGS
+$53\%$ more. The reason is the second Newton iteration. The fluid mesh moves with the structure
+inside the state evaluation (\cref{sec:native}), whereas $S$ and $S^*$ are the derivatives for
+frozen geometry; IN is therefore an inexact Newton method, and the neglected shape sensitivity adds
+to the nonlinearity of the structure. Both remainders grow with the mismatch of the initial guess,
+i.e.\ with the larger time step and the large deflection, so that after the first step, whose linear
+model reaches the tolerance by construction of the target forcing term, the remainder exceeds the
+tolerance in every time step. IN therefore needs
+two Newton iterations instead of $1.02$--$1.09$, with $2.4$ tangent solves each. In a sampled step
+the three state solves need about $76$, $49$ and $38$ iterations (the last two predicted from the
+tangent responses) and the $4.8$ tangent solves about $150$ iterations together. The secant method
+needs $2.77$ iterations, i.e.\ almost one more state, but no derivatives; each of its states needs
+the same number of iterations (about $76$), because every state solve starts from the
+extrapolation in time. In the periodic regime at the CFL time step, the derivative-based methods are
+therefore close to, but not as cheap as, the secant method. Two ways to change the gap were
+considered: a second Newton step with the recycled inverse $H$ alone, whose newest pairs are exact
+at the current iterate, instead of new tangent solves; and, in the opposite direction, a state
+prediction for the secant method, whose iterates within a time step span the step and whose fluid
+states are affine in the data for frozen geometry (\cref{lem:affine}). The second one is realised
+by the affine prediction of \cref{sec:fast_tolerances}, and it widens the gap
+(\cref{tab:fast_periodic_tol}).
+
+The limit cycle of the coupled fluid solver differs from that of the dual-splitting scheme on the
+same grid and with a comparable time step ($\Delta t\approx1.85\cdot10^{-3}$): the amplitude of
+$d_y$ is $8.5\%$ smaller ($70.7$ against $77.3\cdot10^{-3}$) at the same frequency. All coupling
+methods agree on each discretisation, so the difference is one of the fluid discretisation
+(coupled solution with explicit convection against dual splitting, together with the penalty
+parameters computed from the extrapolated velocity); it was not investigated further.
+
+\subsection{Predictors and tolerances}\label{sec:fast_tolerances}
+
+The ingredients of \cref{sec:fast_ingredients} reduce the cost of the derivatives. Three further
+sources of cost are common to all methods: the initial guess of the control, the initial guess of
+the fluid state, and the accuracy to which the coupled problem and the fluid are solved.
+
+\paragraph{Predictor of the control.} The iteration of each time step starts from the
+extrapolation $g^{(0)}_{n+1}=2g_n-g_{n-1}$, whose coefficients assume a constant time step. With
+the adaptive time step of the start-up phase (changes of up to $20\%$ per step) this predictor is
+only first-order accurate. \code{ControlExtrapolationOrder}~$=p$ replaces it by the Lagrange
+extrapolation through the converged controls of the last $p+1$ time steps at their actual times.
+On the limit cycle of \cref{sec:fast_periodic}, the relative error of the predicted control force
+is $1.6\cdot10^{-3}$ for the linear, $1.7\cdot10^{-4}$ for the quadratic and $1.3\cdot10^{-4}$ for
+the cubic extrapolation; we use $p=2$. Since the mismatch of the initial guess is proportional to
+the error of the predictor, and the remainder after one Newton step is proportional to a power of
+it, the better predictor saves iterations of all methods.
+
+\paragraph{Affine state prediction.} Within a time step, the fluid step is affine in its Dirichlet
+data $w$, the structure velocity on the interface (\cref{lem:affine}), up to the bilinear
+convective boundary term (\cref{lem:fd}) and the motion of the mesh inside the state. Every state
+solve of the time step yields a pair $(w_i,u_i)$, every tangent solve a pair $(\delta w_j,\delta
+u_j)$ with $u(w+\delta w_j)=u(w)+\delta u_j$. Since the structure is solved first, $w$ is known
+before the fluid solve, and the fluid state is predicted by least squares,
+\begin{equation}\label{eq:affine_prediction}
+  u(w)\approx u_k+\sum_i a_i(u_i-u_k)+\sum_j b_j\,\delta u_j,\qquad
+  (a,b)=\operatorname*{arg\,min}\Big\|w-w_k-\sum_ia_i(w_i-w_k)-\sum_jb_j\,\delta w_j\Big\|,
+\end{equation}
+with the latest state $k$ as base and modified Gram--Schmidt on the interface vectors
+(\code{AffineStatePrediction}). Unlike \eqref{eq:prediction}, the prediction is not a linearisation
+in the control: the structure nonlinearity does not enter, because the prediction uses the actual
+data of the fluid. It applies to every method, also to the secant method, whose iterates within a
+time step span part of the new step: the part of $w-w_k$ outside the span of the pairs is $50$--$60\%$
+for the secant method and $1$--$5\%$ for IN. The state solve stops at the absolute accuracy of the
+solve from the extrapolation, as in \cref{sec:fast_ingredients}.
+
+\paragraph{Stopping criterion.} All methods stop on the size of the interface residual,
+$\|m\|_{\M}\le\tau=\max\{10^{-5},10^{-6}\|g\|_{\M}\}$, i.e.\ on the cost $J=\frac12\|m\|_{\M}^2$ and
+not on the gradient (the gradient criterion of the gradient methods is switched off). The question
+is how small $J$ has to be. The coupling error is only meaningful in relation to the
+discretisation error, and the state solves only need to be accurate enough not to perturb the
+coupling. \Cref{tab:fast_tolerances} compares, in the start-up phase, the deviation of the tip
+displacement from a reference computed with $\tau=10^{-10}\|g\|_{\M}$ and fluid solves to
+$10^{-12}$ with the time discretisation error, estimated by the same reference with half the CFL
+number. Two further criteria were tested: a larger $\tau$, and the reduction criterion
+$\|m\|_{\M}\le c\|m^{(0)}\|_{\M}$ (\code{MismatchReduction}), which relates the tolerance to the
+error of the predictor and hence to the local time error.
+
+\begin{table}[ht]\centering
+\caption{Start-up phase $t\in[0,1]$, adaptive time step, $101$ steps: per time step iterations,
+state evaluations, tangent solves and fluid Krylov iterations; maximal deviation of the tip
+displacement from the reference, relative to its maximum. Interface tolerance
+$\tau=\max\{10^{-5},\tau_{\mathrm{rel}}\|g\|_{\M}\}$, relative tolerance $\tau_f$ of the
+fluid solver (FGMRES); the tangent solves keep $\varepsilon\ge10^{-5}$. Maximal displacements in this
+phase: $|d_x|\le2.5\cdot10^{-5}$, $|d_y|\le2.4\cdot10^{-4}$; $d_y$ is sensitive to small perturbations
+(\cref{sec:fluid_accuracy}).}
+\label{tab:fast_tolerances}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccc}
+\toprule
+configuration & it. & states & $S$ & fluid it. & dev.\ $d_x$ & dev.\ $d_y$\\
+\midrule
+reference, secant, $\tau_{\mathrm{rel}}=10^{-10}$, $\tau_f=10^{-12}$ & 6.67 & 7.67 & 0 & 1011.5 & -- & --\\
+reference with CFL $0.25$ ($184$ steps) & 5.96 & 6.96 & 0 & 665.9 & $8.5\cdot10^{-3}$ & $1.7\cdot10^{-3}$\\
+\midrule
+secant, $\tau_{\mathrm{rel}}=10^{-6}$, $\tau_f=10^{-10}$ (\cref{tab:fast_methods}) & 2.44 & 3.44 & 0 & 334.4 & $6.3\cdot10^{-6}$ & $1.2\cdot10^{-4}$\\
+\quad $\tau_{\mathrm{rel}}=10^{-5}$ & 2.24 & 3.24 & 0 & 314.8 & $2.3\cdot10^{-5}$ & $9.2\cdot10^{-5}$\\
+\quad $\tau_{\mathrm{rel}}=10^{-4}$ & 1.97 & 2.97 & 0 & 281.0 & $1.5\cdot10^{-4}$ & $3.7\cdot10^{-4}$\\
+\quad $\tau_f=10^{-8}$ & 2.53 & 3.53 & 0 & 264.0 & $2.9\cdot10^{-6}$ & $1.6\cdot10^{-5}$\\
+\quad $\tau_f=10^{-7}$ & 2.60 & 3.60 & 0 & 229.4 & $5.0\cdot10^{-6}$ & $7.3\cdot10^{-5}$\\
+\quad predictor $p=2$ & 2.03 & 3.03 & 0 & 287.5 & $1.7\cdot10^{-5}$ & $1.3\cdot10^{-4}$\\
+\quad affine state prediction & 2.49 & 3.49 & 0 & 248.0 & $3.6\cdot10^{-6}$ & $8.1\cdot10^{-6}$\\
+\quad $p=2$, affine & 2.16 & 3.16 & 0 & 207.6 & $1.9\cdot10^{-5}$ & $2.1\cdot10^{-4}$\\
+\quad $p=2$, affine, $\tau_f=10^{-8}$ & 2.21 & 3.21 & 0 & 146.7 & $1.7\cdot10^{-5}$ & $9.4\cdot10^{-5}$\\
+\quad $p=2$, affine, $\tau_f=10^{-7}$ & 2.48 & 3.48 & 0 & \textbf{116.3} & $1.8\cdot10^{-5}$ & $8.8\cdot10^{-5}$\\
+\quad $p=2$, affine, $\tau_f=10^{-7}$, $\tau_{\mathrm{rel}}=10^{-5}$ & 1.89 & 2.89 & 0 & 114.4 & $2.1\cdot10^{-4}$ & $2.3\cdot10^{-4}$\\
+\quad $p=2$, $c=10^{-2}$ & 1.60 & 2.60 & 0 & 256.3 & $7.7\cdot10^{-5}$ & $9.4\cdot10^{-4}$\\
+\midrule
+IN, $\tau_{\mathrm{rel}}=10^{-6}$, $\tau_f=10^{-10}$ (\cref{tab:fast_methods}) & 1.09 & 2.09 & 2.17 & 251.4 & $3.6\cdot10^{-5}$ & $1.5\cdot10^{-4}$\\
+\quad $\tau_{\mathrm{rel}}=10^{-5}$ & 1.01 & 2.01 & 1.69 & 219.9 & $3.1\cdot10^{-4}$ & $1.3\cdot10^{-3}$\\
+\quad $\tau_f=10^{-8}$ & 1.09 & 2.09 & 2.21 & 204.3 & $3.4\cdot10^{-5}$ & $2.0\cdot10^{-4}$\\
+\quad predictor $p=2$ & 0.91 & 1.91 & 2.21 & 218.8 & $4.3\cdot10^{-5}$ & $2.0\cdot10^{-4}$\\
+\quad affine instead of tangent prediction & 1.09 & 2.09 & 2.13 & 251.7 & $3.9\cdot10^{-5}$ & $1.4\cdot10^{-4}$\\
+\quad $p=2$, affine & 0.89 & 1.89 & 2.00 & 212.9 & $1.6\cdot10^{-5}$ & $1.5\cdot10^{-4}$\\
+\quad $p=2$, affine, $\tau_f=10^{-8}$ & 0.91 & 1.91 & 2.10 & 169.9 & $1.8\cdot10^{-5}$ & $2.1\cdot10^{-4}$\\
+\quad $p=2$, affine, $\tau_f=10^{-7}$ & 0.90 & 1.90 & 2.08 & \textbf{145.0} & $4.9\cdot10^{-5}$ & $1.6\cdot10^{-4}$\\
+\quad $p=2$, affine, $\tau_f=10^{-7}$, $\tau_{\mathrm{rel}}=10^{-5}$ & 0.74 & 1.74 & 1.83 & 138.7 & $4.6\cdot10^{-4}$ & $5.4\cdot10^{-4}$\\
+\quad $p=2$, $c=10^{-2}$ & 0.91 & 1.91 & 1.60 & 190.6 & $8.1\cdot10^{-4}$ & $2.9\cdot10^{-4}$\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\Cref{tab:fast_tolerances} leads to four observations. (i) With the tolerances used so far the
+coupling error is three orders of magnitude below the time error ($6\cdot10^{-6}$ and
+$4\cdot10^{-5}$ against $8.5\cdot10^{-3}$): the coupled problem is solved far more accurately
+than the discretisation warrants. (ii) The largest waste is in the fluid solver: its relative
+tolerance $10^{-10}$, chosen to verify the derivatives to round-off, can be relaxed to $10^{-7}$
+without any change of the solution (the deviations stay at the level of the reference
+comparison), and the state solves become $35\%$ cheaper. The derivative tolerance is kept at
+$\varepsilon\ge10^{-5}$ by scaling \code{LinearizedToleranceFactor} accordingly. (iii) A larger
+interface tolerance or the reduction criterion save less: $\tau_{\mathrm{rel}}=10^{-5}$ saves
+$2$--$4\%$ once the predictors are in place and increases the deviation tenfold, the reduction
+criterion with $c=10^{-2}$ saves $11\%$ for the secant method and $13\%$ for IN at
+deviations up to $8\cdot10^{-4}$. Both remain well below the time error, but since most of the cost
+of an iteration is now in its first state solve, a cheaper last iteration matters little; we keep
+$\tau_{\mathrm{rel}}=10^{-6}$, whose cost is small and which keeps the coupling error out of every
+comparison of discretisations. (iv) The predictors and the fluid tolerance add up: the secant method
+needs $116$ instead of $334$ fluid iterations per step ($-65\%$, $0.45$ instead of $1.32$~s per
+step), IN $145$ instead of $251$ ($-42\%$). In at least one time step in ten, IN needs no iteration at all: the predicted control
+already satisfies the tolerance. The affine prediction
+helps the secant method more than IN, which already had the tangent prediction, so that the secant
+method is now the cheapest method also in the start-up phase.
+
+\paragraph{Periodic regime.} The long run of \cref{sec:fast_periodic} was repeated with $p=2$, the
+affine prediction and $\tau_f=10^{-7}$, the windows shifted by one second so that also the window
+of IN lies on the limit cycle: secant method up to $t=15$~s, then IN, GN, LM, TR, SD and L-BFGS for
+one second each and again the secant method on $[21,22]$ ($10113$ steps, $1.3$~h instead of
+$2.2$~h for $9605$ steps on $8$ processes). In every window the oscillation agrees with
+\cref{tab:fast_periodic} to four digits, and over $[0,21]$ the tip displacement deviates by at most
+$1.4\cdot10^{-4}$ (relative to its maximum) from the run with the old tolerances; this confirms on
+the limit cycle the tolerance study of the start-up phase.
+
+\begin{table}[ht]\centering
+\caption{Periodic regime as in \cref{tab:fast_periodic}, with predictor $p=2$, affine state
+prediction and $\tau_f=10^{-7}$: per time step iterations, state evaluations, tangent and adjoint
+solves, fluid Krylov iterations and wall time; last two columns: fluid iterations and wall time of
+the same method on the limit cycle with the old settings (\cref{tab:fast_periodic}). First row:
+start-up and growth phase, compared with $[0,14]$ of the old run.}
+\label{tab:fast_periodic_tol}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llcccccccc}
+\toprule
+method & window & it. & states & $S$ & $S^*$ & fluid it. & s/step & fluid it.\ before & s/step before\\
+\midrule
+secant & $[0,15]$ & 1.47 & 2.47 & 0 & 0 & 68.9 & 0.26 & 161.3 & 0.55\\
+\midrule
+secant & $[21,22]$ & 3.69 & 4.69 & 0 & 0 & \textbf{95.7} & \textbf{0.35} & 287.3 & 1.07\\
+IN & $[15,16]$ & 2.02 & 3.02 & 4.79 & 0 & 194.4 & 0.78 & 313.9 & 1.24\\
+GN & $[16,17]$ & 2.01 & 3.01 & 4.86 & 0 & 196.7 & 0.79 & 320.5 & 1.14\\
+LM & $[17,18]$ & 2.02 & 3.02 & 4.87 & 0 & 196.9 & 0.79 & 321.4 & 1.12\\
+TR & $[18,19]$ & 2.02 & 3.02 & 4.87 & 0 & 196.1 & 0.79 & 322.7 & 1.13\\
+SD & $[19,20]$ & 3.29 & 4.33 & 3.29 & 3.29 & 247.5 & 1.00 & 438.9 & 1.59\\
+L-BFGS & $[20,21]$ & 3.52 & 4.53 & 3.52 & 3.52 & 262.1 & 1.00 & 437.6 & 1.80\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+On the limit cycle (\cref{tab:fast_periodic_tol}) the secant method needs $67\%$ fewer fluid
+iterations than before ($96$ instead of $287$ per step, $3.1$ times faster in wall time), the
+derivative-based methods $38$--$44\%$ fewer. The order of the methods is therefore the same as in
+\cref{tab:fast_periodic}, but the gap has widened: IN, GN, LM and TR now need twice the fluid
+iterations of the secant method, SD and L-BFGS $2.6$--$2.7$ times. The reason is the split of the
+cost. In the sampled steps of IN, the three states need about $50$, $10$--$20$ and $5$--$9$
+iterations: the first starts from the extrapolation, the other two from the affine prediction, whose
+span already contains the tangent responses. The $4.8$ tangent solves, about $26$ iterations each, now make up
+almost two thirds of the cost of IN, and neither predictor reduces them; fewer tangent solves (e.g.\
+a second Newton step with the recycled inverse $H$ alone) are the remaining lever for the
+derivative-based methods. The secant method has no such part: its first state needs about $50$
+iterations, the second $20$--$30$ and every further one $4$--$10$.
+
+Two observations limit this result. First, the secant method needs $3.69$ instead of $2.77$
+iterations per step on the limit cycle, and the safeguards discard the recycled history $30$
+instead of $9$ times in the whole run. Its secant pairs are differences of residuals, which carry
+the error of the fluid solves; the same trend is visible in \cref{tab:fast_tolerances}
+($2.16$, $2.21$ and $2.48$ iterations for $\tau_f=10^{-10},10^{-8},10^{-7}$), whereas IN does not
+react to $\tau_f$. Second, in two of the $10113$ steps ($t=13.68$ and $t=21.99$, both with the
+secant method) the stagnation test stops the iteration at $\|m\|_{\M}=8.4\cdot10^{-4}$ and
+$2.8\cdot10^{-3}$, above the tolerance $\tau$ but below $4\cdot10^{-5}\|g\|_{\M}$, i.e.\ within the
+range of \cref{tab:fast_tolerances} where the coupling error stays far below the time error; the
+next step converges again and the trajectory is unaffected. With $\tau_f=10^{-8}$ the secant
+method would probably need fewer iterations at a higher cost per state; on the limit cycle this was
+not tested.
+
+\subsection{Solver configuration and the dual-splitting fluid solver}\label{sec:fast_solvers}
+
+The fluid iterations measure the work of the methods, not its price. On the limit cycle of
+\cref{tab:fast_periodic_tol} a state solve of the coupled fluid solver costs $87$~ms, i.e.\
+$3.5$~ms per FGMRES iteration, although the problem is tiny: $5576$ fluid unknowns ($136$ cells),
+$650$ structure and $2664$ mesh-motion unknowns. Neither the methods nor the parallelisation
+explain this price. The time per step hardly depends on the number of processes
+(\cref{tab:fast_solvers}); with about $1100$ unknowns per process, $8$ processes are slower than
+$1$--$4$, and all runs below use $2$. The price is in the preconditioner. The Schur complement is
+approximated by the pressure convection--diffusion preconditioner with one V-cycle of
+$h$-multigrid for the pressure Laplacian, and the default coarse-grid solver of this multigrid is a
+Chebyshev iteration whose degree is chosen from the estimated condition number of the coarse
+operator, $\deg\approx\frac12\sqrt{\kappa}\ln(2/\epsilon)$. On the coarse mesh, whose cells around
+the flag are strongly anisotropic, $\kappa$ is large, and every application of the preconditioner
+costs many applications of the coarse operator; the fluid time per iteration drops by a factor
+$12$ when this solver is replaced. With conjugate gradients
+preconditioned by algebraic multigrid on the coarse level (the setting of the pressure Poisson
+equation of the dual-splitting scheme; application parameters \code{CoupledSchurCoarseSolver},
+\code{CoupledSchurCoarsePreconditioner}, \code{CoupledSchurMultigridType}), the iterations and the
+solution are unchanged and a time step is $7.6$ times cheaper. The Cahouet--Chabard approximation
+of the Schur complement costs the same; multigrid for the velocity block
+(\code{CoupledVelocityPreconditioner}) saves $17\%$ of the iterations but costs $60\%$ more time,
+because the velocity block is dominated by the mass matrix at these time steps.
+
+\paragraph{Dual splitting.} With explicit convection, frozen geometry and the penalty parameters
+computed from the extrapolated velocity, the dual-splitting step is affine in the Dirichlet data
+$w$ as well: $w$ enters the Neumann condition of the pressure Poisson equation through the
+discrete acceleration $\gamma_0w/\Delta t$, the Dirichlet terms of the viscous step and, if used,
+the boundary data of the continuity penalty. A forward difference of two fluid steps,
+\[
+  T_f'(v)\,y=\frac{T_f(v+\epsilon y)-T_f(v)}{\epsilon},
+\]
+is therefore exact up to the tolerance of the fluid solver, for any $\epsilon$; together with the
+exact linearised structure solve it gives the tangent $S$ at the price of one fluid step
+(\code{NativeTangentDifference = Forward}). This suffices for the methods that need no adjoint: the
+secant method, IN, and GN, LM and TR solved in the Krylov subspace of the interface equation. The
+driver now accepts any fluid solver if no method of the schedule needs the adjoint. SD and L-BFGS
+need the adjoint of the dual-splitting step (transposes of the acceleration term of the pressure
+Neumann condition, of the weak pressure gradient of the projection, and of the Dirichlet terms of
+the viscous and penalty steps, applied in reverse order), which was not implemented.
+
+The noise of the state map matters more than for the coupled solver. With the default relative
+tolerance $10^{-6}$ of the dual-splitting solvers, the tip displacement of all methods deviates by
+$4\cdot10^{-4}$ from a reference with tolerances $10^{-10}$, TR needs $1.63$ iterations per step
+in the start-up phase, and on the limit cycle its ratio test fails in every step from $t=18.1$~s
+on, until the structure solver diverges: the interface tolerance lies at the noise floor of the
+state map (\cref{sec:stopping}). With tolerance $10^{-8}$ the deviations drop to
+$2$--$3\cdot10^{-5}$, TR needs $1.07$ iterations and IN $1.02$, and the more accurate forward
+differences also save tangent solves ($2.3$ instead of $3.8$ per step for IN), so that IN becomes
+the cheapest method in the start-up phase.
+
+\begin{table}[ht]\centering
+\caption{Wall time per time step (without setup). Top: start-up phase $t\in[0,1]$ ($101$ steps),
+secant method with $p=2$ (and affine prediction for the coupled solver), $\tau_{\mathrm{rel}}=10^{-6}$;
+deviation of $d_x$ from the reference of the same fluid solver. Bottom: limit cycle, one window per
+method as in \cref{tab:fast_periodic_tol}; coupled solver with $\tau_f=10^{-7}$, dual splitting
+with $\tau_f=10^{-8}$; secant method in its last window.}
+\label{tab:fast_solvers}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccc}
+\toprule
+start-up, secant method & 1 proc. & 2 proc. & 4 proc. & 8 proc. & it. & dev.\ $d_x$\\
+\midrule
+coupled, Chebyshev coarse solver & 0.341 & 0.372 & 0.336 & 0.443 & 2.27--2.48 & $1.7\cdot10^{-5}$\\
+coupled, CG + AMG coarse solver & & 0.049 & & & 2.21 & $1.6\cdot10^{-5}$\\
+\quad Cahouet--Chabard & & 0.049 & & & 2.11 & $1.6\cdot10^{-5}$\\
+\quad multigrid for the velocity block & & 0.078 & & & 2.35 & $2.2\cdot10^{-5}$\\
+dual splitting, $\tau_f=10^{-6}$ & 0.035 & 0.031 & 0.035 & 0.049 & 2.99--3.14 & $4.2\cdot10^{-4}$\\
+dual splitting, $\tau_f=10^{-8}$ & & 0.037 & & & 3.17 & $2.4\cdot10^{-6}$\\
+\midrule
+start-up, 2 processes & IN & & TR & & it.\ IN / TR & dev.\ $d_x$ IN / TR\\
+\midrule
+coupled, CG + AMG coarse solver & 0.061 & & & & 0.92 / -- & $2.0\cdot10^{-5}$ / --\\
+dual splitting, $\tau_f=10^{-6}$ & 0.045 & & 0.072 & & 1.09 / 1.63 & $4.2\cdot10^{-4}$ / $4.2\cdot10^{-4}$\\
+dual splitting, $\tau_f=10^{-8}$ & 0.030 & & 0.032 & & 1.02 / 1.07 & $2.6\cdot10^{-5}$ / $3.0\cdot10^{-5}$\\
+\bottomrule
+\end{tabular}}
+
+\medskip
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccccccccc}
+\toprule
+limit cycle & secant & IN & GN & LM & TR & SD & L-BFGS & total & processes\\
+\midrule
+coupled, Chebyshev (\cref{tab:fast_periodic_tol}) & 0.349 & 0.779 & 0.790 & 0.791 & 0.788 & 1.004 & 1.000 & 4605~s & 8\\
+coupled, CG + AMG & 0.059 & 0.099 & 0.101 & 0.100 & 0.100 & 0.140 & 0.146 & 619~s & 2\\
+dual splitting & 0.043 & 0.086 & 0.087 & 0.084 & 0.091 & -- & -- & 404~s & 2\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\paragraph{Limit cycle.} The long run of \cref{tab:fast_periodic_tol} with the new coarse solver
+on $2$ processes takes $619$ instead of $4605$~s, with the same iterations and the same oscillation
+(maximal deviation $7\cdot10^{-5}$ over $[0,22]$); per step the secant method is $5.9$ times and
+the derivative-based methods $7$--$8$ times cheaper (\cref{tab:fast_solvers}). The same protocol
+with the dual-splitting solver ($\tau_f=10^{-8}$; secant method up to $t=15$~s, then IN, GN, LM, TR
+and again the secant method, one second each; $404$~s for $20$~s) converges in every step, with six
+discards of the recycled history; all windows give the limit cycle of the earlier dual-splitting run
+($0.88\pm77.26\cdot10^{-3}$ at $1.917$~Hz). Per step it is $9$--$27\%$ cheaper than the coupled
+solver: a fluid step costs $3.4$~ms (states and forward differences) against $6.9$~ms per state
+of the coupled solver, whereas the mesh motion ($3.0$~ms per state) and the structure ($1.8$~ms)
+cost the same; IN needs $5.8$ instead of $4.8$ tangent solves per step. With the coupled solver configured correctly, the dual-splitting scheme therefore brings
+less than a factor $1.4$, and its adjoint would only serve SD and L-BFGS, the most expensive
+methods; it is not worth its implementation for speed. The remaining costs per state are of the same
+order in the fluid, the mesh motion and the structure, and the derivative-based methods cost twice
+as much per step as the secant method because of their tangent solves; these, not the fluid solver,
+are the next targets.
+
+%=================================================================================================
 \section{Conclusions and outlook}
 %=================================================================================================
 
@@ -1482,19 +2046,57 @@ iteration then needs accurate fluid solves to be reproducible, whereas the secan
 insensitive to the fluid tolerances. Stopping criteria must lie above the noise floor of the state
 map (relative tolerance, stagnation stop); IQN-ILS needs the newest-first ordering of its secant
 columns to be robust in the start-up phase.
+\item With exact derivatives the cost of the derivative-based methods is a matter of their
+implementation, not of the methods. Recycled inverses from the exact tangent and adjoint pairs that
+the methods compute anyway, tolerances of GMRES and of the derivatives tied to the mismatch
+tolerance, and the reuse of the tangent fluid responses as initial guess of the next state make
+interface Newton, and with it GN, LM and TR solved in its Krylov subspace, as cheap as the secant
+method ($82$ against $87$ fluid iterations per step at constant time step, $251$ against $334$ in
+the start-up phase), and SD and L-BFGS about as cheap as IQN-ILS; all of it matrix-free. On the
+limit cycle of FSI2, with three times larger time steps and large deflections, IN needs two Newton
+iterations per step and costs $9\%$ more than the secant method (GN, LM, TR $12\%$, SD and L-BFGS
+$53\%$); all methods give the same oscillation to four digits. The
+methods based on the normal equations remain an order of magnitude more expensive, and the
+non-symmetric preconditioner of the gradient methods needs an angle-condition safeguard.
+\item The coupled problem had been solved far more accurately than the time discretisation
+warrants: the coupling error was three orders of magnitude below the time error, and most of the
+waste was in the fluid tolerance. A Lagrange predictor of the control in the actual times, an
+affine least-squares prediction of the fluid state from all state and tangent solves of the time
+step, and a fluid tolerance of $10^{-7}$ instead of $10^{-10}$ leave the solution unchanged and
+reduce the cost by $42$--$65\%$ in the start-up phase and by $38$--$67\%$ on the limit cycle. The
+secant method profits most ($96$ fluid iterations per step on the limit cycle against $194$ for
+IN), because the predictors do not reduce the tangent solves, which now make up two thirds of the
+cost of the derivative-based methods. A stopping criterion on the cost that is looser than
+$\tau_{\mathrm{rel}}=10^{-6}$ (larger tolerance, or reduction relative to the error of the
+predictor) saves only $2$--$13\%$ once the predictors are in place.
+\item The price of an iteration matters as much as their number. The default coarse-grid solver
+(Chebyshev) of the multigrid in the Schur-complement preconditioner made a fluid iteration more than
+ten times more expensive than necessary on the anisotropic coarse mesh; CG with algebraic
+multigrid on the coarse level makes all methods $6$--$8$ times faster on the limit cycle (a long
+run with all methods: $619$ instead of $4605$~s), and the tiny problem runs fastest on $1$--$4$
+processes. The dual-splitting step is also affine in the interface data, so that forward
+differences of fluid steps give exact tangents; with fluid tolerances $10^{-8}$ (at $10^{-6}$ the
+interface tolerance lies at the noise floor and TR fails) the secant method, IN, GN, LM and TR run
+$9$--$27\%$ faster than with the coupled solver. Per state, fluid, mesh motion and structure now
+cost about the same.
 \end{enumerate}
 Open points are the source of the energy that feeds the high-frequency mode of
 \cref{sec:instabilities}, which the dissipation of the structure integrator only suppresses, the
 periodic regime as a test case for the initial Jacobians of
-\cref{sec:initial_jacobian}, preconditioning of the native interface Newton method (the frozen Jacobian of
-\cref{sec:methods} applies directly), and three-dimensional problems, where the dense
-frozen-Jacobian and Sobolev constructions must be replaced by low-rank or multilevel
-approximations.
+\cref{sec:initial_jacobian}, the second Newton iteration on the limit cycle and the difference
+between the limit cycles of the coupled and the dual-splitting fluid solver
+(\cref{sec:fast_periodic}), fewer tangent solves for the derivative-based methods, the sensitivity
+of the secant method to the fluid tolerance on the limit cycle (\cref{sec:fast_tolerances}), the
+cost of the mesh motion and of the structure per state and the adjoint of the dual-splitting step
+(\cref{sec:fast_solvers}), and three-dimensional problems, where the dense frozen-Jacobian and
+Sobolev constructions must be replaced by low-rank or multilevel approximations; the matrix-free
+ingredients of \cref{sec:fast} carry over unchanged.
 
 %=================================================================================================
 \appendix
 \section{Implementation and reproducibility}
 %=================================================================================================
+\sloppy
 
 \paragraph{Code.} The adjoint of \cref{sec:native_adjoint} uses public access to the kernels of the
 fluid operator (\code{SpatialOperatorBase::get_viscous_kernel}, \code{get_convective_kernel},
@@ -1527,7 +2129,41 @@ single-file output with a time-series record (\code{Output/NumberOfVtuFiles},
 \code{ALEStiffeningRadius} (fluid mesh), \code{CoupledSolverAbsTol}, \code{CoupledSolverRelTol},
 \code{PenaltyTerms} and \code{ContinuityPenaltyUseBoundaryData} (diagnostics); all defaults keep
 the original behaviour. The configuration of \cref{tab:final} uses \code{GenAlphaType =
-BossakAlpha}, \code{SpectralRadius = 0}, \code{MappingDegree = 4} and \code{ALEStiffening = 1}. The analysis of the tip displacement (periods, amplitude, frequency) is
+BossakAlpha}, \code{SpectralRadius = 0}, \code{MappingDegree = 4} and \code{ALEStiffening = 1}. For \cref{sec:fast}: parameters \code{RecycledPreconditioner}, \code{RecycleTimeSteps},
+\code{RecycleMaxPairs}, \code{ForcingTermTarget}, \code{LinearizedToleranceFactor},
+\code{LinearizedToleranceTarget}, \code{TangentStatePrediction}, \code{InterfaceEquation},
+\code{WarmStartAbsoluteTolerance} and \code{MethodSchedule} (one method per time window, with
+statistics per window) of the subsection \code{OptimalControl}, and \code{AdaptiveTimeStepping} of
+the application; in the solvers \code{SolverBase::set_absolute_tolerance} and
+\code{get_last_initial_residual}, their forwarding in \code{OperatorCoupled}, and
+\code{TimeIntBDFCoupled::get_solution_np}, \code{set_solution_np},
+\code{get_linear_iterations_accumulated}. For \cref{sec:fast_tolerances}: parameters
+\code{ControlExtrapolationOrder} (Lagrange extrapolation of the control in the actual times; $1$
+keeps the original predictor), \code{AffineStatePrediction}, \code{AffinePredictionMaxPairs} and
+\code{MismatchReduction} of the subsection \code{OptimalControl}. For \cref{sec:fast_solvers}: application
+parameters \code{CoupledVelocityPreconditioner}, \code{CoupledSchurPreconditioner},
+\code{CoupledSchurMultigridType}, \code{CoupledSchurCoarseSolver} and
+\code{CoupledSchurCoarsePreconditioner} (defaults: original setting), and the requirement check of
+the driver, which accepts any fluid solver if no method of \code{Method} or \code{MethodSchedule}
+needs the adjoint and the tangent uses differences. Options without benefit (\cref{sec:fast}):
+\code{LinearizedInitialGuess}, the limited-memory CG preconditioner, the frozen-Jacobian refresh
+criteria \code{PreconditionerUpdateTimeStepChange} and \code{PreconditionerUpdateKrylov}. The
+input files of \cref{tab:fast_methods} are in \code{doc/fsi_optimal_control/inputs}
+(\code{fin_c_*}: constant time step, \code{fin_a_*}, \code{rb_*}: start-up; \code{e_qn},
+\code{s_qn_ws}, \code{e_iqnils}: references at constant time step; \code{lr_win}: long run of
+\cref{sec:fast_periodic}). The inputs of \cref{tab:fast_tolerances} are \code{t_ref},
+\code{t_ref_cfl} (references), \code{t_qn_*}, \code{t_in_*} (\code{i}: $\tau_{\mathrm{rel}}$,
+\code{f}: $\tau_f$, \code{r2}: $c=10^{-2}$, \code{x2af}: $p=2$ with affine prediction) and
+\code{p_a_*} (predictors alone); \code{lr_win2} is the long run of \cref{tab:fast_periodic_tol}.
+The inputs of \cref{tab:fast_solvers} are \code{s_np2} (coupled, original preconditioner; run with
+$1$, $2$, $4$, $8$ processes), \code{pc_*} (coupled, preconditioner variants), \code{d_*} (dual
+splitting; \code{f8}: $\tau_f=10^{-8}$, \code{d_ref}: reference), \code{lr_win3}, \code{lr_ds}
+and \code{lr_ds_f6} (long runs; the last one fails in the TR window).
+The output directory in each file has to exist, and
+\code{doc/fsi_optimal_control/bench.py} summarises the runs (iterations, solves and fluid
+Krylov iterations per time step); \code{doc/fsi_optimal_control/deviation.py} computes the
+deviation of the tip displacement from a reference run.
+The analysis of the tip displacement (periods, amplitude, frequency) is
 done by \code{doc/fsi_optimal_control/fsi2_analysis.py} (run from the root directory of the
 repository; it reads \code{output/<run>/run.log}).
 The variants discussed in \cref{sec:diagnosis} that were removed from the code (constraint-only
@@ -1548,6 +2184,8 @@ Exascale Computing -- SPPEXA 2016--2019}, Springer, 2020.
 \bibitem{BarbosaHughes1991} H.~J.~C.~Barbosa, T.~J.~R.~Hughes. The finite element method with
 Lagrange multipliers on the boundary: circumventing the Babu\v{s}ka--Brezzi condition.
 \emph{Comput.\ Methods Appl.\ Mech.\ Engrg.} 85 (1991).
+\bibitem{BrownSaad1990} P.~N.~Brown, Y.~Saad. Hybrid Krylov methods for nonlinear systems of
+equations. \emph{SIAM J.\ Sci.\ Stat.\ Comput.} 11 (1990) 450--481.
 \bibitem{Bogaers2014} A.~E.~J.~Bogaers, S.~Kok, B.~D.~Reddy, T.~Franz. Quasi-Newton methods for
 implicit black-box FSI coupling. \emph{Comput.\ Methods Appl.\ Mech.\ Engrg.} 279 (2014) 113--132.
 \bibitem{BazilevsHughes2007} Y.~Bazilevs, T.~J.~R.~Hughes. Weak imposition of Dirichlet boundary

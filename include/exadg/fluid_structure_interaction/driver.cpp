@@ -19,6 +19,11 @@
  *  ______________________________________________________________________
  */
 
+// C/C++
+#include <algorithm>
+#include <deque>
+#include <sstream>
+
 // ExaDG
 #include <exadg/fluid_structure_interaction/driver.h>
 #include <exadg/grid/marked_vertices.h>
@@ -506,15 +511,53 @@ Driver<dim, Number>::check_optimal_control_requirements() const
     AssertThrow(condition, dealii::ExcMessage("AccelerationMethod::OptimalControl: " + message));
   };
 
-  // derivative-free methods of the native formulation only evaluate the native Dirichlet-Neumann
-  // map and therefore work with any fluid solver (e.g. dual splitting)
-  bool const derivative_free =
+  // Methods of the native formulation that need no adjoint only evaluate the native
+  // Dirichlet-Neumann map and its tangent; with the tangent of the fluid by differences of fluid
+  // steps (NativeTangentDifference), they work with any fluid solver (e.g. dual splitting).
+  using Method                    = OptimalControl::Method;
+  auto const method_needs_adjoint = [&](Method const method) {
+    bool const interface_equation =
+      oc_parameters.interface_equation and oc_parameters.regularization == 0.0;
+    switch(method)
+    {
+      case Method::InterfaceQuasiNewton:
+      case Method::InterfaceNewton:
+        return false;
+      case Method::GaussNewton:
+      case Method::LevenbergMarquardt:
+      case Method::TrustRegion:
+        return not interface_equation;
+      default:
+        return true;
+    }
+  };
+  bool needs_adjoint = method_needs_adjoint(oc_parameters.method);
+  bool needs_tangent = oc_parameters.method != Method::InterfaceQuasiNewton;
+  for(auto const & [name, method] :
+      std::vector<std::pair<std::string, Method>>{{"SteepestDescent", Method::SteepestDescent},
+                                                  {"LBFGS", Method::LBFGS},
+                                                  {"GaussNewton", Method::GaussNewton},
+                                                  {"LevenbergMarquardt",
+                                                   Method::LevenbergMarquardt},
+                                                  {"TrustRegion", Method::TrustRegion},
+                                                  {"InterfaceNewton", Method::InterfaceNewton}})
+  {
+    if(oc_parameters.method_schedule.find(name) != std::string::npos)
+    {
+      needs_adjoint = needs_adjoint or method_needs_adjoint(method);
+      needs_tangent = true;
+    }
+  }
+
+  bool const any_fluid_solver =
     oc_parameters.formulation == OptimalControl::Formulation::NativeTraction and
-    oc_parameters.method == OptimalControl::Method::InterfaceQuasiNewton and
+    not needs_adjoint and
+    (not needs_tangent or
+     oc_parameters.tangent_difference != OptimalControl::TangentDifference::Analytic) and
     oc_parameters.preconditioner == OptimalControl::Preconditioner::None and
     not oc_parameters.verify_derivatives;
 
-  if(derivative_free)
+  if(any_fluid_solver)
   {
     check(not application->fluid->get_boundary_descriptor()->velocity->dirichlet_cached_bc.empty(),
           "Formulation::NativeTraction needs a DirichletCached velocity boundary condition of the "
@@ -619,6 +662,45 @@ Driver<dim, Number>::setup_optimal_control()
     std::make_shared<OptimalControl::Optimizer<OptimalControl::InterfaceProblem<dim, Number>>>(
       *oc_problem, oc_parameters, pcout);
 
+  // method schedule "t0:Method,t1:Method,..."
+  if(not oc_parameters.method_schedule.empty())
+  {
+    std::vector<OptimalControl::Method> const all = {OptimalControl::Method::SteepestDescent,
+                                                     OptimalControl::Method::LBFGS,
+                                                     OptimalControl::Method::GaussNewton,
+                                                     OptimalControl::Method::LevenbergMarquardt,
+                                                     OptimalControl::Method::TrustRegion,
+                                                     OptimalControl::Method::InterfaceNewton,
+                                                     OptimalControl::Method::InterfaceQuasiNewton};
+    std::stringstream                         entries(oc_parameters.method_schedule);
+    std::string                               entry;
+    while(std::getline(entries, entry, ','))
+    {
+      auto const colon = entry.find(':');
+      AssertThrow(colon != std::string::npos,
+                  dealii::ExcMessage("MethodSchedule: expected time:Method, got " + entry));
+      double const time = std::stod(entry.substr(0, colon));
+      std::string  name = entry.substr(colon + 1);
+      name.erase(0, name.find_first_not_of(" "));
+      name.erase(name.find_last_not_of(" ") + 1);
+      bool found = false;
+      for(auto const m : all)
+        if(OptimalControl::method_to_string(m) == name)
+        {
+          oc_schedule.emplace_back(time, m);
+          found = true;
+        }
+      AssertThrow(found, dealii::ExcMessage("MethodSchedule: unknown method " + name));
+    }
+    std::sort(oc_schedule.begin(), oc_schedule.end(), [](auto const & a, auto const & b) {
+      return a.first < b.first;
+    });
+    pcout << "  method schedule:  ";
+    for(auto const & s : oc_schedule)
+      pcout << " t>=" << s.first << ": " << OptimalControl::method_to_string(s.second);
+    pcout << std::endl;
+  }
+
   pcout << "  method:            " << OptimalControl::method_to_string(oc_parameters.method)
         << std::endl
         << "  regularization:    " << oc_parameters.regularization << std::endl
@@ -663,6 +745,9 @@ Driver<dim, Number>::solve_optimal_control() const
   VectorType control, control_old, displacement_geometry, displacement_previous;
   oc_problem->compute_fluid_traction(control, /* end_of_time_step = */ false);
   control_old = control;
+  // converged controls and their times, newest first (ControlExtrapolationOrder >= 2)
+  std::deque<std::pair<double, VectorType>> control_history;
+  control_history.emplace_front(fluid->time_integrator->get_time(), control);
   structure->pde_operator->initialize_dof_vector(displacement_geometry);
   structure->pde_operator->initialize_dof_vector(displacement_previous);
 
@@ -677,7 +762,27 @@ Driver<dim, Number>::solve_optimal_control() const
     timer.restart();
 
     // initial guess for the control
-    if(oc_parameters.extrapolate_control and oc_time_steps > 0)
+    if(oc_parameters.extrapolate_control and oc_parameters.control_extrapolation_order >= 2 and
+       control_history.size() >= 2)
+    {
+      // Lagrange extrapolation in the actual times to t_{n+1}
+      unsigned int const n_points =
+        std::min<unsigned int>(oc_parameters.control_extrapolation_order + 1,
+                               control_history.size());
+      double const t_new = fluid->time_integrator->get_next_time();
+      control_old        = control;
+      control            = 0.0;
+      for(unsigned int i = 0; i < n_points; ++i)
+      {
+        double weight = 1.0;
+        for(unsigned int j = 0; j < n_points; ++j)
+          if(j != i)
+            weight *= (t_new - control_history[j].first) /
+                      (control_history[i].first - control_history[j].first);
+        control.add(weight, control_history[i].second);
+      }
+    }
+    else if(oc_parameters.extrapolate_control and oc_time_steps > 0)
     {
       VectorType extrapolated(control);
       extrapolated.sadd(2.0, -1.0, control_old);
@@ -691,9 +796,19 @@ Driver<dim, Number>::solve_optimal_control() const
 
     oc_problem->begin_time_step();
 
-    if(oc_parameters.preconditioner == OptimalControl::Preconditioner::FrozenJacobian and
-       oc_time_steps % oc_parameters.preconditioner_update_interval == 0)
-      oc_problem->request_preconditioner_update();
+    if(oc_parameters.preconditioner == OptimalControl::Preconditioner::FrozenJacobian)
+    {
+      bool update = (oc_time_steps % oc_parameters.preconditioner_update_interval == 0);
+      // the frozen Jacobian depends on the time step size through the single-field operators
+      double const dt = fluid->time_integrator->get_time_step_size();
+      if(oc_parameters.preconditioner_update_dt_change > 0.0 and
+         oc_problem->jacobian_time_step > 0.0 and
+         std::abs(dt - oc_problem->jacobian_time_step) >
+           oc_parameters.preconditioner_update_dt_change * oc_problem->jacobian_time_step)
+        update = true;
+      if(update)
+        oc_problem->request_preconditioner_update();
+    }
 
     // outer fixed-point iteration on the geometry of the fluid domain
     structure->time_integrator->extrapolate_displacement_to_np(displacement_geometry);
@@ -710,8 +825,55 @@ Driver<dim, Number>::solve_optimal_control() const
         verify = false;
       }
 
-      OptimalControl::Statistics const stats = oc_optimizer->solve(control);
+      // method schedule: select the method of the current window
+      {
+        double const           time   = fluid->time_integrator->get_time();
+        OptimalControl::Method method = oc_parameters.method;
+        for(auto const & s : oc_schedule)
+          if(time >= s.first - 1.e-12)
+            method = s.second;
+        if(oc_windows.empty() or oc_windows.back().method != method)
+        {
+          if(not oc_windows.empty() or not oc_schedule.empty())
+            pcout << std::endl
+                  << "Optimal control: method " << OptimalControl::method_to_string(method)
+                  << " from t = " << time << std::endl;
+          oc_optimizer->set_method(method);
+          OCWindow window;
+          window.method  = method;
+          window.t_start = time;
+          oc_windows.push_back(window);
+        }
+      }
+
+      dealii::Timer              solve_timer;
+      unsigned long long const   fluid_krylov_before = oc_problem->fluid_krylov_iterations();
+      OptimalControl::Statistics stats               = oc_optimizer->solve(control);
       oc_statistics.add(stats);
+      {
+        OCWindow & window = oc_windows.back();
+        window.stats.add(stats);
+        window.wall_time += solve_timer.wall_time();
+        window.fluid_krylov += oc_problem->fluid_krylov_iterations() - fluid_krylov_before;
+        window.t_end = fluid->time_integrator->get_next_time();
+        if(k == 0)
+          ++window.steps;
+        if(not stats.converged)
+        {
+          ++window.not_converged;
+          ++oc_not_converged;
+          pcout << "OC step not converged: t = " << std::scientific << std::setprecision(6)
+                << fluid->time_integrator->get_next_time() << ", " << stats.reason
+                << ", ||m|| = " << std::setprecision(3) << stats.mismatch_norm << std::defaultfloat
+                << std::endl;
+        }
+      }
+      // the frozen Jacobian no longer represents S: re-assemble for the next time step
+      if(oc_parameters.preconditioner == OptimalControl::Preconditioner::FrozenJacobian and
+         oc_parameters.preconditioner_update_krylov > 0.0 and
+         double(stats.krylov_iterations) >
+           oc_parameters.preconditioner_update_krylov * std::max(1u, stats.iterations))
+        oc_problem->request_preconditioner_update();
       ++oc_geometry_iterations;
 
       displacement_previous = displacement_geometry;
@@ -745,6 +907,10 @@ Driver<dim, Number>::solve_optimal_control() const
             << ", |g - t_fluid| = " << oc_problem->interface_norm(difference) << std::defaultfloat
             << std::endl;
     }
+
+    control_history.emplace_front(fluid->time_integrator->get_next_time(), control);
+    if(control_history.size() > 5)
+      control_history.pop_back();
 
     if(not parameters.monitor_point.empty())
     {
@@ -791,7 +957,15 @@ Driver<dim, Number>::print_performance_results(double const total_time) const
                               "State evaluations",
                               "Tangent solves (S)",
                               "Adjoint solves (S*)",
-                              "Krylov iterations"},
+                              "Krylov iterations",
+                              "Frozen-Jacobian assemblies (total)",
+                              "Linearized fluid solves",
+                              "  of which skipped (projection)",
+                              "Linearized fluid Krylov iterations",
+                              "Predicted fluid states",
+                              "  remainder outside the affine span",
+                              "Unconverged steps (total)",
+                              "Recycled-history restarts (total)"},
                              {oc_problem->native_fluid_solves / n,
                               oc_problem->preconditioner_setup_solves / n,
                               oc_geometry_iterations / n,
@@ -799,11 +973,47 @@ Driver<dim, Number>::print_performance_results(double const total_time) const
                               oc_statistics.state_evaluations / n,
                               oc_statistics.tangent_solves / n,
                               oc_statistics.adjoint_solves / n,
-                              oc_statistics.krylov_iterations / n});
+                              oc_statistics.krylov_iterations / n,
+                              double(oc_problem->jacobian_assemblies),
+                              oc_problem->linearized_solves / n,
+                              oc_problem->linearized_solves_skipped / n,
+                              oc_problem->linearized_krylov_iterations / n,
+                              oc_problem->predicted_states / n,
+                              oc_problem->affine_remainder_sum /
+                                std::max(1.0, double(oc_problem->predicted_states)),
+                              double(oc_not_converged),
+                              double(oc_optimizer->recycled_restarts)});
   }
   else
   {
     partitioned_solver->print_iterations(pcout);
+  }
+
+  // statistics per window of the method schedule
+  if(use_optimal_control() and oc_windows.size() > 1)
+  {
+    pcout << std::endl
+          << "Optimal control per method window (averages per time step; wall time of the "
+             "coupling solves):"
+          << std::endl
+          << std::setw(22) << "method" << std::setw(18) << "time window" << std::setw(7) << "steps"
+          << std::setw(8) << "it" << std::setw(8) << "states" << std::setw(8) << "S" << std::setw(8)
+          << "S*" << std::setw(9) << "Krylov" << std::setw(8) << "failed" << std::setw(12)
+          << "wall/step" << std::setw(10) << "fK/step" << std::endl;
+    for(auto const & w : oc_windows)
+    {
+      double const n = std::max(1.0, double(w.steps));
+      pcout << std::setw(22) << OptimalControl::method_to_string(w.method) << std::fixed
+            << std::setprecision(3) << std::setw(9) << w.t_start << std::setw(9) << w.t_end
+            << std::setw(7) << w.steps << std::setprecision(2) << std::setw(8)
+            << w.stats.iterations / n << std::setw(8) << w.stats.state_evaluations / n
+            << std::setw(8) << w.stats.tangent_solves / n << std::setw(8)
+            << w.stats.adjoint_solves / n << std::setw(9) << w.stats.krylov_iterations / n
+            << std::setw(8) << w.not_converged << std::scientific << std::setprecision(3)
+            << std::setw(12) << w.wall_time / n << std::defaultfloat << std::fixed
+            << std::setprecision(1) << std::setw(10) << double(w.fluid_krylov) / n
+            << std::defaultfloat << std::endl;
+    }
   }
 
   pcout << std::endl << "Fluid:" << std::endl;

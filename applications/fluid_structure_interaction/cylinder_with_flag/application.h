@@ -228,6 +228,33 @@ private:
                         "Relative tolerance of the linear solver of the coupled fluid solver "
                         "(TractionCoupling or CoupledFluidSolver).",
                         dealii::Patterns::Double(0.0));
+      prm.add_parameter("CoupledVelocityPreconditioner",
+                        coupled_velocity_preconditioner,
+                        "Preconditioner of the velocity block of the coupled fluid solver.",
+                        Patterns::Enum<IncNS::MomentumPreconditioner>());
+      prm.add_parameter("CoupledSchurPreconditioner",
+                        coupled_schur_preconditioner,
+                        "Preconditioner of the Schur complement of the coupled fluid solver.",
+                        Patterns::Enum<IncNS::SchurComplementPreconditioner>());
+      prm.add_parameter("CoupledSchurMultigridType",
+                        coupled_schur_multigrid_type,
+                        "Multigrid type of the Laplace operator in the Schur-complement "
+                        "preconditioner of the coupled fluid solver.",
+                        Patterns::Enum<MultigridType>());
+      prm.add_parameter("CoupledSchurCoarseSolver",
+                        coupled_schur_coarse_solver,
+                        "Coarse-grid solver of that multigrid.",
+                        Patterns::Enum<MultigridCoarseGridSolver>());
+      prm.add_parameter("CoupledSchurCoarsePreconditioner",
+                        coupled_schur_coarse_preconditioner,
+                        "Preconditioner of that coarse-grid solver.",
+                        Patterns::Enum<MultigridCoarseGridPreconditioner>());
+      prm.add_parameter(
+        "AdaptiveTimeStepping",
+        adaptive_time_stepping,
+        "Adaptive (CFL) time step; false: constant time step from the CFL condition "
+        "with the maximum inflow velocity.",
+        dealii::Patterns::Bool());
       prm.add_parameter("MeshMovementType",
                         mesh_movement_type,
                         "ALE mesh motion of the fluid.",
@@ -265,16 +292,25 @@ private:
     prm.leave_subsection();
   }
 
-  double                  end_time              = END_TIME;
-  bool                    traction_coupling     = false;
-  bool                    coupled_fluid_solver  = false;
-  double                  cfl                   = 0.5;
-  bool                    pull_back_traction    = true;
-  double                  fluid_abs_tol         = ABS_TOL;
-  double                  fluid_rel_tol         = REL_TOL;
-  double                  coupled_abs_tol       = 1.e-14;
-  double                  coupled_rel_tol       = 1.e-10;
-  bool                    penalty_terms         = true;
+  double                        end_time               = END_TIME;
+  bool                          traction_coupling      = false;
+  bool                          coupled_fluid_solver   = false;
+  double                        cfl                    = 0.5;
+  bool                          pull_back_traction     = true;
+  double                        fluid_abs_tol          = ABS_TOL;
+  double                        fluid_rel_tol          = REL_TOL;
+  double                        coupled_abs_tol        = 1.e-14;
+  double                        coupled_rel_tol        = 1.e-10;
+  bool                          penalty_terms          = true;
+  bool                          adaptive_time_stepping = true;
+  IncNS::MomentumPreconditioner coupled_velocity_preconditioner =
+    IncNS::MomentumPreconditioner::InverseMassMatrix;
+  IncNS::SchurComplementPreconditioner coupled_schur_preconditioner =
+    IncNS::SchurComplementPreconditioner::PressureConvectionDiffusion;
+  MultigridType             coupled_schur_multigrid_type = MultigridType::hMG;
+  MultigridCoarseGridSolver coupled_schur_coarse_solver  = MultigridCoarseGridSolver::Chebyshev;
+  MultigridCoarseGridPreconditioner coupled_schur_coarse_preconditioner =
+    MultigridCoarseGridPreconditioner::PointJacobi;
   IncNS::MeshMovementType mesh_movement_type    = IncNS::MeshMovementType::Elasticity;
   unsigned int            mapping_degree        = 0;
   bool                    ale_large_deformation = false;
@@ -315,7 +351,7 @@ private:
     param.treatment_of_convective_term    = TreatmentOfConvectiveTerm::Explicit;
     param.order_time_integrator           = 2;
     param.start_with_low_order            = true;
-    param.adaptive_time_stepping          = true;
+    param.adaptive_time_stepping          = adaptive_time_stepping;
     param.calculation_of_time_step_size   = TimeStepCalculation::CFL;
     param.time_step_size                  = END_TIME;
     param.max_velocity                    = U_X_MAX;
@@ -439,11 +475,22 @@ private:
     param.update_preconditioner_coupled = false;
 
     // preconditioner momentum block
-    param.preconditioner_velocity_block = MomentumPreconditioner::InverseMassMatrix;
+    param.preconditioner_velocity_block          = coupled_velocity_preconditioner;
+    param.multigrid_operator_type_velocity_block = MultigridOperatorType::ReactionDiffusion;
+    param.multigrid_data_velocity_block.type     = MultigridType::cphMG;
+    param.multigrid_data_velocity_block.smoother_data.smoother = MultigridSmoother::Chebyshev;
+    param.multigrid_data_velocity_block.smoother_data.preconditioner =
+      PreconditionerSmoother::PointJacobi;
+    param.multigrid_data_velocity_block.coarse_problem.solver = MultigridCoarseGridSolver::CG;
+    param.multigrid_data_velocity_block.coarse_problem.preconditioner =
+      MultigridCoarseGridPreconditioner::AMG;
 
     // preconditioner Schur-complement block
-    param.preconditioner_pressure_block =
-      SchurComplementPreconditioner::PressureConvectionDiffusion;
+    param.preconditioner_pressure_block                       = coupled_schur_preconditioner;
+    param.multigrid_data_pressure_block.type                  = coupled_schur_multigrid_type;
+    param.multigrid_data_pressure_block.coarse_problem.solver = coupled_schur_coarse_solver;
+    param.multigrid_data_pressure_block.coarse_problem.preconditioner =
+      coupled_schur_coarse_preconditioner;
 
     // Traction-controlled coupling (optimal control): the fluid step has to be affine in the
     // interface traction with a symmetric saddle point matrix, and the natural boundary condition

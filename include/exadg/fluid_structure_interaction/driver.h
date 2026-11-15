@@ -160,7 +160,21 @@ private:
   mutable OptimalControl::Statistics oc_statistics;
   mutable unsigned int               oc_time_steps          = 0;
   mutable unsigned int               oc_geometry_iterations = 0;
+  mutable unsigned int               oc_not_converged       = 0;
   mutable VectorType                 oc_last_control;
+
+  // method schedule in time (OptimalControl/MethodSchedule) and statistics per window
+  std::vector<std::pair<double, OptimalControl::Method>> oc_schedule;
+  struct OCWindow
+  {
+    OptimalControl::Method     method;
+    double                     t_start = 0.0, t_end = 0.0;
+    unsigned int               steps = 0, not_converged = 0;
+    double                     wall_time    = 0.0;
+    unsigned long long         fluid_krylov = 0;
+    OptimalControl::Statistics stats;
+  };
+  mutable std::vector<OCWindow> oc_windows;
 };
 
 } // namespace FSI

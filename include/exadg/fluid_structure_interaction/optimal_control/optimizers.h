@@ -130,8 +130,49 @@ public:
       pcout(pcout),
       lm_lambda(param.lm_lambda_initial),
       tr_radius(param.tr_radius_initial),
-      qn_relaxation(param.qn_initial_relaxation)
+      qn_relaxation(param.qn_initial_relaxation),
+      active_method(param.method)
   {
+  }
+
+  // change the method between two solves (e.g. a method schedule in time); the state that is
+  // specific to a method (damping, radius, secant history) is reset
+  void
+  set_method(Method const method)
+  {
+    if(method == active_method)
+      return;
+    active_method = method;
+    lm_lambda     = param.lm_lambda_initial;
+    tr_radius     = param.tr_radius_initial;
+    qn_relaxation = param.qn_initial_relaxation;
+    qn_history_G.clear();
+    qn_history_M.clear();
+    lbfgs_s.clear();
+    lbfgs_y.clear();
+  }
+
+  Method
+  get_method() const
+  {
+    return active_method;
+  }
+
+  /*
+   * Stopping tolerance for ||m||_M: absolute, relative to ||g||_M, and relative to the mismatch of
+   * the initial guess (MismatchReduction). The initial guess is the extrapolation of the controls
+   * of the previous time steps, a predictor whose error estimates the local time error; the
+   * coupling error is then a fraction of the time error.
+   */
+  double
+  stopping_tolerance(VectorType const & g, double const m0_norm) const
+  {
+    double tolerance = param.mismatch_tolerance;
+    if(param.mismatch_tolerance_relative > 0.0)
+      tolerance = std::max(tolerance, param.mismatch_tolerance_relative * norm_mismatch(g));
+    if(param.mismatch_reduction > 0.0)
+      tolerance = std::max(tolerance, param.mismatch_reduction * m0_norm);
+    return tolerance;
   }
 
   /*
@@ -141,7 +182,7 @@ public:
   Statistics
   solve(VectorType & g)
   {
-    if(param.method == Method::InterfaceQuasiNewton)
+    if(active_method == Method::InterfaceQuasiNewton)
       return solve_quasi_newton(g);
 
     stats = Statistics();
@@ -157,8 +198,12 @@ public:
 
     double J = evaluate(m, g);
     save_linearization();
+    double const m0_norm = norm_mismatch(m);
 
     double r0_norm = 0.0;
+
+    // after a failed step: derivatives at full accuracy, no recycled pairs of previous steps
+    bool safeguarded = false;
 
     // L-BFGS bookkeeping
     VectorType r_old, s_old;
@@ -168,8 +213,19 @@ public:
     {
       double const m_norm = norm_mismatch(m);
 
-      double r_norm = 0.0;
-      if(param.method != Method::InterfaceNewton)
+      double const tolerance = stopping_tolerance(g, m0_norm);
+
+      if(safeguarded)
+        problem.set_linearized_relative_tolerance(0.0);
+      else if(param.linearized_tolerance_target > 0.0 and m_norm > 0.0)
+        problem.set_linearized_relative_tolerance(param.linearized_tolerance_target * tolerance /
+                                                  m_norm);
+
+      double     r_norm = 0.0;
+      bool const needs_gradient =
+        active_method != Method::InterfaceNewton and not uses_interface_equation();
+      // no gradient (adjoint solve) at the converged point
+      if(needs_gradient and m_norm > tolerance)
       {
         gradient(r, m, g);
         r_norm = norm(r);
@@ -183,38 +239,54 @@ public:
       stats.mismatch_norm = m_norm;
       stats.gradient_norm = r_norm;
 
-      if(m_norm <= param.mismatch_tolerance)
+      if(m_norm <= tolerance)
       {
         stats.converged = true;
         stats.reason    = "mismatch tolerance";
         break;
       }
-      if(param.method != Method::InterfaceNewton and
-         r_norm <= param.gradient_tolerance_relative * r0_norm and k > 0)
+      if(needs_gradient and r_norm <= param.gradient_tolerance_relative * r0_norm and k > 0)
       {
         stats.converged = true;
         stats.reason    = "gradient tolerance";
         break;
       }
-      if(param.method != Method::InterfaceNewton and r_norm == 0.0)
+      if(needs_gradient and r_norm == 0.0)
       {
         stats.converged = true;
         stats.reason    = "zero gradient";
         break;
       }
 
-      double const eta =
+      double eta =
         std::min(param.forcing_term_max, std::sqrt(r0_norm > 0.0 ? r_norm / r0_norm : 1.0));
+      // interface equation: the linear model has to reach the mismatch tolerance, not more
+      if(param.forcing_term_target > 0.0 and not needs_gradient and m_norm > 0.0)
+        eta = std::min(eta, std::max(1.e-12, param.forcing_term_target * tolerance / m_norm));
 
       bool step_accepted = false;
 
-      if(param.method == Method::SteepestDescent)
+      if(active_method == Method::SteepestDescent)
       {
-        d.equ(-1.0, r);
-        double const alpha0 = cauchy_step_length(r);
-        step_accepted       = armijo(g, m, J, d, -r_norm * r_norm, alpha0, trial_g, trial_m, false);
+        double slope = 0.0;
+        if(preconditioned_gradient_direction(d, r, slope))
+        {
+          // preconditioned steepest descent: d = -H H_A r ~ -(S^* S)^{-1} r, step length from the
+          // exact quadratic model (one application of S, which also enriches H)
+          problem.begin_tangent_record();
+          double const dHd = hessian_quadratic_form(d);
+          problem.set_state_prediction(g, d, std::vector<double>(1, 1.0));
+          double const alpha0 = dHd > 0.0 ? -slope / dHd : 1.0;
+          step_accepted       = armijo(g, m, J, d, slope, alpha0, trial_g, trial_m, false);
+        }
+        else
+        {
+          d.equ(-1.0, r);
+          double const alpha0 = cauchy_step_length(r);
+          step_accepted = armijo(g, m, J, d, -r_norm * r_norm, alpha0, trial_g, trial_m, false);
+        }
       }
-      else if(param.method == Method::LBFGS)
+      else if(active_method == Method::LBFGS)
       {
         if(has_pending_pair)
         {
@@ -234,19 +306,45 @@ public:
           has_pending_pair = false;
         }
 
+        // safeguards against directions that are not of descent (the recycled initial inverse
+        // Hessian is not symmetric): drop the pairs of the current solve, then the recycled
+        // pairs of previous time steps, finally use -r
         lbfgs_direction(d, r);
         double slope = problem.inner_product(r, d);
-        if(slope >= 0.0)
+        if(not is_descent(slope, r, d))
         {
           lbfgs_s.clear();
           lbfgs_y.clear();
           lbfgs_direction(d, r);
           slope = problem.inner_product(r, d);
         }
+        if(not is_descent(slope, r, d) and has_recycled_preconditioner())
+        {
+          discard_recycled_history();
+          lbfgs_direction(d, r);
+          slope = problem.inner_product(r, d);
+        }
+        if(not is_descent(slope, r, d))
+        {
+          d.equ(-1.0, r);
+          slope = -r_norm * r_norm;
+        }
+
+        // with the recycled initial inverse Hessian: step length from the exact quadratic model
+        // (one application of S, which also enriches H and predicts the fluid state)
+        double alpha0 = 1.0;
+        if(has_recycled_preconditioner())
+        {
+          problem.begin_tangent_record();
+          double const dHd = hessian_quadratic_form(d);
+          problem.set_state_prediction(g, d, std::vector<double>(1, 1.0));
+          if(dHd > 0.0)
+            alpha0 = -slope / dHd;
+        }
 
         VectorType g_old(g);
         r_old         = r;
-        step_accepted = armijo(g, m, J, d, slope, 1.0, trial_g, trial_m, false);
+        step_accepted = armijo(g, m, J, d, slope, alpha0, trial_g, trial_m, false);
         if(step_accepted)
         {
           s_old = g;
@@ -254,7 +352,32 @@ public:
           has_pending_pair = true;
         }
       }
-      else if(param.method == Method::GaussNewton)
+      else if(uses_interface_equation() and active_method != Method::GaussNewton)
+      {
+        // Levenberg-Marquardt, trust region in the Krylov subspace of S d = -m
+        VectorType b(m), Sd;
+        b *= -1.0;
+        problem.begin_tangent_record();
+        gmres(d, Sd, b, eta);
+        step_accepted = subspace_step(g, m, J, d, trial_g, trial_m);
+      }
+      else if(uses_interface_equation())
+      {
+        // square, invertible S: the Gauss-Newton step solves S d = -m
+        VectorType b(m), Sd;
+        b *= -1.0;
+        problem.begin_tangent_record();
+        gmres(d, Sd, b, eta);
+        problem.set_state_prediction(g, d, last_gmres_coefficients);
+        double const slope = problem.inner_product_mismatch(m, Sd);
+        if(slope >= 0.0)
+        {
+          stats.reason = "Gauss-Newton direction is not a descent direction";
+          break;
+        }
+        step_accepted = armijo(g, m, J, d, slope, 1.0, trial_g, trial_m, false);
+      }
+      else if(active_method == Method::GaussNewton)
       {
         VectorType b(r);
         b *= -1.0;
@@ -262,19 +385,21 @@ public:
         step_accepted =
           armijo(g, m, J, d, problem.inner_product(r, d), 1.0, trial_g, trial_m, false);
       }
-      else if(param.method == Method::LevenbergMarquardt)
+      else if(active_method == Method::LevenbergMarquardt)
       {
         step_accepted = levenberg_marquardt_step(g, m, J, r, d, eta, trial_g, trial_m);
       }
-      else if(param.method == Method::TrustRegion)
+      else if(active_method == Method::TrustRegion)
       {
         step_accepted = trust_region_step(g, m, J, r, d, eta, trial_g, trial_m);
       }
-      else if(param.method == Method::InterfaceNewton)
+      else if(active_method == Method::InterfaceNewton)
       {
         VectorType b(m), Sd;
         b *= -1.0;
+        problem.begin_tangent_record();
         gmres(d, Sd, b, eta);
+        problem.set_state_prediction(g, d, last_gmres_coefficients);
         double const slope = problem.inner_product_mismatch(m, Sd);
         if(slope >= 0.0)
         {
@@ -292,6 +417,21 @@ public:
 
       if(not step_accepted)
       {
+        if(not safeguarded and
+           (param.linearized_tolerance_target > 0.0 or param.recycled_preconditioner))
+        {
+          // retry once with accurate derivatives and without the recycled pairs of previous
+          // steps; the state of the current iterate is re-evaluated, so that the linearization
+          // (also of the fluid) is the one of g
+          if(param.verbose)
+            pcout << "    step failed: retry with accurate derivatives" << std::endl;
+          safeguarded = true;
+          if(param.recycled_preconditioner)
+            discard_recycled_history();
+          J = evaluate(m, g);
+          save_linearization();
+          continue;
+        }
         stats.reason = "line search / step acceptance failed";
         break;
       }
@@ -305,12 +445,14 @@ public:
     }
 
     if(param.verbose)
-      pcout << "  OC " << method_to_string(param.method) << ": " << stats.reason << ", "
+      pcout << "  OC " << method_to_string(active_method) << ": " << stats.reason << ", "
             << stats.iterations << " it, " << stats.state_evaluations << " states, "
             << stats.tangent_solves << " S, " << stats.adjoint_solves << " S*, "
             << stats.krylov_iterations << " Krylov, " << stats.preconditioner_applications
             << " P, ||m|| = " << std::scientific << std::setprecision(3) << stats.mismatch_norm
             << std::defaultfloat << std::endl;
+
+    archive_recycled_pairs();
 
     return stats;
   }
@@ -345,6 +487,7 @@ public:
     evaluate(m, g);
     save_linearization();
     qn_last_initial_norm = norm_mismatch(m);
+    double const m0_norm = qn_last_initial_norm;
 
     std::vector<VectorType> dG_now, dM_now;
 
@@ -358,10 +501,7 @@ public:
       double const m_norm = norm_mismatch(m);
       print_iteration(k, cost(m, g), m_norm, 0.0);
       stats.mismatch_norm    = m_norm;
-      double const tolerance = std::max(param.mismatch_tolerance,
-                                        param.mismatch_tolerance_relative > 0.0 ?
-                                          param.mismatch_tolerance_relative * norm_mismatch(g) :
-                                          0.0);
+      double const tolerance = stopping_tolerance(g, m0_norm);
       if(m_norm <= tolerance)
       {
         stats.converged = true;
@@ -545,7 +685,7 @@ public:
     }
 
     if(param.verbose)
-      pcout << "  OC " << method_to_string(param.method) << ": " << stats.reason << ", "
+      pcout << "  OC " << method_to_string(active_method) << ": " << stats.reason << ", "
             << stats.iterations << " it, " << stats.state_evaluations << " states, "
             << stats.krylov_iterations << " secant columns, " << stats.restarts
             << " restarts, ||m|| = " << std::scientific << std::setprecision(3)
@@ -682,6 +822,145 @@ private:
   {
     problem.apply_S(dst, src);
     ++stats.tangent_solves;
+    // every tangent application gives an exact pair for the recycled preconditioner
+    if(param.recycled_preconditioner)
+      recycle_now.emplace_back(src, dst);
+  }
+
+  /*
+   * Recycled matrix-free preconditioner from exact tangent pairs (v_i, y_i = S v_i): with the
+   * M-orthonormal factorization Y = Q R (newest pairs first, nearly dependent columns dropped),
+   * H x = x + sum_j W_j (Q_j, x)_M with W = (V - Y) R^{-1}, so that H y_i = v_i for the kept
+   * pairs; the M-adjoint is H^* x = x + sum_j Q_j (W_j, x)_M.
+   */
+  void
+  rebuild_recycled_preconditioner()
+  {
+    rebuild_recycled_inverse(recycle_now, recycle_history, rec_Q, rec_W, false);
+    rebuild_recycled_inverse(adjoint_now, adjoint_history, adj_Q, adj_W, true);
+  }
+
+  /*
+   * Inverse from exact pairs (v_i, y_i = A v_i): H y_i = v_i on the kept pairs, identity on the
+   * complement; the images y_i are orthonormalized in the mismatch inner product (A = S) or in
+   * the control inner product (A = S^*).
+   */
+  void
+  rebuild_recycled_inverse(
+    std::vector<std::pair<VectorType, VectorType>> const &             now,
+    std::deque<std::vector<std::pair<VectorType, VectorType>>> const & history,
+    std::vector<VectorType> &                                          rec_Q,
+    std::vector<VectorType> &                                          rec_W,
+    bool const                                                         control_metric) const
+  {
+    rec_Q.clear();
+    rec_W.clear();
+    if(not param.recycled_preconditioner)
+      return;
+
+    auto const inner = [&](VectorType const & a, VectorType const & b) {
+      return control_metric ? problem.inner_product(a, b) : problem.inner_product_mismatch(a, b);
+    };
+    auto const vnorm = [&](VectorType const & a) { return std::sqrt(std::max(0.0, inner(a, a))); };
+
+    std::vector<std::pair<VectorType, VectorType> const *> pairs;
+    for(auto it = now.rbegin(); it != now.rend(); ++it)
+      pairs.push_back(&(*it));
+    for(auto h = history.rbegin(); h != history.rend(); ++h)
+      for(auto it = h->rbegin(); it != h->rend(); ++it)
+        pairs.push_back(&(*it));
+
+    std::vector<std::vector<double>> R; // R[j] = column j (size j+1)
+    std::vector<VectorType>          D; // V - Y of the kept pairs
+    for(auto const * p : pairs)
+    {
+      if(rec_Q.size() >= param.recycle_max_pairs)
+        break;
+      VectorType          q(p->second);
+      double const        original = vnorm(q);
+      std::vector<double> r(rec_Q.size() + 1, 0.0);
+      for(unsigned int i = 0; i < rec_Q.size(); ++i)
+      {
+        r[i] = inner(rec_Q[i], q);
+        q.add(-r[i], rec_Q[i]);
+      }
+      double const q_norm = vnorm(q);
+      if(original == 0.0 or q_norm <= param.qn_filter * original)
+        continue;
+      r.back() = q_norm;
+      q *= 1.0 / q_norm;
+      rec_Q.push_back(q);
+      R.push_back(r);
+      VectorType d(p->first);
+      d.add(-1.0, p->second);
+      D.push_back(d);
+    }
+
+    // W R = D, column by column
+    for(unsigned int j = 0; j < D.size(); ++j)
+    {
+      VectorType w(D[j]);
+      for(unsigned int i = 0; i < j; ++i)
+        w.add(-R[j][i], rec_W[i]);
+      w *= 1.0 / R[j][j];
+      rec_W.push_back(w);
+    }
+  }
+
+  bool
+  has_recycled_preconditioner() const
+  {
+    return param.recycled_preconditioner and not rec_Q.empty();
+  }
+
+  // dst = H src
+  void
+  apply_recycled(VectorType & dst, VectorType const & src) const
+  {
+    dst = src;
+    for(unsigned int j = 0; j < rec_Q.size(); ++j)
+      dst.add(problem.inner_product_mismatch(rec_Q[j], src), rec_W[j]);
+  }
+
+  // dst = H_A src ~ S^{-*} src (from the exact adjoint pairs, control -> mismatch space)
+  void
+  apply_recycled_adjoint_inverse(VectorType & dst, VectorType const & src) const
+  {
+    dst = src;
+    for(unsigned int j = 0; j < adj_Q.size(); ++j)
+      dst.add(problem.inner_product(adj_Q[j], src), adj_W[j]);
+  }
+
+  // dst = H H_A src ~ S^{-1} S^{-*} src = (S^* S)^{-1} src
+  void
+  apply_recycled_normal(VectorType & dst, VectorType const & src) const
+  {
+    VectorType tmp;
+    problem.initialize_vector(tmp);
+    apply_recycled_adjoint_inverse(tmp, src);
+    apply_recycled(dst, tmp);
+  }
+
+  // archive the pairs of the finished solve
+  void
+  archive_recycled_pairs()
+  {
+    if(not param.recycled_preconditioner)
+      return;
+    if(param.recycle_time_steps > 0 and not recycle_now.empty())
+    {
+      recycle_history.push_back(std::move(recycle_now));
+      while(recycle_history.size() > param.recycle_time_steps)
+        recycle_history.pop_front();
+    }
+    recycle_now.clear();
+    if(param.recycle_time_steps > 0 and not adjoint_now.empty())
+    {
+      adjoint_history.push_back(std::move(adjoint_now));
+      while(adjoint_history.size() > param.recycle_time_steps)
+        adjoint_history.pop_front();
+    }
+    adjoint_now.clear();
   }
 
   void
@@ -689,6 +968,9 @@ private:
   {
     problem.apply_S_adjoint(dst, src);
     ++stats.adjoint_solves;
+    // every adjoint application gives an exact pair (w, S^* w) for H_A ~ S^{-*}
+    if(param.recycled_preconditioner)
+      adjoint_now.emplace_back(src, dst);
   }
 
   // Riesz gradient r = S^* m + gamma g
@@ -785,18 +1067,42 @@ private:
   void
   cg(VectorType & x, VectorType const & b, double const eta, double const shift)
   {
-    VectorType res(b), p(b), Hp;
+    // preconditioned with the limited-memory quasi-Newton (Morales-Nocedal) preconditioner built
+    // from exact pairs (p, A0 p) of previous CG solves (A0 = S^* S, current shift added), or with
+    // (J^* J)^{-1} of the frozen Jacobian
+    double const sigma        = param.regularization + shift;
+    bool const   lmp          = param.recycled_preconditioner and not cg_pairs.empty();
+    bool const   precondition = lmp or problem.has_normal_preconditioner();
+    auto const   apply_P      = [&](VectorType & dst, VectorType const & src) {
+      if(lmp)
+        apply_lmp(dst, src, sigma);
+      else
+        problem.apply_normal_preconditioner(dst, src);
+    };
+    std::vector<std::pair<VectorType, VectorType>> new_pairs;
+
+    VectorType res(b), z, p, Hp;
     problem.initialize_vector(Hp);
+    problem.initialize_vector(z);
     x = 0.0;
 
     double const b_norm = norm(b);
-    double       rr     = problem.inner_product(res, res);
     if(b_norm == 0.0)
       return;
 
+    if(precondition)
+    {
+      apply_P(z, res);
+      ++stats.preconditioner_applications;
+    }
+    else
+      z = res;
+    p         = z;
+    double rz = problem.inner_product(res, z);
+
     for(unsigned int j = 0; j < param.krylov_max_iterations; ++j)
     {
-      if(std::sqrt(rr) <= eta * b_norm)
+      if(norm(res) <= eta * b_norm)
         break;
 
       hessian_vector(Hp, p, shift);
@@ -806,13 +1112,67 @@ private:
       if(pHp <= 0.0)
         break;
 
-      double const alpha = rr / pHp;
+      if(param.recycled_preconditioner)
+      {
+        VectorType A0p(Hp);
+        A0p.add(-sigma, p);
+        new_pairs.emplace_back(p, A0p);
+      }
+
+      double const alpha = rz / pHp;
       x.add(alpha, p);
       res.add(-alpha, Hp);
 
-      double const rr_new = problem.inner_product(res, res);
-      p.sadd(rr_new / rr, 1.0, res);
-      rr = rr_new;
+      if(precondition)
+      {
+        apply_P(z, res);
+        ++stats.preconditioner_applications;
+      }
+      else
+        z = res;
+      double const rz_new = problem.inner_product(res, z);
+      p.sadd(rz_new / rz, 1.0, z);
+      rz = rz_new;
+    }
+
+    // keep the newest exact pairs for the next solves (the preconditioner is fixed within a solve)
+    for(auto & pair : new_pairs)
+    {
+      cg_pairs.push_back(std::move(pair));
+      if(cg_pairs.size() > param.recycle_max_pairs)
+        cg_pairs.pop_front();
+    }
+  }
+
+  /*
+   * Limited-memory quasi-Newton preconditioner (Morales, Nocedal 2000) for A = A0 + sigma I from
+   * exact pairs (s_i, A0 s_i): L-BFGS two-loop recursion with y_i = A0 s_i + sigma s_i and the
+   * initial scaling (s, y)/(y, y) of the newest pair. Symmetric positive definite.
+   */
+  void
+  apply_lmp(VectorType & dst, VectorType const & src, double const sigma) const
+  {
+    unsigned int const      n = cg_pairs.size();
+    std::vector<VectorType> y(n);
+    std::vector<double>     rho(n), a(n);
+    for(unsigned int i = 0; i < n; ++i)
+    {
+      y[i] = cg_pairs[i].second;
+      y[i].add(sigma, cg_pairs[i].first);
+      rho[i] = 1.0 / problem.inner_product(cg_pairs[i].first, y[i]);
+    }
+    dst = src;
+    for(int i = int(n) - 1; i >= 0; --i)
+    {
+      a[i] = rho[i] * problem.inner_product(cg_pairs[i].first, dst);
+      dst.add(-a[i], y[i]);
+    }
+    dst *= problem.inner_product(cg_pairs[n - 1].first, y[n - 1]) /
+           problem.inner_product(y[n - 1], y[n - 1]);
+    for(unsigned int i = 0; i < n; ++i)
+    {
+      double const beta = rho[i] * problem.inner_product(y[i], dst);
+      dst.add(a[i] - beta, cg_pairs[i].first);
     }
   }
 
@@ -829,10 +1189,13 @@ private:
 
     problem.initialize_vector(x);
     problem.initialize_vector(Sx);
+    last_gmres_coefficients.clear();
 
     double const beta = norm_mismatch(b);
     if(beta == 0.0)
       return;
+
+    rebuild_recycled_preconditioner();
 
     std::vector<VectorType>          V(1, b), Z;
     std::vector<std::vector<double>> H, R; // unrotated / rotated Hessenberg columns
@@ -845,7 +1208,12 @@ private:
       VectorType z, w;
       problem.initialize_vector(z);
       problem.initialize_vector(w);
-      if(problem.has_preconditioner())
+      if(has_recycled_preconditioner())
+      {
+        apply_recycled(z, V[k]);
+        ++stats.preconditioner_applications;
+      }
+      else if(problem.has_preconditioner())
       {
         problem.apply_preconditioner(z, V[k]);
         ++stats.preconditioner_applications;
@@ -896,6 +1264,11 @@ private:
       }
     }
 
+    if(param.verbose)
+      pcout << "      GMRES: " << k << " it, eta = " << std::scientific << std::setprecision(2)
+            << eta << ", ||b + S x|| / ||b|| = " << std::abs(e[k]) / beta << std::defaultfloat
+            << std::endl;
+
     std::vector<double> y(k, 0.0);
     for(int i = int(k) - 1; i >= 0; --i)
     {
@@ -907,6 +1280,10 @@ private:
 
     for(unsigned int j = 0; j < k; ++j)
       x.add(y[j], Z[j]);
+    last_gmres_coefficients = y;
+    krylov_beta             = beta;
+    krylov_H                = H;
+    krylov_Z                = Z;
 
     for(unsigned int j = 0; j < k; ++j)
       for(unsigned int i = 0; i < H[j].size() and i < V.size(); ++i)
@@ -917,9 +1294,17 @@ private:
   lbfgs_direction(VectorType & d, VectorType const & r)
   {
     unsigned int const n = lbfgs_s.size();
+    rebuild_recycled_preconditioner();
+    bool const recycled = has_recycled_preconditioner();
     if(n == 0)
     {
-      d.equ(-cauchy_step_length(r), r);
+      if(recycled)
+      {
+        apply_recycled_normal(d, r);
+        d *= -1.0;
+      }
+      else
+        d.equ(-cauchy_step_length(r), r);
       return;
     }
 
@@ -931,15 +1316,255 @@ private:
       a[i]   = rho[i] * problem.inner_product(lbfgs_s[i], q);
       q.add(-a[i], lbfgs_y[i]);
     }
-    double const gamma_scaling = problem.inner_product(lbfgs_s[n - 1], lbfgs_y[n - 1]) /
-                                 problem.inner_product(lbfgs_y[n - 1], lbfgs_y[n - 1]);
-    q *= gamma_scaling;
+    if(recycled)
+    {
+      // initial inverse Hessian H H^* from the recycled tangent pairs
+      VectorType tmp(q);
+      apply_recycled_normal(q, tmp);
+    }
+    else
+    {
+      double const gamma_scaling = problem.inner_product(lbfgs_s[n - 1], lbfgs_y[n - 1]) /
+                                   problem.inner_product(lbfgs_y[n - 1], lbfgs_y[n - 1]);
+      q *= gamma_scaling;
+    }
     for(unsigned int i = 0; i < n; ++i)
     {
       double const beta = rho[i] * problem.inner_product(lbfgs_y[i], q);
       q.add(a[i] - beta, lbfgs_s[i]);
     }
     d.equ(-1.0, q);
+  }
+
+  // angle condition (r, d) <= -c ||r|| ||d||
+  bool
+  is_descent(double const slope, VectorType const & r, VectorType const & d) const
+  {
+    return slope < -1.e-4 * norm(r) * norm(d);
+  }
+
+  /*
+   * Preconditioned gradient direction d = -H H_A r. The recycled inverse is not symmetric, and
+   * pairs of previous time steps may be outdated (e.g. after changes of the time step): if d is
+   * not a descent direction, the pairs of previous time steps are discarded and d is recomputed
+   * with the pairs of the current solve. Returns false if no recycled preconditioner is available
+   * or no descent direction results.
+   */
+  bool
+  preconditioned_gradient_direction(VectorType & d, VectorType const & r, double & slope)
+  {
+    for(unsigned int attempt = 0; attempt < 2; ++attempt)
+    {
+      rebuild_recycled_preconditioner();
+      if(not has_recycled_preconditioner())
+        return false;
+      apply_recycled_normal(d, r);
+      d *= -1.0;
+      slope = problem.inner_product(r, d);
+      if(is_descent(slope, r, d))
+        return true;
+      discard_recycled_history();
+    }
+    return false;
+  }
+
+  void
+  discard_recycled_history()
+  {
+    if(param.verbose)
+      pcout << "    recycled preconditioner: no descent direction, pairs of previous time "
+               "steps discarded"
+            << std::endl;
+    recycle_history.clear();
+    adjoint_history.clear();
+    ++recycled_restarts;
+  }
+
+  bool
+  uses_interface_equation() const
+  {
+    return param.interface_equation and param.regularization == 0.0 and
+           (active_method == Method::GaussNewton or active_method == Method::LevenbergMarquardt or
+            active_method == Method::TrustRegion);
+  }
+
+  /*
+   * Model of the last GMRES solve in its search directions Z (d = Z y): with the Arnoldi relation
+   * S Z = V Hbar and b = -m = beta v_1, ||m + S Z y||^2 = ||Hbar y - beta e_1||^2, i.e. the
+   * Gauss-Newton model 0.5 ||m + S d||^2 = 0.5 beta^2 - y.c + 0.5 y.A y with A = Hbar^T Hbar,
+   * c = beta Hbar^T e_1, and the metric of the steps ||d||^2 = y.G y, G_ij = (z_i, z_j).
+   */
+  void
+  subspace_model(std::vector<std::vector<double>> & A,
+                 std::vector<double> &              c,
+                 std::vector<std::vector<double>> & G) const
+  {
+    unsigned int const k = krylov_Z.size();
+    A.assign(k, std::vector<double>(k, 0.0));
+    G.assign(k, std::vector<double>(k, 0.0));
+    c.assign(k, 0.0);
+    auto Hbar = [&](unsigned int const i, unsigned int const j) {
+      return i < krylov_H[j].size() ? krylov_H[j][i] : 0.0;
+    };
+    for(unsigned int i = 0; i < k; ++i)
+    {
+      c[i] = krylov_beta * Hbar(0, i);
+      for(unsigned int j = 0; j < k; ++j)
+      {
+        for(unsigned int l = 0; l <= k; ++l)
+          A[i][j] += Hbar(l, i) * Hbar(l, j);
+        if(j >= i)
+          G[i][j] = G[j][i] = problem.inner_product(krylov_Z[i], krylov_Z[j]);
+      }
+    }
+  }
+
+  // y = (A + lambda G)^{-1} c by Cholesky (small, symmetric positive definite)
+  static std::vector<double>
+  solve_small(std::vector<std::vector<double>> const & A,
+              std::vector<std::vector<double>> const & G,
+              std::vector<double> const &              c,
+              double const                             lambda)
+  {
+    unsigned int const               k = c.size();
+    std::vector<std::vector<double>> L(k, std::vector<double>(k, 0.0));
+    for(unsigned int i = 0; i < k; ++i)
+      for(unsigned int j = 0; j <= i; ++j)
+      {
+        double sum = A[i][j] + lambda * G[i][j];
+        for(unsigned int l = 0; l < j; ++l)
+          sum -= L[i][l] * L[j][l];
+        if(i == j)
+          L[i][i] = std::sqrt(std::max(sum, 1.e-300));
+        else
+          L[i][j] = sum / L[j][j];
+      }
+    std::vector<double> y(c);
+    for(unsigned int i = 0; i < k; ++i)
+    {
+      for(unsigned int l = 0; l < i; ++l)
+        y[i] -= L[i][l] * y[l];
+      y[i] /= L[i][i];
+    }
+    for(int i = int(k) - 1; i >= 0; --i)
+    {
+      for(unsigned int l = i + 1; l < k; ++l)
+        y[i] -= L[l][i] * y[l];
+      y[i] /= L[i][i];
+    }
+    return y;
+  }
+
+  static double
+  quadratic_form(std::vector<std::vector<double>> const & A, std::vector<double> const & y)
+  {
+    double sum = 0.0;
+    for(unsigned int i = 0; i < y.size(); ++i)
+      for(unsigned int j = 0; j < y.size(); ++j)
+        sum += y[i] * A[i][j] * y[j];
+    return sum;
+  }
+
+  /*
+   * Levenberg-Marquardt and trust-region steps in the Krylov subspace of the interface equation:
+   * no further applications of S or S^* (also for rejected trial steps), the Gauss-Newton model
+   * of the subspace is exact up to the GMRES accuracy.
+   *   LM: y = (A + lambda G)^{-1} c,
+   *   TR: y = argmin of the model subject to y.G y <= radius^2 (bisection for the multiplier).
+   */
+  bool
+  subspace_step(VectorType & g,
+                VectorType & m,
+                double &     J,
+                VectorType & d,
+                VectorType & trial_g,
+                VectorType & trial_m)
+  {
+    if(krylov_Z.empty())
+      return false;
+
+    std::vector<std::vector<double>> A, G;
+    std::vector<double>              c;
+    subspace_model(A, c, G);
+
+    bool const                lm      = (active_method == Method::LevenbergMarquardt);
+    std::vector<double> const y_gn    = solve_small(A, G, c, 0.0);
+    double const              gn_norm = std::sqrt(std::max(0.0, quadratic_form(G, y_gn)));
+
+    unsigned int const max_tries = lm ? param.lm_max_tries : 30;
+    for(unsigned int t = 0; t < max_tries; ++t)
+    {
+      std::vector<double> y;
+      bool                on_boundary = false;
+      if(lm)
+        y = solve_small(A, G, c, lm_lambda);
+      else if(gn_norm <= tr_radius)
+        y = y_gn;
+      else
+      {
+        // ||d(lambda)|| decreases monotonically in lambda: bisection in log(lambda)
+        double lo = 1.e-16, hi = 1.0;
+        while(std::sqrt(quadratic_form(G, solve_small(A, G, c, hi))) > tr_radius and hi < 1.e16)
+          hi *= 10.0;
+        for(unsigned int it = 0; it < 60; ++it)
+        {
+          double const mid = std::sqrt(lo * hi);
+          if(std::sqrt(quadratic_form(G, solve_small(A, G, c, mid))) > tr_radius)
+            lo = mid;
+          else
+            hi = mid;
+        }
+        y           = solve_small(A, G, c, hi);
+        on_boundary = true;
+      }
+
+      double pred = -0.5 * quadratic_form(A, y);
+      for(unsigned int i = 0; i < y.size(); ++i)
+        pred += y[i] * c[i];
+      if(not(pred > 0.0))
+        return false;
+
+      d = 0.0;
+      for(unsigned int j = 0; j < y.size(); ++j)
+        d.add(y[j], krylov_Z[j]);
+      problem.set_state_prediction(g, d, y);
+
+      trial_g = g;
+      trial_g.add(1.0, d);
+      double const J_trial = evaluate(trial_m, trial_g);
+      double const rho     = (J - J_trial) / pred;
+      double const d_norm  = std::sqrt(std::max(0.0, quadratic_form(G, y)));
+
+      if(std::isfinite(J_trial) and rho > param.tr_eta)
+      {
+        g = trial_g;
+        m = trial_m;
+        J = J_trial;
+        save_linearization();
+        if(lm)
+        {
+          if(rho > 0.75)
+            lm_lambda = std::max(lm_lambda / 3.0, param.lm_lambda_min);
+          else if(rho < 0.25)
+            lm_lambda = std::min(2.0 * lm_lambda, param.lm_lambda_max);
+        }
+        else
+        {
+          if(rho < 0.25)
+            tr_radius = 0.25 * d_norm;
+          else if(rho > 0.75 and on_boundary)
+            tr_radius = std::min(2.0 * tr_radius, param.tr_radius_max);
+        }
+        return true;
+      }
+
+      restore_linearization();
+      if(lm)
+        lm_lambda = std::min(4.0 * lm_lambda, param.lm_lambda_max);
+      else
+        tr_radius = 0.25 * (on_boundary ? tr_radius : d_norm);
+    }
+    return false;
   }
 
   bool
@@ -1102,14 +1727,14 @@ private:
       return;
     pcout << "    it " << std::setw(3) << k << std::scientific << std::setprecision(4)
           << "  J = " << J << "  ||m|| = " << m_norm;
-    if(param.method != Method::InterfaceNewton and param.method != Method::InterfaceQuasiNewton)
+    if(active_method != Method::InterfaceNewton and active_method != Method::InterfaceQuasiNewton)
       pcout << "  ||r|| = " << r_norm;
-    if(param.method == Method::LevenbergMarquardt)
+    if(active_method == Method::LevenbergMarquardt)
       pcout << "  lambda = " << lm_lambda;
-    if(param.method == Method::TrustRegion)
+    if(active_method == Method::TrustRegion)
       pcout << "  radius = " << tr_radius;
-    if(k > 0 and (param.method == Method::SteepestDescent or param.method == Method::LBFGS or
-                  param.method == Method::GaussNewton or param.method == Method::InterfaceNewton))
+    if(k > 0 and (active_method == Method::SteepestDescent or active_method == Method::LBFGS or
+                  active_method == Method::GaussNewton or active_method == Method::InterfaceNewton))
       pcout << "  alpha = " << last_alpha;
     pcout << std::defaultfloat << std::endl;
   }
@@ -1119,9 +1744,16 @@ private:
   dealii::ConditionalOStream const & pcout;
 
   Statistics stats;
-  VectorType linearization;
-  bool       state_is_current = false;
-  double     last_alpha       = 0.0;
+
+  // coefficients of the last GMRES solution x = sum_j c_j z_j in the search directions z_j, and
+  // its Arnoldi data (unrotated Hessenberg columns, search directions, ||b||)
+  std::vector<double>              last_gmres_coefficients;
+  std::vector<std::vector<double>> krylov_H;
+  std::vector<VectorType>          krylov_Z;
+  double                           krylov_beta = 0.0;
+  VectorType                       linearization;
+  bool                             state_is_current = false;
+  double                           last_alpha       = 0.0;
 
   // persistent across time steps: adaptive LM parameter and trust-region radius
   double lm_lambda;
@@ -1132,7 +1764,23 @@ private:
   // InterfaceQuasiNewton: secant pairs of previous solves
   std::deque<std::vector<VectorType>> qn_history_G, qn_history_M;
   double                              qn_relaxation;
-  double                              qn_last_initial_norm = 0.0;
+  Method                              active_method;
+
+  // recycled preconditioner: exact tangent pairs of the current solve and of previous solves,
+  // and the factors of H
+  std::vector<std::pair<VectorType, VectorType>>             recycle_now;
+  std::deque<std::vector<std::pair<VectorType, VectorType>>> recycle_history;
+  std::vector<VectorType>                                    rec_Q, rec_W;
+  std::vector<std::pair<VectorType, VectorType>>             adjoint_now; // (w, S^* w)
+  std::deque<std::vector<std::pair<VectorType, VectorType>>> adjoint_history;
+  std::vector<VectorType>                                    adj_Q, adj_W;
+
+public:
+  unsigned int recycled_restarts = 0; // history discarded (no descent direction)
+
+private:
+  std::deque<std::pair<VectorType, VectorType>> cg_pairs; // exact pairs (p, S^* S p)
+  double                                        qn_last_initial_norm = 0.0;
 };
 
 } // namespace OptimalControl

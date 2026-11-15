@@ -149,12 +149,27 @@ struct Parameters
       max_iterations(50),
       mismatch_tolerance(1.e-10),
       mismatch_tolerance_relative(0.0),
+      mismatch_reduction(0.0),
+      linearized_tolerance_factor(1.0),
+      linearized_tolerance_target(0.0),
+      recycled_preconditioner(false),
+      linearized_initial_guess(false),
+      tangent_state_prediction(false),
+      affine_state_prediction(false),
+      affine_prediction_max_pairs(64),
+      warm_start_absolute_tolerance(false),
+      interface_equation(false),
+      linearized_history(30),
+      recycle_time_steps(4),
+      recycle_max_pairs(60),
+      method_schedule(""),
       stagnation_iterations(0),
       gradient_tolerance_relative(1.e-8),
       armijo_c1(1.e-4),
       line_search_max_iterations(20),
       krylov_max_iterations(100),
       forcing_term_max(1.e-1),
+      forcing_term_target(0.0),
       lbfgs_memory(10),
       lm_lambda_initial(1.e-2),
       lm_lambda_min(1.e-12),
@@ -167,6 +182,7 @@ struct Parameters
       geometry_tolerance(1.e-10),
       use_area_scaling(true),
       extrapolate_control(false),
+      control_extrapolation_order(1),
       verify_derivatives(false),
       formulation(Formulation::VelocityMismatch),
       tangent_difference(TangentDifference::Analytic),
@@ -185,6 +201,8 @@ struct Parameters
       preconditioner(Preconditioner::None),
       preconditioner_tolerance(1.e-8),
       preconditioner_update_interval(10),
+      preconditioner_update_dt_change(0.0),
+      preconditioner_update_krylov(0.0),
       mismatch_metric(InterfaceMetric::L2),
       control_metric(InterfaceMetric::L2),
       sobolev_length_scale(1.0),
@@ -221,6 +239,115 @@ struct Parameters
                         "control (0: absolute tolerance only).",
                         dealii::Patterns::Double(0.0),
                         false);
+      prm.add_parameter("MismatchReduction",
+                        mismatch_reduction,
+                        "Also stop if ||m||_M <= MismatchReduction * ||m_0||_M, m_0 the mismatch "
+                        "of the extrapolated control (an estimate of the local time error); 0: "
+                        "off.",
+                        dealii::Patterns::Double(0.0),
+                        false);
+      prm.add_parameter("LinearizedToleranceFactor",
+                        linearized_tolerance_factor,
+                        "Factor applied to the relative tolerance of the linear fluid solves in "
+                        "the tangent and adjoint operators S, S* (1: as for the state; the "
+                        "relative tolerance is capped at 1e-2).",
+                        dealii::Patterns::Double(1.0),
+                        false);
+      prm.add_parameter(
+        "LinearizedToleranceTarget",
+        linearized_tolerance_target,
+        "Adaptive relative tolerance of the linear fluid solves in S, S*: kappa * tolerance / "
+        "||m_k|| (kappa = LinearizedToleranceTarget, 0 = off), at least as accurate as "
+        "LinearizedToleranceFactor and at most 1e-2: the derivatives need only the accuracy that "
+        "lets the step reach the mismatch tolerance.",
+        dealii::Patterns::Double(0.0),
+        false);
+      prm.add_parameter(
+        "LinearizedInitialGuess",
+        linearized_initial_guess,
+        "Linear fluid solves of S, S*: initial guess by least-squares projection "
+        "onto the previous right-hand sides and solutions, true residual, and a "
+        "tolerance relative to the right-hand side (solve skipped if the projection "
+        "is accurate enough).",
+        dealii::Patterns::Bool(),
+        false);
+      prm.add_parameter(
+        "WarmStartAbsoluteTolerance",
+        warm_start_absolute_tolerance,
+        "WarmStart: the state solves that start from the previous iterate stop at the absolute "
+        "accuracy of the solve from the extrapolation (relative tolerance times its initial "
+        "residual) instead of reducing their own initial residual.",
+        dealii::Patterns::Bool(),
+        false);
+      prm.add_parameter(
+        "AffineStatePrediction",
+        affine_state_prediction,
+        "All methods: within a time step the fluid is affine in its Dirichlet data w (the "
+        "structure velocity on the interface). The pairs (w_i, u_i) of the state solves and "
+        "(dw_j, du_j) of the tangent solves of the time step predict the fluid state of a new w "
+        "by least squares, u = u_k + sum a_l (u_l - u_k) + sum b_j du_j; the state solve starts "
+        "from this prediction and stops at the absolute accuracy of the solve from the "
+        "extrapolation (relative tolerance times its initial residual).",
+        dealii::Patterns::Bool(),
+        false);
+      prm.add_parameter("AffinePredictionMaxPairs",
+                        affine_prediction_max_pairs,
+                        "AffineStatePrediction: maximum number of tangent pairs per time step "
+                        "(newest kept).",
+                        dealii::Patterns::Integer(1),
+                        false);
+      prm.add_parameter(
+        "TangentStatePrediction",
+        tangent_state_prediction,
+        "InterfaceNewton and the InterfaceEquation variants: the fluid is affine in "
+        "the interface data, so the fluid responses of the tangent solves of the Krylov method "
+        "predict the fluid state of the Newton step, u(g + a d) ~ u(g) + a sum_j c_j du_j. The "
+        "state solve starts from this prediction and stops at the absolute accuracy of the solve "
+        "from the extrapolation (relative tolerance times its initial residual).",
+        dealii::Patterns::Bool(),
+        false);
+      prm.add_parameter("LinearizedHistory",
+                        linearized_history,
+                        "LinearizedInitialGuess: number of stored right-hand sides/solutions.",
+                        dealii::Patterns::Integer(1),
+                        false);
+      prm.add_parameter(
+        "InterfaceEquation",
+        interface_equation,
+        "GaussNewton, LevenbergMarquardt, TrustRegion without regularization: work with the "
+        "(preconditioned) GMRES subspace of the interface equation S d = -m instead of the normal "
+        "equations (no adjoint solves). For a square, invertible S, the full step is the "
+        "Gauss-Newton step; LevenbergMarquardt and TrustRegion solve their subproblems in the "
+        "Krylov subspace, d = Z y, with the Arnoldi model ||m + S Z y|| = ||Hbar y - beta e_1|| "
+        "(hybrid Krylov methods, Brown and Saad 1990).",
+        dealii::Patterns::Bool(),
+        false);
+      prm.add_parameter("RecycledPreconditioner",
+                        recycled_preconditioner,
+                        "Matrix-free preconditioner built from the exact tangent pairs (v, S v) of "
+                        "the current and previous solves: H = I + (V - Y) R^{-1} (Q, .)_M with "
+                        "Y = Q R, so that H S v = v on the pairs. Used by InterfaceNewton (H), "
+                        "GaussNewton and LevenbergMarquardt (H H^*), LBFGS (initial inverse "
+                        "Hessian H H^*) and SteepestDescent (direction -H H^* r).",
+                        dealii::Patterns::Bool(),
+                        false);
+      prm.add_parameter("RecycleTimeSteps",
+                        recycle_time_steps,
+                        "RecycledPreconditioner: number of previous solves whose pairs are kept.",
+                        dealii::Patterns::Integer(0),
+                        false);
+      prm.add_parameter("RecycleMaxPairs",
+                        recycle_max_pairs,
+                        "RecycledPreconditioner: maximum number of pairs (newest first).",
+                        dealii::Patterns::Integer(1),
+                        false);
+      prm.add_parameter("MethodSchedule",
+                        method_schedule,
+                        "Change the method in time: comma-separated list of time:Method, e.g. "
+                        "\"0:InterfaceQuasiNewton,12:InterfaceNewton\" (empty: Method for all "
+                        "time steps). Statistics are reported per window.",
+                        dealii::Patterns::Anything(),
+                        false);
       prm.add_parameter("StagnationIterations",
                         stagnation_iterations,
                         "InterfaceQuasiNewton: stop if the smallest ||m|| has not decreased by 10% "
@@ -253,6 +380,14 @@ struct Parameters
         forcing_term_max,
         "Inner relative tolerance eta_k = min(ForcingTermMax, sqrt(||r_k||/||r_0||)).",
         dealii::Patterns::Double(0.0, 1.0),
+        false);
+      prm.add_parameter(
+        "ForcingTermTarget",
+        forcing_term_target,
+        "Interface equation (InterfaceNewton, InterfaceEquation variants of GN, LM, TR): "
+        "solve the linear model to theta * tolerance / ||m_k||, so that a full step reaches the "
+        "mismatch tolerance (theta = ForcingTermTarget, 0 = off).",
+        dealii::Patterns::Double(0.0),
         false);
       prm.add_parameter("LBFGSMemory",
                         lbfgs_memory,
@@ -302,6 +437,14 @@ struct Parameters
                         extrapolate_control,
                         "Initial control 2 g_{n-1} - g_{n-2} instead of g_{n-1}.",
                         dealii::Patterns::Bool(),
+                        false);
+      prm.add_parameter("ControlExtrapolationOrder",
+                        control_extrapolation_order,
+                        "ExtrapolateControl: polynomial order of the extrapolation of the "
+                        "converged controls. 1: 2 g_{n-1} - g_{n-2} (constant time step); "
+                        ">= 2: Lagrange extrapolation in the actual times of the last order + 1 "
+                        "time steps (variable time step).",
+                        dealii::Patterns::Integer(1, 4),
                         false);
       prm.add_parameter("VerifyDerivatives",
                         verify_derivatives,
@@ -412,6 +555,20 @@ struct Parameters
                         "FrozenJacobian: number of time steps between re-assemblies.",
                         dealii::Patterns::Integer(1),
                         false);
+      prm.add_parameter(
+        "PreconditionerUpdateTimeStepChange",
+        preconditioner_update_dt_change,
+        "FrozenJacobian: re-assemble if the time step size differs by more than this "
+        "relative amount from the one of the last assembly (0: off).",
+        dealii::Patterns::Double(0.0),
+        false);
+      prm.add_parameter(
+        "PreconditionerUpdateKrylov",
+        preconditioner_update_krylov,
+        "FrozenJacobian: re-assemble for the next time step if the Krylov iterations "
+        "per nonlinear iteration exceed this number (0: off).",
+        dealii::Patterns::Double(0.0),
+        false);
       prm.add_parameter("MismatchMetric",
                         mismatch_metric,
                         "Inner product of the mismatch (L2 or H12).",
@@ -438,12 +595,27 @@ struct Parameters
   unsigned int max_iterations;
   double       mismatch_tolerance;
   double       mismatch_tolerance_relative;
+  double       mismatch_reduction;
+  double       linearized_tolerance_factor;
+  double       linearized_tolerance_target;
+  bool         recycled_preconditioner;
+  bool         linearized_initial_guess;
+  bool         tangent_state_prediction;
+  bool         affine_state_prediction;
+  unsigned int affine_prediction_max_pairs;
+  bool         warm_start_absolute_tolerance;
+  bool         interface_equation;
+  unsigned int linearized_history;
+  unsigned int recycle_time_steps;
+  unsigned int recycle_max_pairs;
+  std::string  method_schedule;
   unsigned int stagnation_iterations;
   double       gradient_tolerance_relative;
   double       armijo_c1;
   unsigned int line_search_max_iterations;
   unsigned int krylov_max_iterations;
   double       forcing_term_max;
+  double       forcing_term_target;
   unsigned int lbfgs_memory;
   double       lm_lambda_initial;
   double       lm_lambda_min;
@@ -456,6 +628,7 @@ struct Parameters
   double       geometry_tolerance;
   bool         use_area_scaling;
   bool         extrapolate_control;
+  unsigned int control_extrapolation_order;
   bool         verify_derivatives;
 
   Formulation       formulation;
@@ -475,6 +648,8 @@ struct Parameters
   Preconditioner    preconditioner;
   double            preconditioner_tolerance;
   unsigned int      preconditioner_update_interval;
+  double            preconditioner_update_dt_change;
+  double            preconditioner_update_krylov;
   InterfaceMetric   mismatch_metric;
   InterfaceMetric   control_metric;
   double            sobolev_length_scale;

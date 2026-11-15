@@ -71,6 +71,25 @@ public:
     tolerance_factor = factor;
   }
 
+  /*
+   * Runtime absolute tolerance (> 0: the solve stops when the residual is below this value, the
+   * relative tolerance is ignored; 0: tolerances as specified). Used, e.g., by coupling schemes
+   * that start from an accurate initial guess and need the accuracy of a solve from the standard
+   * initial guess, not a reduction of the (small) initial residual.
+   */
+  void
+  set_absolute_tolerance(double const tolerance) const
+  {
+    absolute_tolerance = tolerance;
+  }
+
+  // norm of the initial residual of the last solve
+  double
+  get_last_initial_residual() const
+  {
+    return last_initial_residual;
+  }
+
   template<typename Control>
   void
   do_compute_performance_metrics(Control const & solver_control) const
@@ -102,7 +121,9 @@ public:
   mutable double       n_10; // number of iterations needed to reduce the residual by 1e10
 
 protected:
-  mutable double tolerance_factor = 1.0;
+  mutable double tolerance_factor      = 1.0;
+  mutable double absolute_tolerance    = 0.0;
+  mutable double last_initial_residual = 0.0;
 
   std::shared_ptr<TimerTree> timer_tree;
 };
@@ -153,8 +174,12 @@ public:
 
     dealii::ReductionControl solver_control(
       solver_data.max_iter,
-      solver_data.abs_tol,
-      std::max(solver_data.rel_tol, std::min(1.e-2, solver_data.rel_tol * this->tolerance_factor)));
+      this->absolute_tolerance > 0.0 ? std::max(solver_data.abs_tol, this->absolute_tolerance) :
+                                       solver_data.abs_tol,
+      this->absolute_tolerance > 0.0 ?
+        0.0 :
+        std::max(solver_data.rel_tol,
+                 std::min(1.e-2, solver_data.rel_tol * this->tolerance_factor)));
 
     dealii::SolverSelector<VectorType> solver(solver_name, solver_control);
 
@@ -223,6 +248,8 @@ public:
 
     AssertThrow(std::isfinite(solver_control.last_value()),
                 dealii::ExcMessage("Last iteration step contained NaN or Inf values."));
+
+    this->last_initial_residual = solver_control.initial_value();
 
     if(compute_performance_metrics)
     {

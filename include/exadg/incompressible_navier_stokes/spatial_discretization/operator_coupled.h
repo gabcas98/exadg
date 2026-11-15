@@ -267,6 +267,21 @@ public:
       linear_solver->set_tolerance_factor(factor);
   }
 
+  // runtime absolute tolerance of the linear solver (0: tolerances as specified)
+  void
+  set_linear_solver_absolute_tolerance(double const tolerance) const
+  {
+    if(linear_solver)
+      linear_solver->set_absolute_tolerance(tolerance);
+  }
+
+  // norm of the initial residual of the last linear solve
+  double
+  get_linear_solver_initial_residual() const
+  {
+    return linear_solver ? linear_solver->get_last_initial_residual() : 0.0;
+  }
+
   unsigned int
   solve_linear_problem(BlockVectorType &       dst,
                        BlockVectorType const & src,
