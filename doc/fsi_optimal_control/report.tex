@@ -94,7 +94,12 @@ run with exact difference tangents and are another $9$--$27\%$ cheaper. On the l
 state map made independent of the previous evaluation (area ratio of the structure load), an
 explicit treatment of the fluid geometry and cheaper orthogonalisations bring interface Newton,
 Gauss--Newton, Levenberg--Marquardt and trust region to $1.2$--$1.4$ times the cost of the secant
-method; every method is then $19$--$38$ times faster per step than in the first long run.
+method; every method is then $19$--$38$ times faster per step than in the first long run. A
+coupling tolerance matched to the time error on the limit cycle, direct solvers for the small
+structure and mesh-motion problems and warm-started fluid solves bring all seven methods within
+$20\%$ of each other: from rest to $t=15$~s each of them takes $196$--$234$~s with the coupled
+fluid solver ($69$--$108$~s with dual splitting), against about $3600$~s at the start of the
+study.
 \end{abstract}
 
 \tableofcontents
@@ -2137,6 +2142,87 @@ iterations at $10$--$17\%$ more time: at these time steps the velocity block is 
 mass matrix ($\gamma_0/\Delta t\approx800$ against $\nu/h^2\approx100$), whose inverse is already
 the preconditioner.
 
+\subsection{Tolerances, subproblem solvers and single-method runs}\label{sec:fast_production}
+
+\paragraph{Coupling tolerance on the limit cycle.} The interface tolerance
+$\tau_{\mathrm{rel}}=10^{-6}$ was chosen in the start-up phase, where $10^{-5}$ saved only
+$2$--$4\%$ (\cref{tab:fast_tolerances}). On the limit cycle the ratio $\|m^{(0)}\|_{\M}/\tau$ is
+$300$--$1000$, and every method needs a number of fresh directions per step that grows like its
+logarithm: with $\tau_{\mathrm{rel}}=10^{-5}$ the secant method needs $1.53$ instead of $3.25$
+iterations per step, IN $2.2$ instead of $3.2$ tangent solves. The limit cycle is unchanged to four
+digits and the trajectory moves by $1.5\cdot10^{-4}$ (coupled solver) and $8\cdot10^{-4}$ (dual
+splitting) over $20$--$22$~s, $10$ to $50$ times below the time error. The projection of the
+tangent right-hand sides onto the images $AX$ of the last $16$ tangent solutions, recomputed with the
+current matrix (\code{FluidKrylovRecycling}), reduces the FGMRES iterations of a tangent from $28$
+to $18$ and the time of IN by $11\%$; the new interface directions of each tangent are only partly
+covered by previous solutions.
+
+\paragraph{Solving fluid and structure simultaneously.} In the native formulation the structure
+precedes the fluid within a state evaluation. A formulation with two controls, $(g,w)$, with the
+residual $(g-T_f(w),\,w-V(g))$, evaluates both subproblems at once; its Jacobian
+$J=\begin{pmatrix}I&-F\\-V&I\end{pmatrix}$ is 2-cyclic, and a Krylov or secant method on $J$ needs
+about twice the iterations of the same method on the Schur complement $S=I-FV$ (a polynomial of
+degree $2k$ in $J$ reproduces one of degree $k$ in $S$; on a model with the spectrum of the
+added-mass operator the ratio was $1.7$--$2.0$). The wall time $2k\max(C_f,C_s)$ therefore never
+undercuts the sequential $k(C_f+C_s)$, and the work doubles. The velocity-mismatch formulation,
+whose subproblems are independent given $g$, needs $46$--$113$ tangent solves per step
+(\cref{tab:methods}) and changes the discretisation of the no-slip condition.
+
+\paragraph{Subproblem solvers.} With the fluid solver configured, the structure and the mesh
+motion take almost half of the time of a state with the dual-splitting solver. The structure has $650$ unknowns; a sparse direct
+solver of its assembled tangent matrix (Trilinos Amesos KLU, \code{StructurePreconditioner =
+Direct}), refactorised every $10$ time steps and Newton iterations, preconditions FGMRES almost
+exactly and halves the time of the structure; refactorising every step costs more than it saves.
+The linear mesh motion has a constant matrix, factorised once (\code{ALEPreconditioner = Direct}):
+one iteration per solve, $70\%$ less time. Warm-starting the solves of the dual-splitting step from
+the previous evaluation with the absolute accuracy of the cold solve of the step (\code{WarmStart},
+\code{WarmStartAbsoluteTolerance}; also for the fluid steps of the difference quotients) saves
+$16\%$ of the fluid time, mostly in the viscous and penalty steps; the pressure Poisson equation
+responds strongly to each change of $w$ and gains little. On the limit-cycle benchmark (secant
+method on $[0,15]$, IN on $[15,16]$, dual splitting) the three measures reduce the time from $147$
+to $92$~s.
+
+\paragraph{Single-method runs.} \Cref{tab:fast_m15} integrates FSI2 from rest to $t=15$~s with each
+method alone, with all settings of this section (explicit geometry, $\tau_{\mathrm{rel}}=10^{-5}$,
+direct structure and mesh-motion solvers; coupled solver with $\tau_f=10^{-8}$ and recycling, dual
+splitting with $\tau_f=10^{-8}$ and warm start). Every method converges in every step. Within each
+fluid solver all methods give the same oscillation to four digits over $[13,15]$, and their
+trajectories deviate from that of the secant method by at most $1.2\cdot10^{-3}$ (coupled) and
+$1.8\cdot10^{-3}$ (dual splitting), below the time error. With the coupled solver the seven methods
+lie within $19\%$ of each other: TR, LM, IN and GN cost $1$--$6\%$ more than the secant method, SD
+and L-BFGS $19\%$; with the dual-splitting solver the secant method is $1.55$ times faster than the
+derivative-based methods, whose difference quotients cost a fluid step each. The first long run
+of \cref{tab:fast_periodic} needed $0.55$~s per step on $8$ processes for the secant method up to
+$t=14$~s, i.e.\ about $3600$~s for this interval; it now takes $196$~s with the coupled solver and
+$69$~s with dual splitting.
+
+\begin{table}[ht]\centering
+\caption{FSI2 from rest to $t=15$~s, one method per run, $2$ processes: wall time, time steps,
+wall time per step, and per step iterations, state evaluations, tangent and adjoint solves; share
+of the fluid, structure and mesh-motion solvers. No step fails to converge.}
+\label{tab:fast_m15}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llccccccccc}
+\toprule
+fluid solver & method & wall & steps & s/step & it. & states & $S$ & $S^*$ & fluid / structure / mesh\\
+\midrule
+coupled & secant & 196~s & 6543 & 0.030 & 0.85 & 1.85 & 0 & 0 & 86 / 5 / 5\,\%\\
+ & IN & 208~s & 6543 & 0.032 & 0.77 & 1.77 & 1.17 & 0 & 63 / 4 / 5\,\%\\
+ & GN & 207~s & 6543 & 0.032 & 0.77 & 1.77 & 1.17 & 0 & 64 / 4 / 5\,\%\\
+ & LM & 203~s & 6543 & 0.031 & 0.77 & 1.77 & 1.15 & 0 & 63 / 4 / 5\,\%\\
+ & TR & 198~s & 6543 & 0.030 & 0.77 & 1.77 & 1.16 & 0 & 64 / 4 / 5\,\%\\
+ & SD & 234~s & 6543 & 0.036 & 0.88 & 1.88 & 0.88 & 0.88 & 54 / 4 / 4\,\%\\
+ & L-BFGS & 232~s & 6543 & 0.035 & 0.85 & 1.85 & 0.85 & 0.85 & 55 / 4 / 4\,\%\\
+\midrule
+dual splitting & secant & 69~s & 6657 & 0.010 & 1.35 & 2.35 & 0 & -- & 56 / 17 / 13\,\%\\
+ & IN & 108~s & 6657 & 0.016 & 0.92 & 1.93 & 1.77 & -- & 65 / 9 / 9\,\%\\
+ & GN & 108~s & 6657 & 0.016 & 0.92 & 1.93 & 1.77 & -- & 66 / 9 / 9\,\%\\
+ & LM & 106~s & 6657 & 0.016 & 0.92 & 1.93 & 1.73 & -- & 66 / 9 / 9\,\%\\
+ & TR & 108~s & 6657 & 0.016 & 0.92 & 1.93 & 1.77 & -- & 66 / 9 / 9\,\%\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
 %=================================================================================================
 \section{Conclusions and outlook}
 %=================================================================================================
@@ -2225,6 +2311,16 @@ from free state differences) reaches only twice the contraction of the first sec
 the fluid map changes by about $10^{-3}$ per step: every method needs three to four fresh
 directions per step, and the secant method and IN pay nearly the same price for them. The
 remaining lever is the price of a direction, i.e.\ of the linear fluid solve of a tangent.
+\item The number of fresh directions grows like the logarithm of $\|m^{(0)}\|/\tau$, so that on the
+limit cycle the coupling tolerance $10^{-5}$ instead of $10^{-6}$ (still $10$ to $50$ times below
+the time error) halves the iterations of the secant method and saves a third of the tangent
+solves. Solving fluid and structure simultaneously does not help: the 2-cyclic Jacobian of the
+two-control formulation doubles the Krylov or secant iterations, so that the wall time never
+undercuts the sequential one. Direct solvers for the small structure ($650$ unknowns) and
+mesh-motion ($2664$) problems and warm-started dual-splitting solves cut the remaining cost of a
+state, and all seven methods integrate FSI2 to $t=15$~s within $20\%$ of each other ($196$--$234$~s
+with the coupled fluid solver, $69$--$108$~s with dual splitting), about $18$ to $50$ times faster
+than at the start of the study.
 \end{enumerate}
 Open points are the source of the energy that feeds the high-frequency mode of
 \cref{sec:instabilities}, which the dissipation of the structure integrator only suppresses, the
@@ -2299,7 +2395,12 @@ parameters \code{ALESolverAbsTol}, \code{ALESolverRelTol}, \code{StructureNewton
 \code{StructureNewtonRelTol}, \code{StructureLinearAbsTol} and \code{StructureLinearRelTol}
 (diagnostics); wall times of the tangents and of the recycled inverse in the summary of the run;
 \code{SurrogateDiagnostics} (structured tangent model, diagnostics only), \code{TangentInitialGuess},
-\code{TangentInitialGuessPairs} and \code{TangentInitialGuessAccuracy}.
+\code{TangentInitialGuessPairs} and \code{TangentInitialGuessAccuracy}. For
+\cref{sec:fast_production}: \code{FluidKrylovRecycling}; \code{WarmStart} and
+\code{WarmStartAbsoluteTolerance} now also act on the dual-splitting solvers (runtime absolute
+tolerances of the projection-type solvers); the direct preconditioner \code{PreconditionerDirect}
+(Trilinos Amesos KLU) with \code{Structure::Preconditioner::Direct} and the application parameters
+\code{StructurePreconditioner}, \code{StructurePreconditionerUpdate} and \code{ALEPreconditioner}.
 Options without benefit (\cref{sec:fast}):
 \code{LinearizedInitialGuess}, the limited-memory CG preconditioner, the frozen-Jacobian refresh
 criteria \code{PreconditionerUpdateTimeStepChange} and \code{PreconditionerUpdateKrylov}. The
@@ -2318,7 +2419,11 @@ and \code{lr_ds_f6} (long runs; the last one fails in the TR window). The inputs
 \code{j_old}, \code{j_fix}, \code{j_exp} (area ratio and geometry) and \code{s_base},
 \code{s_f100} (tolerance of the difference quotient), \code{sur_diag}, \code{sur_qnv} (structured
 model and secant reference), \code{lt_c3}, \code{tg16}, \code{tg16a} (tangent initial guess) and
-\code{vp_base}, \code{vp_mg}, \code{vp1_base}, \code{vp1_bj} (velocity preconditioner).
+\code{vp_base}, \code{vp_mg}, \code{vp1_base}, \code{vp1_bj} (velocity preconditioner). The inputs of
+\cref{sec:fast_production} are \code{tq6}, \code{tq5}, \code{ti5}, \code{lr_win5}, \code{lr_ds3}
+(tolerance), \code{kr16} (recycling), \code{sl_base}, \code{sl_dir10}, \code{sl_dir10a},
+\code{sl_ws}, \code{sd_*} (subproblem solvers), \code{lr_win6}, \code{lr_ds4} (long runs) and
+\code{m15_c_*}, \code{m15_d_*} (\cref{tab:fast_m15}).
 The output directory in each file has to exist, and
 \code{doc/fsi_optimal_control/bench.py} summarises the runs (iterations, solves and fluid
 Krylov iterations per time step); \code{doc/fsi_optimal_control/deviation.py} computes the
