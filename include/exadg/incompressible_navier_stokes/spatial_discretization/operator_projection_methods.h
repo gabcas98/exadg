@@ -108,6 +108,27 @@ public:
       momentum_linear_solver->set_tolerance_factor(factor);
   }
 
+  void
+  set_solver_absolute_tolerances(std::array<double, 3> const & tolerances) const override
+  {
+    Base::set_solver_absolute_tolerances(tolerances);
+    if(pressure_poisson_solver)
+      pressure_poisson_solver->set_absolute_tolerance(tolerances[0]);
+    if(momentum_linear_solver)
+      momentum_linear_solver->set_absolute_tolerance(tolerances[1]);
+  }
+
+  std::array<double, 3>
+  get_solver_initial_residuals() const override
+  {
+    std::array<double, 3> residuals = Base::get_solver_initial_residuals();
+    if(pressure_poisson_solver)
+      residuals[0] = pressure_poisson_solver->get_last_initial_residual();
+    if(momentum_linear_solver)
+      residuals[1] = momentum_linear_solver->get_last_initial_residual();
+    return residuals;
+  }
+
 public:
   /*
    * Constructor.

@@ -2065,9 +2065,10 @@ is accepted in at most a third of the steps and costs a state when it is rejecte
 correction of $S$ from the observed errors of the linear model of previous Newton steps (a
 Broyden-type update for the shape sensitivity) fails because these errors point in different
 directions from step to step; more recycled history ($32$ steps, $262$ pairs) increases the number
-of tangent solves; and the error of the control predictor is dominated by an oscillation that
-changes sign from step to step, so that neither a higher order nor a correction by the error of the
-previous step improves it. A forcing term that follows the target $\theta\tau/\|m\|_{\M}$ up to $0.5$
+of tangent solves; and the error of the control predictor is irregular from step to step (the
+converged force itself is smooth), so that higher orders amplify it ($p=3$: $+40$--$50\%$), and neither a
+filter of the Nyquist component nor least-squares fits over more points improve on the quadratic
+Lagrange extrapolation in the actual times. A forcing term that follows the target $\theta\tau/\|m\|_{\M}$ up to $0.5$
 instead of $10^{-2}$ when $\|m\|_{\M}$ is close to the tolerance (\code{ForcingTermTargetMax}) saves
 $4$--$11\%$ of the tangent solves.
 
@@ -2100,6 +2101,41 @@ coupled solver the secant method needs the fluid tolerance $10^{-8}$ in the expl
 scheme: at $10^{-7}$ its stagnation test stopped $18$ of the first $6543$ steps above the tolerance.
 Compared with the first long run of \cref{tab:fast_periodic} ($1.07$ to $1.80$~s per step on $8$
 processes), every method is now $19$ to $38$ times faster per step.
+
+\paragraph{A structured tangent model.} The remaining gap suggests a model of the tangent that
+uses the block structure $S=I-FV$: the structure part $V$ (interface load $\mapsto$ interface
+velocity) is exact and costs one linearised structure solve, about $0.15$ states; the fluid part
+$F$ (interface velocity $\mapsto$ traction) is affine within a time step for the explicit
+geometry, so that the differences of the states of a step are exact pairs $(\Delta w,\Delta T)$ at
+no cost. A least-squares model $\tilde F$ from the pairs of previous steps gives the Newton step
+$\tilde d$ of $(I-\tilde FV)\tilde d=-m^{(0)}$; if $\tilde F$ were accurate to $10^{-3}$, two states
+per step would suffice. A diagnostic run (\code{SurrogateDiagnostics}) evaluated
+$\kappa=\|m^{(0)}+S\tilde d\|_{\M}/\|m^{(0)}\|_{\M}$ with the exact tangent in $158$ steps of the
+limit cycle, without changing the iteration: the best model (state differences of the last $16$
+steps, rank $16$) reaches $\kappa=2\cdot10^{-2}$ (geometric mean), twice the contraction of the first
+step of the secant method ($4.5\cdot10^{-2}$); longer histories are worse ($32$ steps:
+$4.6\cdot10^{-2}$), the tangent pairs do not help, and a scaling with the time step size gains
+$13\%$. The fluid map changes by about $10^{-3}$ per time step (geometry, $\Delta t$, penalty
+parameters), so that no model built from previous steps reaches the accuracy of a fresh linear
+solve, and the model solve costs $7$--$8$ structure solves, about one state. Any method therefore
+needs three to four fresh directions per step: the secant method obtains them from states ($4.4$
+per step), IN from tangent solves ($2$ states and $3.2$ tangents), at nearly the same price per
+direction.
+
+What remains is the price of a direction. In a tangent of the coupled solver, $95\%$ of the time is
+the linear fluid solve (about $28$ FGMRES iterations, from a zero initial guess, to the target
+$\approx10^{-3}$); interface transfers, boundary terms and traction are negligible. An initial guess
+from the tangent responses of the last $16$ solves (least squares in the interface data,
+\code{TangentInitialGuess}), solved to a $10$ times tighter absolute target to keep the accuracy of
+the tangent, reduces the iterations to about $21$ per tangent and the fluid iterations of IN by
+$17\%$, with $1.06$ instead of $1.03$ Newton iterations; at the original target the iterations drop
+to $14$, but the less accurate tangent costs $0.14$ Newton iterations more. Multigrid for the
+velocity block saves $12\%$ of the iterations of a tangent but makes each of them more expensive
+($+36\%$ per tangent, $+42\%$ for the states), and the cell-wise block Jacobi preconditioner
+(tested on one process, since in parallel it needs cell-based face loops) saves $9$--$12\%$ of the
+iterations at $10$--$17\%$ more time: at these time steps the velocity block is dominated by the
+mass matrix ($\gamma_0/\Delta t\approx800$ against $\nu/h^2\approx100$), whose inverse is already
+the preconditioner.
 
 %=================================================================================================
 \section{Conclusions and outlook}
@@ -2184,7 +2220,11 @@ tangent is exact and IN converges in $1.0$--$1.2$ iterations on the same limit c
 one mass application per orthogonalised vector instead of one per inner product, the
 derivative-based methods cost $1.2$--$1.4$ (IN, GN, LM, TR) and $1.7$--$1.9$ (SD, L-BFGS) times
 the secant method per step on the limit cycle, and all methods run $19$--$38$ times faster than in
-the first long run.
+the first long run. A tangent model built from previous steps (exact structure part, fluid part
+from free state differences) reaches only twice the contraction of the first secant step, because
+the fluid map changes by about $10^{-3}$ per step: every method needs three to four fresh
+directions per step, and the secant method and IN pay nearly the same price for them. The
+remaining lever is the price of a direction, i.e.\ of the linear fluid solve of a tangent.
 \end{enumerate}
 Open points are the source of the energy that feeds the high-frequency mode of
 \cref{sec:instabilities}, which the dissipation of the structure integrator only suppresses, the
@@ -2257,7 +2297,9 @@ needs the adjoint and the tangent uses differences. For \cref{sec:fast_derivativ
 \code{TangentDifferenceToleranceFactor} of the subsection \code{OptimalControl}; application
 parameters \code{ALESolverAbsTol}, \code{ALESolverRelTol}, \code{StructureNewtonAbsTol},
 \code{StructureNewtonRelTol}, \code{StructureLinearAbsTol} and \code{StructureLinearRelTol}
-(diagnostics); wall times of the tangents and of the recycled inverse in the summary of the run.
+(diagnostics); wall times of the tangents and of the recycled inverse in the summary of the run;
+\code{SurrogateDiagnostics} (structured tangent model, diagnostics only), \code{TangentInitialGuess},
+\code{TangentInitialGuessPairs} and \code{TangentInitialGuessAccuracy}.
 Options without benefit (\cref{sec:fast}):
 \code{LinearizedInitialGuess}, the limited-memory CG preconditioner, the frozen-Jacobian refresh
 criteria \code{PreconditionerUpdateTimeStepChange} and \code{PreconditionerUpdateKrylov}. The
@@ -2274,7 +2316,9 @@ splitting; \code{f8}: $\tau_f=10^{-8}$, \code{d_ref}: reference), \code{lr_win3}
 and \code{lr_ds_f6} (long runs; the last one fails in the TR window). The inputs of
 \cref{sec:fast_derivatives} are \code{lr_ds2}, \code{lr_win4} (\cref{tab:fast_derivatives}),
 \code{j_old}, \code{j_fix}, \code{j_exp} (area ratio and geometry) and \code{s_base},
-\code{s_f100} (tolerance of the difference quotient).
+\code{s_f100} (tolerance of the difference quotient), \code{sur_diag}, \code{sur_qnv} (structured
+model and secant reference), \code{lt_c3}, \code{tg16}, \code{tg16a} (tangent initial guess) and
+\code{vp_base}, \code{vp_mg}, \code{vp1_base}, \code{vp1_bj} (velocity preconditioner).
 The output directory in each file has to exist, and
 \code{doc/fsi_optimal_control/bench.py} summarises the runs (iterations, solves and fluid
 Krylov iterations per time step); \code{doc/fsi_optimal_control/deviation.py} computes the

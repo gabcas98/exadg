@@ -23,6 +23,8 @@
 #define EXADG_INCOMPRESSIBLE_NAVIER_STOKES_SPATIAL_DISCRETIZATION_SPATIAL_OPERATOR_BASE_H_
 
 // deal.II
+#include <array>
+
 #include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_raviart_thomas.h>
 #include <deal.II/fe/fe_simplex_p.h>
@@ -218,6 +220,22 @@ public:
   {
     if(projection_solver)
       projection_solver->set_tolerance_factor(factor);
+  }
+
+  // Runtime absolute tolerances (0: as specified) of the linear solvers of a projection-type step:
+  // pressure Poisson, momentum (viscous), projection (penalty) solver
+  virtual void
+  set_solver_absolute_tolerances(std::array<double, 3> const & tolerances) const
+  {
+    if(projection_solver)
+      projection_solver->set_absolute_tolerance(tolerances[2]);
+  }
+
+  // norms of the initial residuals of the last solves of these solvers
+  virtual std::array<double, 3>
+  get_solver_initial_residuals() const
+  {
+    return {{0.0, 0.0, projection_solver ? projection_solver->get_last_initial_residual() : 0.0}};
   }
 
   // Access to the operator kernels and parameters (e.g. for the transposes of boundary terms

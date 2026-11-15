@@ -173,6 +173,11 @@ struct Parameters
       forcing_term_target_max(0.0),
       native_tangent_step(1.e-2),
       area_ratio_from_state(true),
+      surrogate_diagnostics(false),
+      tangent_initial_guess(false),
+      tangent_initial_guess_pairs(48),
+      tangent_initial_guess_accuracy(1.0),
+      fluid_krylov_recycling(0),
       tangent_difference_tolerance_factor(1.0),
       lbfgs_memory(10),
       lm_lambda_initial(1.e-2),
@@ -399,6 +404,41 @@ struct Parameters
         "With ForcingTermTarget: forcing term min(ForcingTermTargetMax, theta * tolerance / "
         "||m_k||), i.e. ForcingTermMax no longer bounds it close to the tolerance (0 = off).",
         dealii::Patterns::Double(0.0, 1.0),
+        false);
+      prm.add_parameter(
+        "TangentInitialGuess",
+        tangent_initial_guess,
+        "Analytic tangent (coupled fluid solver): initial guess of the fluid solve from the "
+        "tangent responses of this and previous time steps (least squares in the interface data), "
+        "solved to the same absolute accuracy.",
+        dealii::Patterns::Bool(),
+        false);
+      prm.add_parameter("TangentInitialGuessPairs",
+                        tangent_initial_guess_pairs,
+                        "Maximal number of tangent responses kept for TangentInitialGuess.",
+                        dealii::Patterns::Integer(1),
+                        false);
+      prm.add_parameter(
+        "FluidKrylovRecycling",
+        fluid_krylov_recycling,
+        "Coupled fluid solver: number of previous solutions of the tangent (and of the adjoint) "
+        "fluid solves onto which the right-hand side is projected with the current matrix "
+        "(minimal residual initial guess; 0 = off). The solve then continues to the absolute "
+        "target times TangentInitialGuessAccuracy.",
+        dealii::Patterns::Integer(0),
+        false);
+      prm.add_parameter("TangentInitialGuessAccuracy",
+                        tangent_initial_guess_accuracy,
+                        "TangentInitialGuess: factor on the absolute target of the solve.",
+                        dealii::Patterns::Double(0.0),
+                        false);
+      prm.add_parameter(
+        "SurrogateDiagnostics",
+        surrogate_diagnostics,
+        "Diagnostics of a structured tangent model S~ = I - F~ V (exact structure part, "
+        "least-squares fluid model from pairs of previous time steps): contraction of the model "
+        "Newton step at the first iteration of each time step (generic methods only).",
+        dealii::Patterns::Bool(),
         false);
       prm.add_parameter(
         "AreaRatioFromState",
@@ -654,6 +694,11 @@ struct Parameters
   double       forcing_term_target_max;
   double       native_tangent_step;
   bool         area_ratio_from_state;
+  bool         surrogate_diagnostics;
+  bool         tangent_initial_guess;
+  unsigned int tangent_initial_guess_pairs;
+  double       tangent_initial_guess_accuracy;
+  unsigned int fluid_krylov_recycling;
   double       tangent_difference_tolerance_factor;
   unsigned int lbfgs_memory;
   double       lm_lambda_initial;

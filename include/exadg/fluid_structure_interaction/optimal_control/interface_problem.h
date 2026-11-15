@@ -33,6 +33,8 @@
 #include <deal.II/lac/vector.h>
 
 // C/C++
+#include <array>
+#include <deque>
 #include <functional>
 #include <iomanip>
 #include <random>
@@ -257,6 +259,11 @@ public:
     affine_max_pairs            = param.affine_prediction_max_pairs;
     warm_start_absolute_tolerance =
       param.warm_start and param.warm_start_absolute_tolerance and operator_coupled.get();
+    // projection-type fluid solvers (dual splitting): warm start from the last solve with the
+    // absolute accuracy of the cold solve of the time step, for the states and for the fluid
+    // steps of the difference quotients
+    projection_warm_start =
+      param.warm_start and param.warm_start_absolute_tolerance and not operator_coupled.get();
     // warm start, predicted initial guess: the step has to remain a function of the boundary data
     // only
     fluid->time_integrator->set_penalty_velocity_from_extrapolation(
@@ -267,10 +274,22 @@ public:
       AssertThrow(time_integrator_coupled.get() and operator_coupled.get(),
                   dealii::ExcMessage("TangentStatePrediction and AffineStatePrediction require "
                                      "the coupled fluid solver."));
-    qn_initial_relaxation               = param.qn_initial_relaxation;
-    tangent_difference                  = param.tangent_difference;
-    native_tangent_step                 = param.native_tangent_step;
-    area_ratio_from_state               = param.area_ratio_from_state;
+    qn_initial_relaxation         = param.qn_initial_relaxation;
+    tangent_difference            = param.tangent_difference;
+    native_tangent_step           = param.native_tangent_step;
+    area_ratio_from_state         = param.area_ratio_from_state;
+    surrogate_diagnostics_enabled = param.surrogate_diagnostics;
+    tangent_initial_guess         = param.tangent_initial_guess;
+    tangent_guess_max_pairs       = param.tangent_initial_guess_pairs;
+    tangent_guess_accuracy        = param.tangent_initial_guess_accuracy;
+    tangent_pool.max_size         = param.fluid_krylov_recycling;
+    adjoint_pool.max_size         = param.fluid_krylov_recycling;
+    if(param.fluid_krylov_recycling > 0)
+      AssertThrow(operator_coupled.get(),
+                  dealii::ExcMessage("FluidKrylovRecycling requires the coupled fluid solver."));
+    if(tangent_initial_guess)
+      AssertThrow(operator_coupled.get(),
+                  dealii::ExcMessage("TangentInitialGuess requires the coupled fluid solver."));
     tangent_difference_tolerance_factor = param.tangent_difference_tolerance_factor;
     preconditioner                      = param.preconditioner;
     preconditioner_tolerance            = param.preconditioner_tolerance;
@@ -424,6 +443,8 @@ public:
     setup_trace_space(fluid_space);
     // new geometry of the outer loop: the affine pairs belong to another fluid operator
     clear_affine_pairs();
+    tangent_pool.fresh = false;
+    adjoint_pool.fresh = false;
   }
 
   /*
@@ -778,6 +799,220 @@ public:
     prediction_valid      = false;
     cold_initial_residual = 0.0;
     clear_affine_pairs();
+    archive_fluid_pairs();
+    projection_cold_residuals = {{0.0, 0.0, 0.0}};
+    tangent_pool.fresh        = false;
+    adjoint_pool.fresh        = false;
+  }
+
+  /*
+   * SurrogateDiagnostics: structured model of the tangent, S~ = I - F~ V, with the exact structure
+   * part V (linearized structure solve, interface velocity) and a least-squares model F~ of the
+   * fluid map w -> T (interface velocity -> native traction) from pairs of previous time steps:
+   * differences of the states of a time step (exact pairs for a frozen geometry, since the fluid
+   * step is affine in w) and the fluid parts of the tangent solves. The step d~ of S~ d = -m0 is
+   * compared with the exact tangent: kappa = ||m0 + S d~|| / ||m0||, the contraction of a Newton
+   * step with the model. Diagnostics only: the iteration of the optimizer is not changed.
+   */
+  struct FluidPairSet
+  {
+    double                  dt = 0.0;
+    std::vector<VectorType> state_w, state_T, tangent_w, tangent_T;
+  };
+
+  void
+  record_fluid_state(VectorType const & velocity, VectorType const & traction) const
+  {
+    if(not surrogate_diagnostics_enabled or not recording_fluid_pairs)
+      return;
+    if(fluid_now.state_w.empty() and fluid_now.tangent_w.empty())
+      fluid_now.dt = fluid->time_integrator->get_time_step_size();
+    VectorType w(velocity);
+    w.scale(structure_space.mask);
+    fluid_now.state_w.push_back(w);
+    fluid_now.state_T.push_back(traction);
+  }
+
+  void
+  record_fluid_tangent(VectorType const & velocity, VectorType const & traction) const
+  {
+    if(not surrogate_diagnostics_enabled or not recording_fluid_pairs)
+      return;
+    if(fluid_now.state_w.empty() and fluid_now.tangent_w.empty())
+      fluid_now.dt = fluid->time_integrator->get_time_step_size();
+    VectorType w(velocity);
+    w.scale(structure_space.mask);
+    fluid_now.tangent_w.push_back(w);
+    fluid_now.tangent_T.push_back(traction);
+  }
+
+  void
+  archive_fluid_pairs()
+  {
+    if(not surrogate_diagnostics_enabled)
+      return;
+    if(not fluid_now.state_w.empty() or not fluid_now.tangent_w.empty())
+      fluid_history.push_front(std::move(fluid_now));
+    fluid_now = FluidPairSet();
+    while(fluid_history.size() > 64)
+      fluid_history.pop_back();
+  }
+
+  void
+  surrogate_diagnostics(VectorType const & m0, dealii::ConditionalOStream const & pcout)
+  {
+    struct Config
+    {
+      char const * name;
+      unsigned int steps;
+      bool         tangents;
+      bool         dt_scaling;
+    };
+    std::vector<Config> const configs = {{"S4", 4, false, false},
+                                         {"S8", 8, false, false},
+                                         {"S16", 16, false, false},
+                                         {"S32", 32, false, false},
+                                         {"S32dt", 32, false, true},
+                                         {"ST4", 4, true, false},
+                                         {"ST8", 8, true, false},
+                                         {"ST16", 16, true, false}};
+
+    double const dt_now  = fluid->time_integrator->get_time_step_size();
+    double const m0_norm = std::sqrt(inner_product_mismatch(m0, m0));
+    if(m0_norm == 0.0)
+      return;
+    recording_fluid_pairs = false;
+    pcout << "SURR t = " << std::scientific << std::setprecision(4)
+          << fluid->time_integrator->get_next_time() << " m0 = " << m0_norm;
+
+    for(auto const & config : configs)
+    {
+      // orthonormal (l2) basis Q of the fluid data with the corresponding tractions TQ
+      std::vector<VectorType> Q, TQ;
+      auto const add_pair = [&](VectorType const & w, VectorType const & T, double const scale) {
+        if(Q.size() >= 200)
+          return;
+        VectorType q(w), t(T);
+        t *= scale;
+        double const original = q.l2_norm();
+        if(original == 0.0)
+          return;
+        for(unsigned int pass = 0; pass < 2; ++pass)
+          for(unsigned int i = 0; i < Q.size(); ++i)
+          {
+            double const r = Q[i] * q;
+            q.add(-r, Q[i]);
+            t.add(-r, TQ[i]);
+          }
+        double const q_norm = q.l2_norm();
+        if(q_norm <= 1.e-3 * original)
+          return;
+        q *= 1.0 / q_norm;
+        t *= 1.0 / q_norm;
+        Q.push_back(q);
+        TQ.push_back(t);
+      };
+      unsigned int n_steps = 0;
+      for(auto const & set : fluid_history)
+      {
+        if(n_steps++ >= config.steps)
+          break;
+        double const scale = config.dt_scaling ? set.dt / dt_now : 1.0;
+        for(unsigned int k = 1; k < set.state_w.size(); ++k)
+        {
+          VectorType dw(set.state_w[k]), dT(set.state_T[k]);
+          dw.add(-1.0, set.state_w[0]);
+          dT.add(-1.0, set.state_T[0]);
+          add_pair(dw, dT, scale);
+        }
+        if(config.tangents)
+          for(unsigned int j = 0; j < set.tangent_w.size(); ++j)
+            add_pair(set.tangent_w[j], set.tangent_T[j], scale);
+      }
+
+      // S~ x = x - F~ V x
+      auto const apply_model = [&](VectorType & dst, VectorType const & src) {
+        VectorType load, y;
+        structure->pde_operator->initialize_dof_vector(load);
+        structure->pde_operator->initialize_dof_vector(y);
+        apply_L_s(load, src);
+        solve_structure(y, load);
+        y *= velocity_factor();
+        y.scale(structure_space.mask);
+        dst = src;
+        for(unsigned int i = 0; i < Q.size(); ++i)
+          dst.add(-(Q[i] * y), TQ[i]);
+        dst.scale(structure_space.mask);
+      };
+
+      // GMRES (no preconditioner, mismatch inner product) for S~ d = -m0
+      unsigned int const               max_it = 60;
+      std::vector<VectorType>          V(1, m0);
+      std::vector<std::vector<double>> R;
+      std::vector<double>              cs, sn, e(1, m0_norm);
+      V[0] *= -1.0 / m0_norm;
+      unsigned int k = 0;
+      for(; k < max_it; ++k)
+      {
+        VectorType w;
+        initialize_vector(w);
+        apply_model(w, V[k]);
+        std::vector<double> h(k + 2, 0.0);
+        for(unsigned int i = 0; i <= k; ++i)
+        {
+          h[i] = inner_product_mismatch(w, V[i]);
+          w.add(-h[i], V[i]);
+        }
+        h[k + 1] = std::sqrt(std::max(0.0, inner_product_mismatch(w, w)));
+        for(unsigned int i = 0; i < k; ++i)
+        {
+          double const tmp = cs[i] * h[i] + sn[i] * h[i + 1];
+          h[i + 1]         = -sn[i] * h[i] + cs[i] * h[i + 1];
+          h[i]             = tmp;
+        }
+        double const denom = std::sqrt(h[k] * h[k] + h[k + 1] * h[k + 1]);
+        cs.push_back(denom > 0.0 ? h[k] / denom : 1.0);
+        sn.push_back(denom > 0.0 ? h[k + 1] / denom : 0.0);
+        double const h_next = h[k + 1];
+        h[k]                = denom;
+        e.push_back(-sn[k] * e[k]);
+        e[k] = cs[k] * e[k];
+        R.push_back(h);
+        bool const breakdown = h_next <= 1.e-14 * m0_norm;
+        if(not breakdown)
+        {
+          V.push_back(w);
+          V.back() *= 1.0 / h_next;
+        }
+        if(std::abs(e[k + 1]) <= 1.e-4 * m0_norm or breakdown)
+        {
+          ++k;
+          break;
+        }
+      }
+      std::vector<double> coefficients(k, 0.0);
+      for(int i = int(k) - 1; i >= 0; --i)
+      {
+        double sum = e[i];
+        for(unsigned int j = i + 1; j < k; ++j)
+          sum -= R[j][i] * coefficients[j];
+        coefficients[i] = sum / R[i][i];
+      }
+      VectorType d, Sd;
+      initialize_vector(d);
+      initialize_vector(Sd);
+      for(unsigned int j = 0; j < k; ++j)
+        d.add(coefficients[j], V[j]);
+
+      // exact linear model
+      apply_S(Sd, d);
+      Sd.add(1.0, m0);
+      double const kappa = std::sqrt(std::max(0.0, inner_product_mismatch(Sd, Sd))) / m0_norm;
+      pcout << " | " << config.name << " r=" << Q.size() << " it=" << k
+            << " kappa=" << std::setprecision(3) << kappa;
+    }
+    pcout << std::defaultfloat << std::endl;
+    recording_fluid_pairs = true;
   }
 
   /*
@@ -1460,6 +1695,8 @@ private:
     if(area_ratio_from_state)
       geometry_displacement = d;
     setup_trace_space(fluid_space);
+    tangent_pool.fresh = false;
+    adjoint_pool.fresh = false;
   }
 
   /*
@@ -1484,6 +1721,21 @@ private:
     initialize_vector(rhs);
     integrate_container(structure_space, rhs, *fluid_at_structure, false);
     solve_mass(structure_space, dst, rhs);
+  }
+
+  // absolute tolerances of the projection-type fluid solvers: the accuracy of the cold solve of
+  // the time step, with the relative tolerances scaled by factor (capped at 1e-2 as in the solvers)
+  void
+  set_projection_absolute_tolerances(double const factor) const
+  {
+    auto const &                param = fluid->pde_operator->get_parameters();
+    std::array<double, 3> const rel   = {{param.solver_data_pressure_poisson.rel_tol,
+                                        param.solver_data_momentum.rel_tol,
+                                        param.solver_data_projection.rel_tol}};
+    std::array<double, 3>       tolerances;
+    for(unsigned int i = 0; i < 3; ++i)
+      tolerances[i] = std::min(1.e-2, rel[i] * factor) * projection_cold_residuals[i];
+    fluid->pde_operator->set_solver_absolute_tolerances(tolerances);
   }
 
   // fluid step with the native Dirichlet data v (structure velocity) and its native traction
@@ -1569,12 +1821,23 @@ private:
       operator_coupled->set_linear_solver_absolute_tolerance(
         fluid->pde_operator->get_parameters().solver_data_coupled.rel_tol * cold_initial_residual);
 
+    bool const projection_target =
+      projection_warm_start and not extrapolate and projection_cold_residuals[0] > 0.0;
+    if(projection_target)
+      set_projection_absolute_tolerances(1.0);
+
     VectorType traction;
     initialize_vector(traction);
     fluid->pde_operator->set_solver_tolerance_factor(state_tolerance_factor);
     native_fluid_response(traction, native_velocity, use_prediction ? false : extrapolate);
     fluid->pde_operator->set_solver_tolerance_factor(1.0);
     native_traction = traction;
+    record_fluid_state(native_velocity, traction);
+
+    if(projection_target)
+      fluid->pde_operator->set_solver_absolute_tolerances({{0.0, 0.0, 0.0}});
+    else if(projection_warm_start and extrapolate and evaluations_in_step == 1)
+      projection_cold_residuals = fluid->pde_operator->get_solver_initial_residuals();
 
     if(absolute_target)
       operator_coupled->set_linear_solver_absolute_tolerance(0.0);
@@ -1633,13 +1896,33 @@ private:
     if(y_norm > 0.0 and tangent_difference == TangentDifference::Analytic)
     {
       // dT = Pi_s P_f (-I_sigma(A^{-1} D E_f y))
+      dealii::Timer timer_sub;
       structure_to_fluid->update_data(y);
+      time_tangent_parts[0] += timer_sub.wall_time();
+      timer_sub.restart();
       BlockVectorType rhs_fluid, sol_fluid;
       operator_coupled->initialize_block_vector_velocity_pressure(rhs_fluid);
       operator_coupled->initialize_block_vector_velocity_pressure(sol_fluid);
       native_boundary_terms(rhs_fluid, *fluid_neumann);
       *fluid_neumann = native_base_data;
-      solve_fluid(sol_fluid, rhs_fluid);
+      time_tangent_parts[1] += timer_sub.wall_time();
+      timer_sub.restart();
+      VectorType w_tangent(y);
+      w_tangent.scale(structure_space.mask);
+      if(tangent_pool.max_size > 0)
+        solve_fluid_recycled(sol_fluid, rhs_fluid, tangent_pool);
+      else if(tangent_initial_guess and predict_tangent_response(sol_fluid, w_tangent))
+        solve_fluid_from_guess(sol_fluid, rhs_fluid);
+      else
+        solve_fluid(sol_fluid, rhs_fluid);
+      if(tangent_initial_guess)
+      {
+        tangent_guess_pairs.emplace_front(w_tangent, sol_fluid);
+        while(tangent_guess_pairs.size() > tangent_guess_max_pairs)
+          tangent_guess_pairs.pop_back();
+      }
+      time_tangent_parts[2] += timer_sub.wall_time();
+      timer_sub.restart();
       if(recording_tangents)
         response = sol_fluid;
       if(affine_state_prediction)
@@ -1657,6 +1940,8 @@ private:
       VectorType traction;
       initialize_vector(traction);
       native_traction_of(traction, sol_fluid.block(0), sol_fluid.block(1));
+      time_tangent_parts[3] += timer_sub.wall_time();
+      record_fluid_tangent(y, traction);
       dst.add(-1.0, traction);
     }
     else if(y_norm > 0.0)
@@ -1668,7 +1953,13 @@ private:
       v_plus.add(eps, y);
       initialize_vector(t_plus);
       fluid->pde_operator->set_solver_tolerance_factor(tangent_difference_tolerance_factor);
-      native_fluid_response(t_plus, v_plus);
+      // warm start from the last fluid solve (the state, at a distance eps), absolute target
+      bool const projection_target = projection_warm_start and projection_cold_residuals[0] > 0.0;
+      if(projection_target)
+        set_projection_absolute_tolerances(tangent_difference_tolerance_factor);
+      native_fluid_response(t_plus, v_plus, not projection_target);
+      if(projection_target)
+        fluid->pde_operator->set_solver_absolute_tolerances({{0.0, 0.0, 0.0}});
       if(tangent_difference == TangentDifference::Central)
       {
         VectorType v_minus(native_velocity), t_minus;
@@ -1684,6 +1975,12 @@ private:
         t_plus.add(-1.0, native_traction);
         dst.add(-1.0 / eps, t_plus);
         native_fluid_solves += 1;
+        if(surrogate_diagnostics_enabled)
+        {
+          VectorType dT(t_plus);
+          dT *= 1.0 / eps;
+          record_fluid_tangent(y, dT);
+        }
       }
       fluid->pde_operator->set_solver_tolerance_factor(1.0);
     }
@@ -1718,7 +2015,10 @@ private:
     stress_interpolation_transpose(rhs_fluid, stress_dual);
 
     // A is symmetric
-    solve_fluid(z, rhs_fluid);
+    if(adjoint_pool.max_size > 0)
+      solve_fluid_recycled(z, rhs_fluid, adjoint_pool);
+    else
+      solve_fluid(z, rhs_fluid);
 
     // D^T z at the fluid quadrature points, then E_f^T
     native_boundary_terms_transpose(*fluid_neumann, z);
@@ -2459,6 +2759,181 @@ private:
    * ---------------------------------------------------------------------------------------------
    */
 
+  /*
+   * TangentInitialGuess: initial guess of the fluid tangent solve A du = D(w) from the tangent
+   * responses (w_j, du_j) of this and previous time steps (least squares in the interface data;
+   * for a frozen geometry A changes only slowly from step to step). Returns false without pairs.
+   */
+  bool
+  predict_tangent_response(BlockVectorType & x0, VectorType const & w) const
+  {
+    unsigned int const n      = tangent_guess_pairs.size();
+    double const       w_norm = w.l2_norm();
+    if(n == 0 or w_norm == 0.0)
+      return false;
+
+    // modified Gram-Schmidt (twice) on the data w_j with the transformation Q = W T
+    std::vector<VectorType>          Q;
+    std::vector<std::vector<double>> T;
+    for(unsigned int l = 0; l < n; ++l)
+    {
+      VectorType const & e      = tangent_guess_pairs[l].first;
+      double const       e_norm = e.l2_norm();
+      if(e_norm == 0.0)
+        continue;
+      VectorType          v(e);
+      std::vector<double> c(n, 0.0);
+      c[l] = 1.0;
+      for(unsigned int pass = 0; pass < 2; ++pass)
+        for(unsigned int i = 0; i < Q.size(); ++i)
+        {
+          double const h = Q[i] * v;
+          v.add(-h, Q[i]);
+          for(unsigned int m = 0; m < n; ++m)
+            c[m] -= h * T[i][m];
+        }
+      double const rho = v.l2_norm();
+      if(rho <= 1.e-6 * e_norm)
+        continue;
+      v /= rho;
+      for(double & cm : c)
+        cm /= rho;
+      Q.push_back(std::move(v));
+      T.push_back(std::move(c));
+    }
+    if(Q.empty())
+      return false;
+
+    std::vector<double> a(n, 0.0);
+    VectorType          remainder(w);
+    for(unsigned int i = 0; i < Q.size(); ++i)
+    {
+      double const h = Q[i] * w;
+      remainder.add(-h, Q[i]);
+      for(unsigned int m = 0; m < n; ++m)
+        a[m] += h * T[i][m];
+    }
+    tangent_remainder_sum += remainder.l2_norm() / w_norm;
+    ++tangent_predictions;
+
+    x0 = 0.0;
+    for(unsigned int l = 0; l < n; ++l)
+      if(a[l] != 0.0)
+        x0.add(a[l], tangent_guess_pairs[l].second);
+    return true;
+  }
+
+  /*
+   * FluidKrylovRecycling: projection of the right-hand side onto the images A X of previous
+   * solutions X (Fischer's projection, minimal residual in the span), with the matrix A of the
+   * current time step: the images are recomputed (one application of A per kept solution) when A
+   * has changed, i.e. at the beginning of a time step or with a new geometry. A solved system adds
+   * the pair (x, b), A x ~ b, at no cost. The solve continues from the projection to the absolute
+   * target of solve_fluid().
+   */
+  struct ProjectionPool
+  {
+    unsigned int                 max_size = 0;
+    bool                         fresh    = false;
+    std::deque<BlockVectorType>  X;    // stored solutions, newest first
+    std::vector<BlockVectorType> Q, W; // l2-orthonormal images A X R^{-1} and X R^{-1}
+  };
+
+  // append the pair (x, b = A x) to the orthonormal basis (modified Gram-Schmidt, twice)
+  void
+  pool_append(ProjectionPool & pool, BlockVectorType const & x, BlockVectorType const & b) const
+  {
+    BlockVectorType q(b), w(x);
+    double const    original = q.l2_norm();
+    if(original == 0.0)
+      return;
+    for(unsigned int pass = 0; pass < 2; ++pass)
+      for(unsigned int i = 0; i < pool.Q.size(); ++i)
+      {
+        double const h = pool.Q[i] * q;
+        q.add(-h, pool.Q[i]);
+        w.add(-h, pool.W[i]);
+      }
+    double const q_norm = q.l2_norm();
+    if(q_norm <= 1.e-8 * original)
+      return;
+    q *= 1.0 / q_norm;
+    w *= 1.0 / q_norm;
+    pool.Q.push_back(std::move(q));
+    pool.W.push_back(std::move(w));
+  }
+
+  void
+  pool_refresh(ProjectionPool & pool) const
+  {
+    dealii::Timer timer;
+    pool.Q.clear();
+    pool.W.clear();
+    BlockVectorType Ax;
+    operator_coupled->initialize_block_vector_velocity_pressure(Ax);
+    for(auto const & x : pool.X)
+    {
+      operator_coupled->apply_linearized_problem(Ax, x);
+      ++pool_matvecs;
+      pool_append(pool, x, Ax);
+    }
+    pool.fresh = true;
+    time_pool_refresh += timer.wall_time();
+  }
+
+  void
+  solve_fluid_recycled(BlockVectorType &       dst,
+                       BlockVectorType const & rhs,
+                       ProjectionPool &        pool) const
+  {
+    if(not pool.fresh)
+      pool_refresh(pool);
+
+    dst = 0.0;
+    for(unsigned int i = 0; i < pool.Q.size(); ++i)
+      dst.add(pool.Q[i] * rhs, pool.W[i]);
+    ++pool_projections;
+
+    solve_fluid_from_guess(dst, rhs);
+
+    pool_append(pool, dst, rhs);
+    pool.X.push_front(dst);
+    while(pool.X.size() > pool.max_size)
+      pool.X.pop_back();
+  }
+
+  // linear fluid solve A dst = rhs from the initial guess in dst, to the same accuracy as
+  // solve_fluid() (absolute target relative to ||rhs||)
+  void
+  solve_fluid_from_guess(BlockVectorType & dst, BlockVectorType const & rhs) const
+  {
+    double const factor = rhs.l2_norm();
+    if(factor == 0.0)
+    {
+      dst = 0.0;
+      return;
+    }
+    BlockVectorType rhs_scaled(rhs);
+    rhs_scaled *= 1.0 / factor;
+    dst *= 1.0 / factor;
+
+    double const rel_nominal = fluid->pde_operator->get_parameters().solver_data_coupled.rel_tol;
+    double const target =
+      tangent_guess_accuracy *
+      std::max(rel_nominal, std::min(1.e-2, rel_nominal * linearized_factor_current));
+    operator_coupled->set_linear_solver_absolute_tolerance(target);
+    ++linearized_solves;
+    VectorType dummy_transport_velocity;
+    linearized_krylov_iterations += operator_coupled->solve_linear_problem(
+      dst,
+      rhs_scaled,
+      dummy_transport_velocity,
+      false /* update_preconditioner */,
+      fluid->time_integrator->get_scaling_factor_time_derivative_term());
+    operator_coupled->set_linear_solver_absolute_tolerance(0.0);
+    dst *= factor;
+  }
+
   // linear fluid solve with the system matrix of the last time step: A dst = rhs
   void
   solve_fluid(BlockVectorType & dst, BlockVectorType const & rhs) const
@@ -2884,10 +3359,19 @@ private:
   Container          native_base_data; // Dirichlet data of the current state (NativeTraction)
   mutable VectorType native_extrapolated_velocity; // velocity of the explicit convective term
 
-  bool                                    geometry_in_state     = false;
-  TangentDifference                       tangent_difference    = TangentDifference::Analytic;
-  double                                  native_tangent_step   = 1.e-2;
-  bool                                    area_ratio_from_state = true;
+  bool                   geometry_in_state             = false;
+  TangentDifference      tangent_difference            = TangentDifference::Analytic;
+  double                 native_tangent_step           = 1.e-2;
+  bool                   area_ratio_from_state         = true;
+  bool                   surrogate_diagnostics_enabled = false;
+  mutable bool           recording_fluid_pairs         = true;
+  mutable FluidPairSet   fluid_now;
+  bool                   tangent_initial_guess   = false;
+  unsigned int           tangent_guess_max_pairs = 48;
+  double                 tangent_guess_accuracy  = 1.0;
+  mutable ProjectionPool tangent_pool, adjoint_pool;
+  mutable std::deque<std::pair<VectorType, BlockVectorType>> tangent_guess_pairs;
+  std::deque<FluidPairSet>                                   fluid_history;
   double                                  tangent_difference_tolerance_factor = 1.0;
   std::function<void(VectorType const &)> mesh_update;
 
@@ -2923,8 +3407,10 @@ private:
   mutable std::vector<BlockVectorType> fluid_history_b, fluid_history_x;
 
   // predicted fluid states from the tangent solves (TangentStatePrediction)
-  bool                                                   tangent_state_prediction      = false;
-  bool                                                   warm_start_absolute_tolerance = false;
+  bool                  tangent_state_prediction      = false;
+  bool                  warm_start_absolute_tolerance = false;
+  bool                  projection_warm_start         = false;
+  std::array<double, 3> projection_cold_residuals     = {{0.0, 0.0, 0.0}};
   std::shared_ptr<IncNS::TimeIntBDFCoupled<dim, Number>> time_integrator_coupled;
   mutable bool                                           recording_tangents = false;
   mutable std::vector<BlockVectorType>                   tangent_record;
@@ -2946,11 +3432,20 @@ public:
                        linearized_krylov_iterations = 0, predicted_states = 0;
   // sum over the affine predictions of the relative part of w outside the span of the pairs
   mutable double affine_remainder_sum = 0.0;
+  // TangentInitialGuess: predicted tangent solves and their remainder outside the span
+  mutable unsigned int tangent_predictions = 0;
+  // FluidKrylovRecycling: projections, applications of A to refresh the images, wall time
+  mutable unsigned int pool_projections      = 0;
+  mutable unsigned int pool_matvecs          = 0;
+  mutable double       time_pool_refresh     = 0.0;
+  mutable double       tangent_remainder_sum = 0.0;
   // wall time of the tangent applications (native formulation): total, linearized structure
   // solve, fluid part
   mutable double time_tangent_total     = 0.0;
   mutable double time_tangent_structure = 0.0;
   mutable double time_tangent_fluid     = 0.0;
+  // analytic fluid tangent: interface transfer, boundary terms, solve, traction
+  mutable std::array<double, 4> time_tangent_parts = {{0.0, 0.0, 0.0, 0.0}};
 
 private:
   // control of the state solves

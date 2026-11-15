@@ -27,6 +27,7 @@
 #include <exadg/operators/quadrature.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/jacobi_preconditioner.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/preconditioner_amg.h>
+#include <exadg/solvers_and_preconditioners/preconditioners/preconditioner_direct.h>
 #include <exadg/solvers_and_preconditioners/solvers/iterative_solvers_dealii_wrapper.h>
 #include <exadg/structure/preconditioners/multigrid_preconditioner.h>
 #include <exadg/structure/spatial_discretization/operator.h>
@@ -594,6 +595,16 @@ Operator<dim, Number>::setup_preconditioner()
                                              false /* initialize */,
                                              param.multigrid_data.coarse_problem.amg_data);
     }
+  }
+  else if(param.preconditioner == Preconditioner::Direct)
+  {
+    if(param.large_deformation)
+      preconditioner =
+        std::make_shared<PreconditionerDirect<NonLinearOperator<dim, Number>, Number>>(
+          elasticity_operator_nonlinear, false /* initialize */);
+    else
+      preconditioner = std::make_shared<PreconditionerDirect<LinearOperator<dim, Number>, Number>>(
+        elasticity_operator_linear, false /* initialize */);
   }
   else
   {

@@ -199,6 +199,8 @@ public:
     double J = evaluate(m, g);
     save_linearization();
     double const m0_norm = norm_mismatch(m);
+    if(param.surrogate_diagnostics)
+      problem.surrogate_diagnostics(m, pcout);
 
     double r0_norm = 0.0;
 

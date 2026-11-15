@@ -105,7 +105,8 @@ enum class Preconditioner
   PointJacobi,
   AdditiveSchwarz,
   Multigrid,
-  AMG
+  AMG,
+  Direct
 };
 
 /**************************************************************************************/
