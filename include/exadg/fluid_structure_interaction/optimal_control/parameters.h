@@ -170,6 +170,10 @@ struct Parameters
       krylov_max_iterations(100),
       forcing_term_max(1.e-1),
       forcing_term_target(0.0),
+      forcing_term_target_max(0.0),
+      native_tangent_step(1.e-2),
+      area_ratio_from_state(true),
+      tangent_difference_tolerance_factor(1.0),
       lbfgs_memory(10),
       lm_lambda_initial(1.e-2),
       lm_lambda_min(1.e-12),
@@ -388,6 +392,37 @@ struct Parameters
         "solve the linear model to theta * tolerance / ||m_k||, so that a full step reaches the "
         "mismatch tolerance (theta = ForcingTermTarget, 0 = off).",
         dealii::Patterns::Double(0.0),
+        false);
+      prm.add_parameter(
+        "ForcingTermTargetMax",
+        forcing_term_target_max,
+        "With ForcingTermTarget: forcing term min(ForcingTermTargetMax, theta * tolerance / "
+        "||m_k||), i.e. ForcingTermMax no longer bounds it close to the tolerance (0 = off).",
+        dealii::Patterns::Double(0.0, 1.0),
+        false);
+      prm.add_parameter(
+        "AreaRatioFromState",
+        area_ratio_from_state,
+        "GeometryInState with UseAreaScaling: area ratio j = da/dA of the structure load j g from "
+        "the displacement of the latest state (true; the load of an evaluation then depends on "
+        "the previous one) or from the geometry of the time step (false; consistent state map).",
+        dealii::Patterns::Bool(),
+        false);
+      prm.add_parameter(
+        "NativeTangentStep",
+        native_tangent_step,
+        "NativeTangentDifference Forward/Central: size of the perturbation of the fluid Dirichlet "
+        "data relative to the data of the state. The dual-splitting and the coupled step (frozen "
+        "geometry) are affine resp. quadratic in the data, so that large steps are exact and "
+        "less sensitive to the tolerance of the fluid solver.",
+        dealii::Patterns::Double(0.0),
+        false);
+      prm.add_parameter(
+        "TangentDifferenceToleranceFactor",
+        tangent_difference_tolerance_factor,
+        "NativeTangentDifference Forward/Central: factor on the relative tolerances of the fluid "
+        "solvers in the fluid steps of the difference quotient.",
+        dealii::Patterns::Double(1.0),
         false);
       prm.add_parameter("LBFGSMemory",
                         lbfgs_memory,
@@ -616,6 +651,10 @@ struct Parameters
   unsigned int krylov_max_iterations;
   double       forcing_term_max;
   double       forcing_term_target;
+  double       forcing_term_target_max;
+  double       native_tangent_step;
+  bool         area_ratio_from_state;
+  double       tangent_difference_tolerance_factor;
   unsigned int lbfgs_memory;
   double       lm_lambda_initial;
   double       lm_lambda_min;

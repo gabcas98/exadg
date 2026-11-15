@@ -276,6 +276,14 @@ private:
                         ale_stiffening_radius,
                         "ALEStiffening = 1: decay length r_0 of the stiffness.",
                         dealii::Patterns::Double(0.0));
+      prm.add_parameter("ALESolverAbsTol",
+                        ale_abs_tol,
+                        "Absolute tolerance of the linear solver of the ALE elasticity.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("ALESolverRelTol",
+                        ale_rel_tol,
+                        "Relative tolerance of the linear solver of the ALE elasticity.",
+                        dealii::Patterns::Double(0.0));
       prm.add_parameter("ALELargeDeformation",
                         ale_large_deformation,
                         "Nonlinear (large-deformation) elasticity for the ALE mesh motion.",
@@ -314,6 +322,8 @@ private:
   IncNS::MeshMovementType mesh_movement_type    = IncNS::MeshMovementType::Elasticity;
   unsigned int            mapping_degree        = 0;
   bool                    ale_large_deformation = false;
+  double                  ale_abs_tol           = ABS_TOL;
+  double                  ale_rel_tol           = REL_TOL;
   unsigned int            ale_stiffening        = 0;
   double                  ale_stiffening_max    = 1000.0;
   double                  ale_stiffening_radius = 0.02;
@@ -882,7 +892,7 @@ private:
       param.solver_data =
         SolverData(1e4, ABS_TOL_LINEARIZED, REL_TOL_LINEARIZED, LinearSolver::FGMRES, 100);
     else
-      param.solver_data = SolverData(1e4, ABS_TOL, REL_TOL, LinearSolver::FGMRES, 100);
+      param.solver_data = SolverData(1e4, ale_abs_tol, ale_rel_tol, LinearSolver::FGMRES, 100);
     param.preconditioner                               = Preconditioner::Multigrid;
     param.multigrid_data.type                          = MultigridType::phMG;
     param.multigrid_data.coarse_problem.solver         = MultigridCoarseGridSolver::CG;
@@ -1022,9 +1032,30 @@ private:
                         spectral_radius,
                         "Spectral radius of the generalized-alpha (Bossak) structure integrator.",
                         dealii::Patterns::Double(0.0, 1.0));
+      prm.add_parameter("StructureNewtonAbsTol",
+                        structure_newton_abs_tol,
+                        "Absolute tolerance of the Newton solver of the structure.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("StructureNewtonRelTol",
+                        structure_newton_rel_tol,
+                        "Relative tolerance of the Newton solver of the structure.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("StructureLinearAbsTol",
+                        structure_linear_abs_tol,
+                        "Absolute tolerance of the linear solver of the structure.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("StructureLinearRelTol",
+                        structure_linear_rel_tol,
+                        "Relative tolerance of the linear solver of the structure.",
+                        dealii::Patterns::Double(0.0));
     }
     prm.leave_subsection();
   }
+
+  double structure_newton_abs_tol = ABS_TOL;
+  double structure_newton_rel_tol = REL_TOL;
+  double structure_linear_abs_tol = ABS_TOL_LINEARIZED;
+  double structure_linear_rel_tol = REL_TOL_LINEARIZED;
 
   double       end_time             = END_TIME;
   bool         traction_coupling    = false;
@@ -1063,10 +1094,11 @@ private:
     param.mapping_degree              = param.degree;
     param.mapping_degree_coarse_grids = param.mapping_degree;
 
-    param.newton_solver_data = Newton::SolverData(1e4, ABS_TOL, REL_TOL);
+    param.newton_solver_data =
+      Newton::SolverData(1e4, structure_newton_abs_tol, structure_newton_rel_tol);
     if(param.large_deformation)
-      param.solver_data =
-        SolverData(1e4, ABS_TOL_LINEARIZED, REL_TOL_LINEARIZED, LinearSolver::FGMRES, 100);
+      param.solver_data = SolverData(
+        1e4, structure_linear_abs_tol, structure_linear_rel_tol, LinearSolver::FGMRES, 100);
     else
       param.solver_data = SolverData(1e4, ABS_TOL, REL_TOL, LinearSolver::FGMRES, 100);
     param.preconditioner                               = Preconditioner::Multigrid;

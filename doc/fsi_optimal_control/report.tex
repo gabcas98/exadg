@@ -90,7 +90,11 @@ the limit cycle without changing the solution; the secant method profits most an
 times faster, and twice as cheap as interface Newton. A further factor of $6$--$8$ comes from the
 coarse-grid solver of the Schur-complement preconditioner of the fluid; with the dual-splitting
 fluid solver, whose step is affine in the interface data as well, the methods without adjoint
-run with exact difference tangents and are another $9$--$27\%$ cheaper.
+run with exact difference tangents and are another $9$--$27\%$ cheaper. On the limit cycle, a
+state map made independent of the previous evaluation (area ratio of the structure load), an
+explicit treatment of the fluid geometry and cheaper orthogonalisations bring interface Newton,
+Gauss--Newton, Levenberg--Marquardt and trust region to $1.2$--$1.4$ times the cost of the secant
+method; every method is then $19$--$38$ times faster per step than in the first long run.
 \end{abstract}
 
 \tableofcontents
@@ -153,7 +157,9 @@ finite element library built on \code{deal.II}. The contributions are:
   another $42$--$65\%$ in the start-up phase and $38$--$67\%$ on the limit cycle; the secant method
   profits most and is then the cheapest method. A suitable coarse-grid solver in the fluid
   preconditioner gains another factor $6$--$8$, and the methods without adjoint also run with the
-  dual-splitting fluid solver.
+  dual-splitting fluid solver. On the limit cycle, a consistent area ratio of the structure load,
+  an explicit fluid geometry and cheaper orthogonalisations bring IN, GN, LM and TR to $1.2$--$1.4$
+  times the cost of the secant method.
 \end{enumerate}
 Negative results (Sobolev metrics, Tikhonov regularisation, a constraint-only stabilisation of the
 multiplier, a Robin penalty) are reported as well, since they delimit the design space.
@@ -2006,6 +2012,95 @@ order in the fluid, the mesh motion and the structure, and the derivative-based 
 as much per step as the secant method because of their tangent solves; these, not the fluid solver,
 are the next targets.
 
+\subsection{Derivative-based methods on the limit cycle}\label{sec:fast_derivatives}
+
+On the limit cycle IN needs two Newton iterations per step (\cref{tab:fast_periodic,tab:fast_solvers}).
+The iteration history shows why. The first GMRES solve reaches its forcing term ($\eta\approx10^{-3}$),
+but the first Newton step only reduces $\|m\|_{\M}$ from $0.07$--$0.9$ to $0.050$--$0.070$, a value
+that hardly depends on $\|m^{(0)}\|_{\M}$; the second step then contracts by a factor $200$--$1400$.
+The first step of the secant method lands at the same level, with both fluid solvers. The state map
+itself is at fault: evaluating it twice at the same control gives $\|m_2-m_1\|_{\M}\approx0.065$,
+while the second and third evaluations agree. The structure load is $jg$ with the area ratio
+$j=da/dA$ of the interface (\code{UseAreaScaling}), and $j$ was computed from the displacement of
+the previous state, i.e.\ from the extrapolated displacement in the first evaluation of a time step.
+The map $g\mapsto m(g)$ therefore depended on the previous evaluation, and the first step of every
+method absorbed the difference. With $j$ frozen at the geometry of the time step
+(\code{AreaRatioFromState = false}), two evaluations at the same control differ by $2\cdot10^{-5}$,
+the level of the solver tolerances, and the first Newton step lands at $(1$--$2)\%$ of
+$\|m^{(0)}\|_{\M}$. The trajectory changes by $3\cdot10^{-4}$ (relative to the maximal tip
+displacement over $17$~s), the limit cycle not at all. What remains is the true shape sensitivity
+of the geometry in the state (\cref{sec:native}), which $S$ neglects; since
+$\|m^{(0)}\|_{\M}/\tau\approx300$--$1000$ on the limit cycle, a second Newton iteration is still
+needed in almost every step.
+
+\paragraph{Explicit geometry.} With \code{GeometryInState = false}, the fluid mesh is moved once per
+time step with the extrapolated displacement of the structure, as in the semi-implicit coupling
+schemes that treat the geometry and the convection explicitly and the added mass implicitly. The
+tangent $S$ is then the exact derivative of the state map, IN converges in $1.03$ (coupled solver)
+and $1.23$ (dual splitting, forward differences) iterations per step instead of $2.02$, and the
+mesh motion is solved once per time step instead of once per state, which also helps the secant
+method. The limit cycle agrees to four digits with that of the implicit geometry, and the trajectory
+deviates by $5\cdot10^{-3}$--$8\cdot10^{-3}$ over $17$--$22$~s, a phase drift below the time error
+($8.5\cdot10^{-3}$, \cref{tab:fast_tolerances}).
+
+\paragraph{Hidden costs of an iteration.} The recycled inverse $H$ and the least-squares problem of
+the secant method use inner products in the metric of the control space. Each of them applied the
+boundary mass matrix, and the orthogonalisation of $k$ pairs needs $k^2/2$ of them, with $k$ up to
+$240$ for $H$ and up to $130$ secant columns on the limit cycle. The rebuild of $H$ took $28\%$ of
+the time of IN with the dual-splitting solver. With the images $\M Q_i$ of the orthonormal vectors
+stored, and $\M q$ updated by linearity during the orthogonalisation, one mass application per
+column suffices: the rebuild becomes $4$--$6$ times cheaper, IN $20$--$30\%$ and the secant method
+$8\%$ faster, with unchanged iterations.
+
+\paragraph{Tangent by differences.} The dual-splitting step is affine in the Dirichlet data only up
+to the upwind flux of the convective term at the interface, whose exterior state contains the data:
+with a perturbation of the size of the data ($\epsilon=1$, \code{NativeTangentStep}) IN needs $1.83$
+iterations instead of $1.23$, central differences reduce them to $1.08$ at twice the cost per
+tangent. The relative perturbation $10^{-2}$ is kept, but the fluid solves of the difference quotient
+tolerate $100$ times looser tolerances (\code{TangentDifferenceToleranceFactor}): the iterations do
+not change, a tangent becomes $27\%$ cheaper and IN $20\%$ faster.
+
+\paragraph{Without benefit.} A step $d=-Hm$ with the recycled inverse alone before the Krylov solve
+is accepted in at most a third of the steps and costs a state when it is rejected; a low-rank
+correction of $S$ from the observed errors of the linear model of previous Newton steps (a
+Broyden-type update for the shape sensitivity) fails because these errors point in different
+directions from step to step; more recycled history ($32$ steps, $262$ pairs) increases the number
+of tangent solves; and the error of the control predictor is dominated by an oscillation that
+changes sign from step to step, so that neither a higher order nor a correction by the error of the
+previous step improves it. A forcing term that follows the target $\theta\tau/\|m\|_{\M}$ up to $0.5$
+instead of $10^{-2}$ when $\|m\|_{\M}$ is close to the tolerance (\code{ForcingTermTargetMax}) saves
+$4$--$11\%$ of the tangent solves.
+
+\begin{table}[ht]\centering
+\caption{Limit cycle of FSI2, one method per window of one second, $2$ processes: wall time per time
+step and, for IN, iterations and tangent solves per step. Implicit geometry: runs of
+\cref{tab:fast_solvers}. Explicit geometry: \texttt{GeometryInState = false}, stored metric images;
+dual splitting with $\tau_f=10^{-8}$ and \texttt{TangentDifferenceToleranceFactor = 100}, coupled
+solver with $\tau_f=10^{-8}$ and \texttt{LinearizedToleranceFactor} $=10^3$ (derivative tolerance
+$10^{-5}$). No step fails to converge.}
+\label{tab:fast_derivatives}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccccccccc}
+\toprule
+& secant & IN & GN & LM & TR & SD & L-BFGS & IN: it.\ / $S$ & total\\
+\midrule
+dual splitting, implicit geometry & 0.043 & 0.086 & 0.087 & 0.084 & 0.091 & -- & -- & 2.02 / 5.81 & 404~s (20~s)\\
+dual splitting, explicit geometry & 0.028 & 0.039 & 0.037 & 0.035 & 0.037 & -- & -- & 1.23 / 4.28 & 241~s (20~s)\\
+coupled, implicit geometry & 0.059 & 0.099 & 0.101 & 0.100 & 0.100 & 0.140 & 0.146 & 2.02 / 4.81 & 619~s (22~s)\\
+coupled, explicit geometry & 0.044 & 0.052 & 0.054 & 0.053 & 0.053 & 0.082 & 0.074 & 1.03 / 3.17 & 439~s (22~s)\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\Cref{tab:fast_derivatives} summarises the effect on the limit cycle. With explicit geometry the
+derivative-based methods IN, GN, LM and TR cost $1.2$--$1.4$ times the secant method per step
+instead of twice, SD and L-BFGS $1.7$--$1.9$ times; per step they are $2.2$--$2.5$ (dual
+splitting) and $1.7$--$2.0$ (coupled solver) times cheaper than with the implicit geometry. With the
+coupled solver the secant method needs the fluid tolerance $10^{-8}$ in the explicit-geometry
+scheme: at $10^{-7}$ its stagnation test stopped $18$ of the first $6543$ steps above the tolerance.
+Compared with the first long run of \cref{tab:fast_periodic} ($1.07$ to $1.80$~s per step on $8$
+processes), every method is now $19$ to $38$ times faster per step.
+
 %=================================================================================================
 \section{Conclusions and outlook}
 %=================================================================================================
@@ -2079,6 +2174,17 @@ differences of fluid steps give exact tangents; with fluid tolerances $10^{-8}$ 
 interface tolerance lies at the noise floor and TR fails) the secant method, IN, GN, LM and TR run
 $9$--$27\%$ faster than with the coupled solver. Per state, fluid, mesh motion and structure now
 cost about the same.
+\item A coupling method needs a state map that is a function of the control alone. The area ratio
+of the structure load, computed from the displacement of the previous state, made every first
+evaluation of a time step differ from the later ones by about $200$ times the tolerance; the first
+step of every method absorbed this difference. Frozen at the geometry of the time step, it leaves
+the true shape sensitivity of the moving fluid mesh, which the tangent neglects and which still
+costs a second Newton iteration; with the fluid geometry extrapolated once per time step, the
+tangent is exact and IN converges in $1.0$--$1.2$ iterations on the same limit cycle. Together with
+one mass application per orthogonalised vector instead of one per inner product, the
+derivative-based methods cost $1.2$--$1.4$ (IN, GN, LM, TR) and $1.7$--$1.9$ (SD, L-BFGS) times
+the secant method per step on the limit cycle, and all methods run $19$--$38$ times faster than in
+the first long run.
 \end{enumerate}
 Open points are the source of the energy that feeds the high-frequency mode of
 \cref{sec:instabilities}, which the dissipation of the structure integrator only suppresses, the
@@ -2088,7 +2194,8 @@ between the limit cycles of the coupled and the dual-splitting fluid solver
 (\cref{sec:fast_periodic}), fewer tangent solves for the derivative-based methods, the sensitivity
 of the secant method to the fluid tolerance on the limit cycle (\cref{sec:fast_tolerances}), the
 cost of the mesh motion and of the structure per state and the adjoint of the dual-splitting step
-(\cref{sec:fast_solvers}), and three-dimensional problems, where the dense frozen-Jacobian and
+(\cref{sec:fast_solvers}), the shape derivative of the fluid step for the implicit geometry
+(\cref{sec:fast_derivatives}), and three-dimensional problems, where the dense frozen-Jacobian and
 Sobolev constructions must be replaced by low-rank or multilevel approximations; the matrix-free
 ingredients of \cref{sec:fast} carry over unchanged.
 
@@ -2145,7 +2252,13 @@ parameters \code{CoupledVelocityPreconditioner}, \code{CoupledSchurPreconditione
 \code{CoupledSchurMultigridType}, \code{CoupledSchurCoarseSolver} and
 \code{CoupledSchurCoarsePreconditioner} (defaults: original setting), and the requirement check of
 the driver, which accepts any fluid solver if no method of \code{Method} or \code{MethodSchedule}
-needs the adjoint and the tangent uses differences. Options without benefit (\cref{sec:fast}):
+needs the adjoint and the tangent uses differences. For \cref{sec:fast_derivatives}: parameters
+\code{AreaRatioFromState}, \code{ForcingTermTargetMax}, \code{NativeTangentStep} and
+\code{TangentDifferenceToleranceFactor} of the subsection \code{OptimalControl}; application
+parameters \code{ALESolverAbsTol}, \code{ALESolverRelTol}, \code{StructureNewtonAbsTol},
+\code{StructureNewtonRelTol}, \code{StructureLinearAbsTol} and \code{StructureLinearRelTol}
+(diagnostics); wall times of the tangents and of the recycled inverse in the summary of the run.
+Options without benefit (\cref{sec:fast}):
 \code{LinearizedInitialGuess}, the limited-memory CG preconditioner, the frozen-Jacobian refresh
 criteria \code{PreconditionerUpdateTimeStepChange} and \code{PreconditionerUpdateKrylov}. The
 input files of \cref{tab:fast_methods} are in \code{doc/fsi_optimal_control/inputs}
@@ -2158,7 +2271,10 @@ input files of \cref{tab:fast_methods} are in \code{doc/fsi_optimal_control/inpu
 The inputs of \cref{tab:fast_solvers} are \code{s_np2} (coupled, original preconditioner; run with
 $1$, $2$, $4$, $8$ processes), \code{pc_*} (coupled, preconditioner variants), \code{d_*} (dual
 splitting; \code{f8}: $\tau_f=10^{-8}$, \code{d_ref}: reference), \code{lr_win3}, \code{lr_ds}
-and \code{lr_ds_f6} (long runs; the last one fails in the TR window).
+and \code{lr_ds_f6} (long runs; the last one fails in the TR window). The inputs of
+\cref{sec:fast_derivatives} are \code{lr_ds2}, \code{lr_win4} (\cref{tab:fast_derivatives}),
+\code{j_old}, \code{j_fix}, \code{j_exp} (area ratio and geometry) and \code{s_base},
+\code{s_f100} (tolerance of the difference quotient).
 The output directory in each file has to exist, and
 \code{doc/fsi_optimal_control/bench.py} summarises the runs (iterations, solves and fluid
 Krylov iterations per time step); \code{doc/fsi_optimal_control/deviation.py} computes the

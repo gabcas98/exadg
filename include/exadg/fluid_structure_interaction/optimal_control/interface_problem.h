@@ -267,10 +267,13 @@ public:
       AssertThrow(time_integrator_coupled.get() and operator_coupled.get(),
                   dealii::ExcMessage("TangentStatePrediction and AffineStatePrediction require "
                                      "the coupled fluid solver."));
-    qn_initial_relaxation    = param.qn_initial_relaxation;
-    tangent_difference       = param.tangent_difference;
-    preconditioner           = param.preconditioner;
-    preconditioner_tolerance = param.preconditioner_tolerance;
+    qn_initial_relaxation               = param.qn_initial_relaxation;
+    tangent_difference                  = param.tangent_difference;
+    native_tangent_step                 = param.native_tangent_step;
+    area_ratio_from_state               = param.area_ratio_from_state;
+    tangent_difference_tolerance_factor = param.tangent_difference_tolerance_factor;
+    preconditioner                      = param.preconditioner;
+    preconditioner_tolerance            = param.preconditioner_tolerance;
 
     AssertThrow(param.control_degree_reduction == 0 or control_space == ControlSpace::Fluid,
                 dealii::ExcMessage(
@@ -339,6 +342,20 @@ public:
     if(use_dense_metrics)
       return dense_inner_product(A_dense, a, b);
     return l2_inner_product(a, b);
+  }
+
+  // Riesz map of both metrics (l2 metrics only): inner_product(a, b) = a * (M b)
+  bool
+  has_metric_map() const
+  {
+    return not use_dense_metrics;
+  }
+
+  void
+  apply_metric(VectorType & dst, VectorType const & src) const
+  {
+    initialize_vector(dst);
+    apply_mass(control(), dst, src);
   }
 
   double
@@ -1437,7 +1454,11 @@ private:
     mesh_update(d);
     // the affine pairs of the time step are kept: the geometry changes only by the small
     // displacement differences of the iterates, and the prediction is an initial guess
-    geometry_displacement = d;
+    // The area ratio of the structure load is taken from the displacement of the state unless it
+    // is frozen at the geometry of the time step (AreaRatioFromState = false): the load j(d) g of
+    // the next evaluation would otherwise depend on the previous evaluation.
+    if(area_ratio_from_state)
+      geometry_displacement = d;
     setup_trace_space(fluid_space);
   }
 
@@ -1595,12 +1616,15 @@ private:
   {
     AssertThrow(operator_coupled.get() or tangent_difference != TangentDifference::Analytic,
                 dealii::ExcMessage("The analytic tangent requires the coupled fluid solver."));
-    VectorType load, y;
+    dealii::Timer timer_total, timer_part;
+    VectorType    load, y;
     structure->pde_operator->initialize_dof_vector(load);
     structure->pde_operator->initialize_dof_vector(y);
     apply_L_s(load, src);
     solve_structure(y, load);
     y *= velocity_factor();
+    time_tangent_structure += timer_part.wall_time();
+    timer_part.restart();
 
     BlockVectorType response; // fluid response (recorded for TangentStatePrediction)
 
@@ -1637,11 +1661,13 @@ private:
     }
     else if(y_norm > 0.0)
     {
-      double const eps = 1.e-2 * std::max<double>(native_velocity.l2_norm(), 1.e-12) / y_norm;
+      double const eps =
+        native_tangent_step * std::max<double>(native_velocity.l2_norm(), 1.e-12) / y_norm;
 
       VectorType v_plus(native_velocity), t_plus;
       v_plus.add(eps, y);
       initialize_vector(t_plus);
+      fluid->pde_operator->set_solver_tolerance_factor(tangent_difference_tolerance_factor);
       native_fluid_response(t_plus, v_plus);
       if(tangent_difference == TangentDifference::Central)
       {
@@ -1659,11 +1685,14 @@ private:
         dst.add(-1.0 / eps, t_plus);
         native_fluid_solves += 1;
       }
+      fluid->pde_operator->set_solver_tolerance_factor(1.0);
     }
+    time_tangent_fluid += timer_part.wall_time();
     dst.scale(structure_space.mask);
 
     if(recording_tangents)
       tangent_record.push_back(std::move(response));
+    time_tangent_total += timer_total.wall_time();
   }
 
   /*
@@ -2855,8 +2884,11 @@ private:
   Container          native_base_data; // Dirichlet data of the current state (NativeTraction)
   mutable VectorType native_extrapolated_velocity; // velocity of the explicit convective term
 
-  bool                                    geometry_in_state  = false;
-  TangentDifference                       tangent_difference = TangentDifference::Analytic;
+  bool                                    geometry_in_state     = false;
+  TangentDifference                       tangent_difference    = TangentDifference::Analytic;
+  double                                  native_tangent_step   = 1.e-2;
+  bool                                    area_ratio_from_state = true;
+  double                                  tangent_difference_tolerance_factor = 1.0;
   std::function<void(VectorType const &)> mesh_update;
 
   MPI_Comm const mpi_comm;
@@ -2914,6 +2946,11 @@ public:
                        linearized_krylov_iterations = 0, predicted_states = 0;
   // sum over the affine predictions of the relative part of w outside the span of the pairs
   mutable double affine_remainder_sum = 0.0;
+  // wall time of the tangent applications (native formulation): total, linearized structure
+  // solve, fluid part
+  mutable double time_tangent_total     = 0.0;
+  mutable double time_tangent_structure = 0.0;
+  mutable double time_tangent_fluid     = 0.0;
 
 private:
   // control of the state solves

@@ -965,7 +965,12 @@ Driver<dim, Number>::print_performance_results(double const total_time) const
                               "Predicted fluid states",
                               "  remainder outside the affine span",
                               "Unconverged steps (total)",
-                              "Recycled-history restarts (total)"},
+                              "Recycled-history restarts (total)",
+                              "Wall time tangents [s] (total)",
+                              "  linearized structure solves",
+                              "  fluid part",
+                              "Wall time recycled inverse: rebuild [s]",
+                              "  application"},
                              {oc_problem->native_fluid_solves / n,
                               oc_problem->preconditioner_setup_solves / n,
                               oc_geometry_iterations / n,
@@ -982,7 +987,12 @@ Driver<dim, Number>::print_performance_results(double const total_time) const
                               oc_problem->affine_remainder_sum /
                                 std::max(1.0, double(oc_problem->predicted_states)),
                               double(oc_not_converged),
-                              double(oc_optimizer->recycled_restarts)});
+                              double(oc_optimizer->recycled_restarts),
+                              oc_problem->time_tangent_total,
+                              oc_problem->time_tangent_structure,
+                              oc_problem->time_tangent_fluid,
+                              oc_optimizer->time_recycled_rebuild,
+                              oc_optimizer->time_recycled_apply});
   }
   else
   {

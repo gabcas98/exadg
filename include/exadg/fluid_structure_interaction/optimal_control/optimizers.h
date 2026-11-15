@@ -262,7 +262,16 @@ public:
         std::min(param.forcing_term_max, std::sqrt(r0_norm > 0.0 ? r_norm / r0_norm : 1.0));
       // interface equation: the linear model has to reach the mismatch tolerance, not more
       if(param.forcing_term_target > 0.0 and not needs_gradient and m_norm > 0.0)
-        eta = std::min(eta, std::max(1.e-12, param.forcing_term_target * tolerance / m_norm));
+      {
+        double const eta_target = std::max(1.e-12, param.forcing_term_target * tolerance / m_norm);
+        // close to the tolerance, the linear model only has to reach the target
+        eta = param.forcing_term_target_max > 0.0 ?
+                std::min(param.forcing_term_target_max, eta_target) :
+                std::min(eta, eta_target);
+      }
+      if(param.verbose)
+        pcout << "      tolerance = " << std::scientific << std::setprecision(3) << tolerance
+              << ", ||m|| / tolerance = " << m_norm / tolerance << std::defaultfloat << std::endl;
 
       bool step_accepted = false;
 
@@ -570,26 +579,39 @@ public:
       }
       else
       {
-        // QR of dM (MGS in the M inner product), dropping dependent columns
-        std::vector<VectorType>          Q;
+        // QR of dM (MGS in the M inner product), dropping dependent columns. With the Riesz map M
+        // of the metric, (Q_i, x) = (M Q_i) * x and M q follows from linearity: one application of
+        // M per column instead of one per inner product.
+        bool const                       fast = problem.has_metric_map();
+        std::vector<VectorType>          Q, MQ;
         std::vector<unsigned int>        kept;
         std::vector<std::vector<double>> R; // R[j] = column j of R (size j+1)
         for(unsigned int j = 0; j < cols_M.size(); ++j)
         {
-          VectorType          q(*cols_M[j]);
-          double const        original = norm_mismatch(q);
+          VectorType q(*cols_M[j]), Mq;
+          if(fast)
+            problem.apply_metric(Mq, q);
+          double const original =
+            fast ? std::sqrt(std::max(0.0, double(Mq * q))) : norm_mismatch(q);
           std::vector<double> r(Q.size() + 1, 0.0);
           for(unsigned int i = 0; i < Q.size(); ++i)
           {
-            r[i] = problem.inner_product_mismatch(Q[i], q);
+            r[i] = fast ? MQ[i] * q : problem.inner_product_mismatch(Q[i], q);
             q.add(-r[i], Q[i]);
+            if(fast)
+              Mq.add(-r[i], MQ[i]);
           }
-          double const q_norm = norm_mismatch(q);
+          double const q_norm = fast ? std::sqrt(std::max(0.0, double(Mq * q))) : norm_mismatch(q);
           if(original == 0.0 or q_norm <= param.qn_filter * original)
             continue;
           r.back() = q_norm;
           q *= 1.0 / q_norm;
           Q.push_back(q);
+          if(fast)
+          {
+            Mq *= 1.0 / q_norm;
+            MQ.push_back(Mq);
+          }
           R.push_back(r);
           kept.push_back(j);
         }
@@ -597,7 +619,7 @@ public:
         unsigned int const  n = Q.size();
         std::vector<double> rhs(n), c(n, 0.0);
         for(unsigned int i = 0; i < n; ++i)
-          rhs[i] = problem.inner_product_mismatch(Q[i], m);
+          rhs[i] = fast ? MQ[i] * m : problem.inner_product_mismatch(Q[i], m);
         for(int i = int(n) - 1; i >= 0; --i)
         {
           double sum = rhs[i];
@@ -836,8 +858,10 @@ private:
   void
   rebuild_recycled_preconditioner()
   {
-    rebuild_recycled_inverse(recycle_now, recycle_history, rec_Q, rec_W, false);
-    rebuild_recycled_inverse(adjoint_now, adjoint_history, adj_Q, adj_W, true);
+    dealii::Timer timer;
+    rebuild_recycled_inverse(recycle_now, recycle_history, rec_Q, rec_MQ, rec_W, false);
+    rebuild_recycled_inverse(adjoint_now, adjoint_history, adj_Q, adj_MQ, adj_W, true);
+    time_recycled_rebuild += timer.wall_time();
   }
 
   /*
@@ -850,14 +874,19 @@ private:
     std::vector<std::pair<VectorType, VectorType>> const &             now,
     std::deque<std::vector<std::pair<VectorType, VectorType>>> const & history,
     std::vector<VectorType> &                                          rec_Q,
+    std::vector<VectorType> &                                          rec_MQ,
     std::vector<VectorType> &                                          rec_W,
     bool const                                                         control_metric) const
   {
     rec_Q.clear();
+    rec_MQ.clear();
     rec_W.clear();
     if(not param.recycled_preconditioner)
       return;
 
+    // with the Riesz map M of the metric, (Q_i, x) = (M Q_i) * x: one application of M per kept
+    // pair instead of one per inner product
+    bool const fast  = problem.has_metric_map();
     auto const inner = [&](VectorType const & a, VectorType const & b) {
       return control_metric ? problem.inner_product(a, b) : problem.inner_product_mismatch(a, b);
     };
@@ -876,20 +905,29 @@ private:
     {
       if(rec_Q.size() >= param.recycle_max_pairs)
         break;
-      VectorType          q(p->second);
-      double const        original = vnorm(q);
+      VectorType q(p->second), Mq;
+      if(fast)
+        problem.apply_metric(Mq, q);
+      double const        original = fast ? std::sqrt(std::max(0.0, double(Mq * q))) : vnorm(q);
       std::vector<double> r(rec_Q.size() + 1, 0.0);
       for(unsigned int i = 0; i < rec_Q.size(); ++i)
       {
-        r[i] = inner(rec_Q[i], q);
+        r[i] = fast ? rec_MQ[i] * q : inner(rec_Q[i], q);
         q.add(-r[i], rec_Q[i]);
+        if(fast)
+          Mq.add(-r[i], rec_MQ[i]);
       }
-      double const q_norm = vnorm(q);
+      double const q_norm = fast ? std::sqrt(std::max(0.0, double(Mq * q))) : vnorm(q);
       if(original == 0.0 or q_norm <= param.qn_filter * original)
         continue;
       r.back() = q_norm;
       q *= 1.0 / q_norm;
       rec_Q.push_back(q);
+      if(fast)
+      {
+        Mq *= 1.0 / q_norm;
+        rec_MQ.push_back(Mq);
+      }
       R.push_back(r);
       VectorType d(p->first);
       d.add(-1.0, p->second);
@@ -917,9 +955,12 @@ private:
   void
   apply_recycled(VectorType & dst, VectorType const & src) const
   {
+    dealii::Timer timer;
     dst = src;
     for(unsigned int j = 0; j < rec_Q.size(); ++j)
-      dst.add(problem.inner_product_mismatch(rec_Q[j], src), rec_W[j]);
+      dst.add(rec_MQ.empty() ? problem.inner_product_mismatch(rec_Q[j], src) : rec_MQ[j] * src,
+              rec_W[j]);
+    time_recycled_apply += timer.wall_time();
   }
 
   // dst = H_A src ~ S^{-*} src (from the exact adjoint pairs, control -> mismatch space)
@@ -928,7 +969,7 @@ private:
   {
     dst = src;
     for(unsigned int j = 0; j < adj_Q.size(); ++j)
-      dst.add(problem.inner_product(adj_Q[j], src), adj_W[j]);
+      dst.add(adj_MQ.empty() ? problem.inner_product(adj_Q[j], src) : adj_MQ[j] * src, adj_W[j]);
   }
 
   // dst = H H_A src ~ S^{-1} S^{-*} src = (S^* S)^{-1} src
@@ -1200,6 +1241,7 @@ private:
     std::vector<VectorType>          V(1, b), Z;
     std::vector<std::vector<double>> H, R; // unrotated / rotated Hessenberg columns
     std::vector<double>              cs, sn, e(1, beta);
+    std::vector<double>              residual_history;
     V[0] *= 1.0 / beta;
 
     unsigned int k = 0;
@@ -1249,6 +1291,7 @@ private:
       e.push_back(-sn[k] * e[k]);
       e[k] = cs[k] * e[k];
       R.push_back(h);
+      residual_history.push_back(std::abs(e[k + 1]) / beta);
 
       bool const breakdown = (H.back()[k + 1] <= 1.e-14 * beta);
       if(not breakdown)
@@ -1266,8 +1309,13 @@ private:
 
     if(param.verbose)
       pcout << "      GMRES: " << k << " it, eta = " << std::scientific << std::setprecision(2)
-            << eta << ", ||b + S x|| / ||b|| = " << std::abs(e[k]) / beta << std::defaultfloat
-            << std::endl;
+            << eta << ", ||b + S x|| / ||b|| =";
+    if(param.verbose)
+    {
+      for(double const r : residual_history)
+        pcout << " " << r;
+      pcout << std::defaultfloat << std::endl;
+    }
 
     std::vector<double> y(k, 0.0);
     for(int i = int(k) - 1; i >= 0; --i)
@@ -1770,13 +1818,16 @@ private:
   // and the factors of H
   std::vector<std::pair<VectorType, VectorType>>             recycle_now;
   std::deque<std::vector<std::pair<VectorType, VectorType>>> recycle_history;
-  std::vector<VectorType>                                    rec_Q, rec_W;
+  std::vector<VectorType>                                    rec_Q, rec_MQ, rec_W;
   std::vector<std::pair<VectorType, VectorType>>             adjoint_now; // (w, S^* w)
   std::deque<std::vector<std::pair<VectorType, VectorType>>> adjoint_history;
-  std::vector<VectorType>                                    adj_Q, adj_W;
+  std::vector<VectorType>                                    adj_Q, adj_MQ, adj_W;
 
 public:
   unsigned int recycled_restarts = 0; // history discarded (no descent direction)
+  // wall time of the recycled inverse: rebuild (orthogonalization) and application
+  double         time_recycled_rebuild = 0.0;
+  mutable double time_recycled_apply   = 0.0;
 
 private:
   std::deque<std::pair<VectorType, VectorType>> cg_pairs; // exact pairs (p, S^* S p)
