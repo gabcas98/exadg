@@ -46,61 +46,41 @@ formulations, exact derivatives and the role of the interface discretisation}
 \maketitle
 
 \begin{abstract}
-We study optimisation-based coupling of a high-order discontinuous Galerkin (DG) arbitrary
-Lagrangian--Eulerian (ALE) Navier--Stokes solver and a continuous Galerkin hyperelastic structure
-solver within the matrix-free finite element library ExaDG. The interface traction is treated as a
-control variable, in the spirit of optimisation-based domain decomposition. For a frozen fluid
-geometry and an explicit treatment of the convective term, the discrete fluid step is affine in the
-interface data and its system matrix is a symmetric saddle-point matrix; together with the symmetric
-tangent stiffness of the structure this yields \emph{exact} tangent and adjoint operators that only
-require forward solves of the single-field solvers and the transposes of the (non-matching) point
-evaluations between the meshes. On top of these operators we implement steepest descent, L-BFGS,
-Gauss--Newton, Levenberg--Marquardt, a Steihaug trust region, a Newton--Krylov method for the
-interface equation and a least-squares secant (Anderson/IQN-ILS type) method, with $L^2$ and
-$H^{\pm1/2}$ interface metrics and two preconditioners. All derivatives are verified to round-off.
-The numerical study on the Turek--Hron FSI benchmark geometry shows that (i) the choice of the
-control space is decisive: a traction space richer than the fluid trace violates a mortar-type
-compatibility condition and produces an unstable coupled scheme; (ii) with a compatible control
-space the velocity-mismatch formulation converges, but at first order in the fluid mesh size, to the
-solution of the native Dirichlet--Neumann scheme; a force decomposition identifies the cause as the
-strong versus weak imposition of the no-slip condition on unresolved boundary layers;
-(iii) a \emph{native-traction} formulation, whose root is by construction the fixed point of the
-native Dirichlet--Neumann scheme, reproduces the reference solution to all digits. For this
-formulation we derive the exact discrete adjoint, including the transposes of the Dirichlet boundary
-terms of the DG fluid and of the nodal stress interpolation, and compare all methods on the native
-solution: the secant method is as fast as IQN-ILS, interface Newton costs about twice as much, and
-Gauss--Newton about six to ten times as much. Finally, we show that a secant method acting on a
-black-box time step requires a state map without hidden dependence on the iteration history, and
-that its tolerance must lie above the noise floor of the single-field solvers; with a warm-started,
-inexactly solved fluid the secant method is $2.4$ times faster than IQN-ILS at equal accuracy, and
-since it needs no derivatives it also runs with the dual-splitting fluid solver, where it remains
-robust at tolerances at which IQN-ILS fails. Long simulations of the FSI2 benchmark into the
-periodic regime show that all couplings reach the same limit cycle, while during the growth of
-the instability the Dirichlet--Neumann iteration is sensitive to the accuracy of warm-started
-fluid solves and the secant method is not. Fine resolutions require a structure integrator with
-dissipation at mid frequencies and a mesh motion stiffened towards the flag; with these, the
-secant method reproduces the reference amplitudes and mean values to within $1\%$. Finally,
-matrix-free recycling of the exact tangent and adjoint pairs, derivative and Krylov tolerances tied
-to the mismatch tolerance, and a prediction of the fluid state from the tangent solves make
-interface Newton, Gauss--Newton, Levenberg--Marquardt and trust region as cheap as the secant method
-in the start-up phase and at most $12\%$ more expensive on the limit cycle. A Lagrange predictor of
-the control, an affine prediction of the fluid state from all solves of the time step and a fluid
-tolerance matched to the coupling error reduce the cost of all methods by another $38$--$67\%$ on
-the limit cycle without changing the solution; the secant method profits most and becomes three
-times faster, and twice as cheap as interface Newton. A further factor of $6$--$8$ comes from the
-coarse-grid solver of the Schur-complement preconditioner of the fluid; with the dual-splitting
-fluid solver, whose step is affine in the interface data as well, the methods without adjoint
-run with exact difference tangents and are another $9$--$27\%$ cheaper. On the limit cycle, a
-state map made independent of the previous evaluation (area ratio of the structure load), an
-explicit treatment of the fluid geometry and cheaper orthogonalisations bring interface Newton,
-Gauss--Newton, Levenberg--Marquardt and trust region to $1.2$--$1.4$ times the cost of the secant
-method; every method is then $19$--$38$ times faster per step than in the first long run. A
-coupling tolerance matched to the time error on the limit cycle, direct solvers for the small
-structure and mesh-motion problems and warm-started fluid solves bring all seven methods within
-$20\%$ of each other: from rest to $t=15$~s each of them takes $196$--$234$~s with the coupled
-fluid solver ($69$--$108$~s with dual splitting), against about $3600$~s at the start of the
-study.
+We study optimisation-based partitioned coupling for fluid--structure interaction (FSI) in the
+matrix-free high-order finite element library ExaDG, with a discontinuous Galerkin (DG)
+arbitrary Lagrangian--Eulerian (ALE) Navier--Stokes solver and a continuous Galerkin hyperelastic
+structure. The interface traction is the control variable. For a frozen fluid geometry and an
+explicit convective term the discrete fluid step is affine in the interface data and its system
+matrix is a symmetric saddle-point matrix; with the symmetric tangent stiffness of the structure
+this yields \emph{exact} tangent and adjoint operators that require only forward solves of the
+single-field solvers and the transposes of the non-matching interface transfers. On this basis we
+implement steepest descent, L-BFGS, Gauss--Newton, Levenberg--Marquardt, a trust-region method,
+interface Newton and a least-squares secant (IQN-ILS type) method.
+The interface discretisation, not the method, determines the solution: a traction space richer
+than the fluid trace violates a mortar-type compatibility condition and destabilises the scheme; a
+compatible velocity-mismatch formulation converges at first order in the fluid mesh size to the
+native Dirichlet--Neumann solution, the difference being the strong versus weak imposition of the
+no-slip condition on unresolved boundary layers; a native-traction formulation, whose root is the
+Dirichlet--Neumann fixed point, reproduces it exactly, and we derive its exact discrete adjoint.
+We then make all methods efficient without assembling interface matrices: recycled inverses from
+exact derivative pairs, forcing terms and derivative accuracies tied to the coupling tolerance,
+Lagrange predictors of the control, affine predictions of the fluid state, Krylov recycling of the
+linearised fluid solves, a state map that does not depend on the iteration history, an explicit
+treatment of the geometry, and a coupling tolerance matched to the time discretisation error. A
+cost analysis shows that every method needs a few fresh directions per time step, whose number
+grows with the logarithm of the ratio between predictor error and tolerance, and that solving
+fluid and structure simultaneously cannot reduce the wall time, because the 2-cyclic Jacobian of
+the two-control formulation doubles the Krylov iterations. On the Turek--Hron FSI2 benchmark all
+seven methods integrate the start-up and growth phase to $t=15$~s within $20\%$ of each other and
+$18$ to $52$ times faster than at the beginning of the study; with the coupled fluid solver they
+are about twice as fast as Dirichlet--Neumann with IQN-ILS at equal accuracy, and with the
+dual-splitting fluid solver the secant method is as fast as IQN-ILS. At the finest resolution the
+secant method reproduces the benchmark amplitudes and mean values within $1\%$.
 \end{abstract}
+
+\noindent\textbf{Keywords:} fluid--structure interaction; partitioned coupling; optimisation-based
+domain decomposition; adjoint method; Newton--Krylov; interface quasi-Newton; discontinuous
+Galerkin; matrix-free methods.
 
 \tableofcontents
 
@@ -108,69 +88,73 @@ study.
 \section{Introduction}
 %=================================================================================================
 
-Partitioned solvers for fluid--structure interaction (FSI) couple two single-field solvers through
+Partitioned solvers for fluid--structure interaction couple two single-field solvers through the
 interface conditions: continuity of velocity (kinematic condition) and balance of tractions
 (dynamic condition). The classical Dirichlet--Neumann (DN) iteration passes the structural velocity
-to the fluid and the fluid traction back to the structure; its convergence deteriorates in the
-added-mass regime \cite{CausinGerbeauNobile2005}, and practical implementations accelerate it by
-Aitken relaxation or interface quasi-Newton methods such as IQN-ILS \cite{Degroote2009}.
+to the fluid and the fluid traction back to the structure. For incompressible flows and light or
+slender structures it converges only with strong under-relaxation or not at all, a consequence of
+the added-mass effect \cite{CausinGerbeauNobile2005}; practical implementations therefore
+accelerate it by Aitken relaxation or by interface quasi-Newton methods such as IQN-ILS
+\cite{Degroote2009} and its multi-vector variants \cite{Bogaers2014}.
 
-An alternative is optimisation-based domain decomposition
-\cite{GunzburgerHeinkenschlossLee2000}: the interface flux is a control that is imposed on both
-subproblems with opposite signs, so that the dynamic condition holds by construction, and the
-kinematic condition is recovered by minimising the trace mismatch. For a scalar
-reaction--diffusion model, a companion study (report \emph{NL\_DD\_OPT}) derived state, sensitivity
-and adjoint equations, the reduced gradient and the Gauss--Newton Hessian for six optimisation
-methods, and concluded that solving the interface equation directly is cheaper and better
-conditioned than minimising its square, unless the interface equation has no exact solution.
-Fluid--structure interaction with non-matching meshes and different discretisations on the two
-sides is precisely a case in which the optimisation formulation may be attractive.
+Optimisation-based domain decomposition \cite{GunzburgerHeinkenschlossLee2000} offers a different
+viewpoint: the interface flux is a control imposed on both subproblems, the dynamic condition
+holds by construction, and the kinematic condition is recovered by minimising (or zeroing) the
+trace mismatch. The subproblems are then independent given the control, the two sides may use
+different discretisations and non-matching meshes, and the full machinery of optimisation and
+root finding --- gradients from adjoints, Newton and Gauss--Newton methods, globalisation by line
+search or trust regions --- becomes available. For a scalar reaction--diffusion model, a companion
+study (report \emph{NL\_DD\_OPT}) derived state, sensitivity and adjoint equations and compared six
+methods, concluding that solving the interface equation directly is cheaper and better conditioned
+than minimising its square.
 
-This report transfers that framework to FSI in ExaDG \cite{ExaDG2020}, a matrix-free high-order
-finite element library built on \code{deal.II}. The contributions are:
+This paper transfers the framework to FSI in ExaDG \cite{ExaDG2020}, a matrix-free high-order
+finite element library built on \code{deal.II}, and asks three questions: (i) can exact discrete
+derivatives be obtained in a production high-order FSI code without differentiating the
+time-stepping scheme by hand? (ii) which interface formulation reproduces the solution of the
+native partitioned scheme? (iii) can derivative-based optimisation methods compete in cost with
+quasi-Newton-accelerated Dirichlet--Neumann coupling?
+
+\paragraph{Contributions.}
 \begin{enumerate}
-  \item A flux-control formulation of one FSI time step with \emph{exact} discrete tangent and
-  adjoint operators (\cref{sec:oc}), obtained without differentiating the time-stepping scheme
-  by hand: the fluid step is affine in the interface data for frozen geometry and explicit
-  convection, and both single-field system matrices are symmetric (\cref{lem:affine,lem:symmetry}).
-  The only new transposes are those of the point evaluations between non-matching meshes, for which
-  we derive the exact transpose of the averaged remote point evaluation (\cref{lem:transpose}).
-  \item A generic implementation of seven optimisation and root-finding methods with general
-  interface metrics, a Steklov--Poincar\'e preconditioner and a frozen-Jacobian preconditioner
+  \item Exact tangent and adjoint operators of one FSI time step for a flux-control and for a
+  native-traction formulation (\cref{sec:formulations,sec:derivatives}), obtained from the affinity
+  and symmetry of the discrete single-field operators (\cref{lem:affine,lem:symmetry}) and from the
+  exact transposes of the non-matching interface transfers, of the DG boundary terms and of the
+  nodal stress interpolation (\cref{lem:transpose,lem:local,lem:convective,lem:stress}); verified to
+  round-off.
+  \item A generic matrix-free implementation of seven optimisation and root-finding methods with
+  recycled inverses from exact derivative pairs, adaptive forcing terms, and Gauss--Newton,
+  Levenberg--Marquardt and trust-region steps in the Krylov subspace of the interface equation
   (\cref{sec:methods}).
-  \item A systematic study of the interface discretisation (\cref{sec:spaces,sec:diagnosis}): the
-  stability of the coupled scheme depends on a mortar-type compatibility of the control space, and
-  the remaining first-order discrepancy with the native DN solver is traced to the imposition of the
-  no-slip condition on unresolved boundary layers.
-  \item A native-traction formulation (\cref{sec:native}) whose root coincides with the native DN
-  fixed point, with its exact discrete tangent and adjoint (\cref{sec:native_adjoint}), so that all
-  methods can be compared on the native solution.
-  \item An analysis of the cost of the secant solver (\cref{sec:speedup}): warm starts and
-  adaptive inner tolerances, the noise floor of the state map, the dual-splitting fluid solver, and
-  multi-vector and frozen initial Jacobians.
-  \item Long simulations of FSI2 (\cref{sec:longruns}): a robustness fix of the IQN-ILS
-  implementation of ExaDG, the effect of inexact fluid solves on the growth of the instability,
-  stopping criteria of the secant method above the noise floor, and a comparison of the periodic
-  regime with the benchmark reference.
-  \item Matrix-free accelerations of the derivative-based methods (\cref{sec:fast}): recycled
-  inverses from the exact tangent and adjoint pairs, a target forcing term, adaptive accuracy of the
-  derivatives, a prediction of the fluid state from the tangent solves, and Gauss--Newton,
-  Levenberg--Marquardt and trust-region steps in the Krylov subspace of the interface equation. With
-  them IN, GN, LM and TR cost as much as the secant method in the start-up phase and $9$--$12\%$
-  more on the limit cycle, and SD and L-BFGS about as much as IQN-ILS. Predictors of the control
-  and of the fluid state and tolerances matched to the time discretisation error reduce the cost by
-  another $42$--$65\%$ in the start-up phase and $38$--$67\%$ on the limit cycle; the secant method
-  profits most and is then the cheapest method. A suitable coarse-grid solver in the fluid
-  preconditioner gains another factor $6$--$8$, and the methods without adjoint also run with the
-  dual-splitting fluid solver. On the limit cycle, a consistent area ratio of the structure load,
-  an explicit fluid geometry and cheaper orthogonalisations bring IN, GN, LM and TR to $1.2$--$1.4$
-  times the cost of the secant method.
+  \item A study of the interface discretisation (\cref{sec:res_fluxcontrol}): a compatibility
+  condition for the control space, and the identification of the first-order discrepancy between
+  the velocity-mismatch and the native scheme as an effect of the imposition of the no-slip
+  condition on unresolved boundary layers.
+  \item Predictors, warm starts and recycled linear solves that keep the state map a function of
+  the control alone (\cref{sec:acceleration}), the consistency of the area ratio of the structure
+  load, and an explicit treatment of the fluid geometry.
+  \item A cost analysis (\cref{sec:analysis}): the number of fresh directions per time step, the
+  role of the shape sensitivity for Newton's method, the limits of tangent models built from
+  previous time steps, and the 2-cyclic structure that rules out a gain from solving fluid and
+  structure simultaneously.
+  \item Long simulations of the Turek--Hron FSI2 benchmark (\cref{sec:results}) into the periodic
+  regime, a resolution study, two instabilities at fine resolution and their remedies, and a
+  comparison of all methods with Dirichlet--Neumann IQN-ILS at equal accuracy.
 \end{enumerate}
-Negative results (Sobolev metrics, Tikhonov regularisation, a constraint-only stabilisation of the
-multiplier, a Robin penalty) are reported as well, since they delimit the design space.
+Negative results (Sobolev interface metrics, Tikhonov regularisation, a constraint-only
+stabilisation of the multiplier, a Robin penalty, several acceleration ideas) are reported as well,
+since they delimit the design space.
+
+\paragraph{Outline.} \Cref{sec:model} states the problem and its discretisation,
+\cref{sec:formulations} the interface formulations, \cref{sec:derivatives} the exact derivatives,
+\cref{sec:methods} the solution methods and \cref{sec:acceleration} the techniques that reduce the
+cost of the state and derivative evaluations. \Cref{sec:analysis} analyses the cost,
+\cref{sec:results} reports the numerical experiments, and \cref{sec:conclusions} concludes;
+implementation details and the inputs of all runs are listed in the appendix.
 
 %=================================================================================================
-\section{Model problem and discretisation}\label{sec:model}
+\section{Problem setting and discretisation}\label{sec:model}
 %=================================================================================================
 
 \subsection{Continuous problem}
@@ -228,7 +212,94 @@ Poisson ratio $0.4$, $E=1.4\cdot10^6$, Bossak parameter from spectral radius $0.
 step with CFL number $0.5$. The fluid uses $Q_3/Q_2$ elements; ``refinement $r$'' denotes $r$ global
 refinements of the base mesh. At $r=0$ the fluid side of the interface consists of five faces (two
 per long side of the flag and the tip), the structure of 16 cells along the flag. All simulations
-start from rest, so the results concern the start-up phase $t\le 0.02$.
+start from rest; the studies of the formulations concern the start-up phase $t\le 0.02$, the
+efficiency studies and long simulations integrate to $1$--$22$~s.
+
+\subsection{Time discretisation}\label{sec:time}
+
+\paragraph{Fluid, coupled scheme.} With the BDF coefficients $\gamma_0,\alpha_i$ and the
+extrapolation coefficients $\beta_i$ of order $J=2$ (variable step sizes), one step on the domain
+$\Omega_f(t_{n+1})$ reads
+\begin{equation}\label{eq:bdf}
+  \frac{\gamma_0u^{n+1}-\sum_{i=0}^{J-1}\alpha_iu^{n-i}}{\Delta t}
+  -\nabla\cdot\big(\nu F(u^{n+1})\big)+\nabla p^{n+1}
+  = -\sum_{i=0}^{J-1}\beta_i\,\mathcal C\big(u^{n-i},w^{n+1}\big),\qquad
+  \nabla\cdot u^{n+1}=0,
+\end{equation}
+with the explicit ALE convective term $\mathcal C(u,w)=((u-w)\cdot\nabla)u$ and the grid velocity
+$w^{n+1}=(\gamma_0x^{n+1}-\sum_i\alpha_ix^{n-i})/\Delta t$ computed from the coordinates of the
+mesh. After the DG discretisation the step is the linear saddle-point system
+\begin{equation}\label{eq:saddle}
+  A\begin{bmatrix}u\\p\end{bmatrix}=b,\qquad
+  A=\begin{bmatrix}\frac{\gamma_0}{\Delta t}M_u+V+P(\tilde u)&G\\G^{\top}&0\end{bmatrix},
+\end{equation}
+with the velocity mass matrix $M_u$, the SIPG viscous operator $V$, the divergence and continuity
+penalty operator $P$ whose parameters are computed from the extrapolated velocity
+$\tilde u=\sum_i\beta_iu^{n-i}$, and the discrete gradient $G$. The right-hand side $b$ collects the
+history, the explicit convective term and the inhomogeneous boundary data. \Cref{eq:saddle} is
+solved by FGMRES with the block-triangular preconditioner
+\begin{equation}\label{eq:block_prec}
+  \mathcal P^{-1}=\begin{bmatrix}\hat A_{uu}&G\\0&-\hat S\end{bmatrix}^{-1},\qquad
+  \hat A_{uu}^{-1}=M_u^{-1},\qquad
+  \hat S^{-1}=-\Big(\frac{\gamma_0}{\Delta t}L_p^{-1}+\nu M_p^{-1}\Big)\ \text{or}\
+  \hat S^{-1}=-L_p^{-1}F_pM_p^{-1},
+\end{equation}
+the Cahouet--Chabard and the pressure convection--diffusion approximation of the Schur complement,
+where $L_p^{-1}$ is one V-cycle of a multigrid method for the pressure Laplacian, $M_p$ the
+pressure mass matrix and $F_p$ the pressure convection--diffusion operator.
+
+\paragraph{Fluid, dual splitting.} The high-order dual-splitting scheme replaces \eqref{eq:bdf} by
+four substeps,
+\begin{align}
+  \frac{\gamma_0\hat u-\sum_i\alpha_iu^{n-i}}{\Delta t}&=-\sum_i\beta_i\mathcal C(u^{n-i},w^{n+1}),
+  \label{eq:ds_conv}\\
+  -\Delta p^{n+1}&=-\frac{\gamma_0}{\Delta t}\nabla\cdot\hat u\quad\text{in }\Omega_f,\label{eq:ds_pressure}\\
+  \frac{\partial p^{n+1}}{\partial n}&=-\frac{\gamma_0g^{n+1}-\sum_i\alpha_ig^{n-i}}{\Delta t}\cdot n
+  \nonumber\\
+  &\quad-\sum_i\beta_i\big(\mathcal C(u^{n-i},w^{n+1})+\nu\nabla\times\omega^{n-i}\big)\cdot n
+  \qquad\text{on }\G_D,\nonumber\\
+  \hat{\hat u}&=\hat u-\frac{\Delta t}{\gamma_0}\nabla p^{n+1},\label{eq:ds_projection}\\
+  \frac{\gamma_0}{\Delta t}u^{n+1}-\nabla\cdot\big(\nu F(u^{n+1})\big)
+  &=\frac{\gamma_0}{\Delta t}\hat{\hat u},\qquad u^{n+1}=g^{n+1}\ \text{on }\G_D,\label{eq:ds_viscous}
+\end{align}
+followed by a postprocessing step $(M_u+P(\tilde u))u^{n+1}\leftarrow M_uu^{n+1}$ with the penalty
+terms. The Dirichlet data $g$ on the interface enter through the discrete acceleration in
+\eqref{eq:ds_pressure}, the boundary terms of \eqref{eq:ds_viscous} and, optionally, the boundary
+data of the continuity penalty. The pressure Poisson equation is solved by CG with a hybrid
+multigrid preconditioner, the viscous and penalty steps by CG with the inverse mass matrix.
+
+\paragraph{Structure.} The structure uses the generalised-$\alpha$ method in the form
+\begin{equation}\label{eq:genalpha}
+  M_s\big((1-\alpha_m)a_{n+1}+\alpha_ma_n\big)+f_{\mathrm{int}}\big(d_{n+1-\alpha_f}\big)
+  =f_{\mathrm{ext}}(t_{n+1-\alpha_f}),\qquad d_{n+1-\alpha_f}=(1-\alpha_f)d_{n+1}+\alpha_fd_n,
+\end{equation}
+with the Newmark relations
+$d_{n+1}=d_n+\Delta t\,v_n+\Delta t^2\big((\tfrac12-\beta)a_n+\beta a_{n+1}\big)$ and
+$v_{n+1}=v_n+\Delta t\big((1-\gamma)a_n+\gamma a_{n+1}\big)$. The Bossak variant used here has
+$\alpha_f=0$, $\alpha_m=(\rho_\infty-1)/(\rho_\infty+1)$, $\beta=(1-\alpha_m)^2/4$,
+$\gamma=\tfrac12-\alpha_m$, with the spectral radius $\rho_\infty$ at infinite frequency
+($\rho_\infty=0.8$ in the first part of the study, $\rho_\infty=0$ from \cref{sec:instabilities}
+on). The unknown of a step is $d_{n+1-\alpha_f}$, and the end-of-step velocity is affine in it,
+\begin{equation}\label{eq:cv}
+  v_{n+1}=c_v\,d_{n+1-\alpha_f}+\text{const},\qquad c_v=\frac{\gamma}{\beta\Delta t(1-\alpha_f)} .
+\end{equation}
+The nonlinear system is solved by Newton's method with FGMRES and a matrix-free tangent operator.
+
+\paragraph{Mesh motion.} The fluid mesh follows the interface displacement by a linear elasticity
+extension on the reference fluid domain,
+\begin{equation}\label{eq:ale}
+  -\nabla_X\cdot\big(E(X)\,\mathbb C:\varepsilon(d_f)\big)=0\ \text{in }\Omega_f^0,\qquad
+  d_f=d_s\ \text{on }\G_0,\qquad d_f=0\ \text{on }\partial\Omega_f^0\setminus\G_0,
+\end{equation}
+$x=X+d_f$, represented by a mapping of polynomial degree $q$. The stiffness $E(X)$ is either the
+band distribution of the original application or, from \cref{sec:instabilities} on,
+$E(X)=1+E_{\max}\big(r_0/(r_0+\operatorname{dist}(X,\Omega_s^0))\big)^2$, which stiffens the
+mesh near the flag.
+
+\paragraph{Time step.} The time step follows the CFL condition
+$\Delta t=\mathrm{CFL}\,\min_K h_K/(k^{1.5}\|u\|_{\infty,K})$ with $\mathrm{CFL}=0.5$, computed
+from the solution of the previous step and limited to a growth by the factor $1.2$ per step
+(adaptive time stepping); alternatively a constant step from the maximal inflow velocity is used.
 
 \subsection{Reference: Dirichlet--Neumann and IQN-ILS}
 
@@ -242,10 +313,10 @@ tolerance ($10^{-3}$ relative) the scheme is visibly inaccurate during start-up,
 \cref{sec:diagnosis}.
 
 %=================================================================================================
-\section{Flux-control formulation and exact derivatives}\label{sec:oc}
+\section{Interface formulations}\label{sec:formulations}
 %=================================================================================================
 
-\subsection{State equations for one time step}
+\subsection{Flux control: the velocity-mismatch formulation}\label{sec:oc}
 
 Let $V$ be a finite-dimensional trace space on $\G$ (the control space, \cref{sec:spaces}) with
 mass matrix $\M$, $(a,b)_{\M}=a^{\top}\M b$. The control $g\in V$ is the spatial traction acting on
@@ -267,7 +338,90 @@ with metrics $A$ (mismatch) and $G$ (control), $A=G=\M$ in the $L^2$ case. The g
 in an outer fixed-point loop ($d^{\mathrm{geo}}\leftarrow d_s$), or once per state evaluation
 (\cref{sec:native}).
 
-\subsection{Coupling operators}
+\subsection{Native traction}\label{sec:native}
+
+Since the two discretisations of the interface conditions differ, no optimisation method can drive
+the velocity-mismatch formulation to the native solution. We therefore change the state and the
+residual while keeping the traction as unknown:
+\begin{enumerate}
+  \item Structure with the load $j\,g$, giving $d_s$ and $v_s$; the fluid mesh is moved with $d_s$
+  (geometry inside the state evaluation).
+  \item Fluid with the native \code{DirichletCached} condition $u=v_s$.
+  \item Residual $m(g) = g - \Pis T_f(u_f,p_f)$, with the native traction $T_f$
+  (\code{interpolate_stress_bc}) projected onto the structure trace space.
+\end{enumerate}
+
+\begin{proposition}
+$m(g)=0$ if and only if $(g,v_s,u_f,p_f)$ is a fixed point of the native Dirichlet--Neumann
+scheme. Moreover, the structure load is unchanged by the projection:
+$\int_{\G_0}\Pis T_f\cdot\psi = \int_{\G_0} T_f\cdot\psi$ for all structure test functions $\psi$.
+\end{proposition}
+\begin{proof}
+At a root the structure is loaded by the native traction of a fluid solution with Dirichlet data
+$v_s$, which is the DN fixed point; the second statement is the definition of the $L^2$ projection
+(up to the area ratio, which is one at convergence of the geometry).
+\end{proof}
+
+
+
+\subsection{Treatment of the geometry and the area ratio}\label{sec:geometry}
+
+The fluid domain of the step, $\Omega_f(t_{n+1})$, depends on the structure displacement through
+\eqref{eq:ale}. Two treatments are implemented.
+
+\begin{definition}[Implicit and explicit geometry]\label{def:geometry}
+In the \emph{implicit} treatment (\code{GeometryInState = true}) every state evaluation moves the
+mesh with the displacement of the structure solve, $x=X+d_f(d_s(g))$, before the fluid step; the
+root of the native residual is then the Dirichlet--Neumann fixed point with the mesh at the
+converged displacement, as in the partitioned scheme of ExaDG. In the \emph{explicit} treatment
+(\code{GeometryInState = false}) the mesh is moved once per time step with the extrapolated
+displacement $\tilde d_{n+1}=\sum_i\beta_id_{n-i}$ and kept fixed during the iteration; geometry and
+convection are explicit and the added mass implicit, as in semi-implicit coupling schemes.
+\end{definition}
+
+The structure is loaded with the nominal traction $j\,g$ on $\G_0$ (dead load), where the area ratio
+\begin{equation}\label{eq:area_ratio}
+  j(d)=\frac{\mathrm{d}a}{\mathrm{d}A}=\det(\mathbf F)\,\big|\mathbf F^{-\top}N\big|,\qquad
+  \mathbf F=I+\nabla_Xd,
+\end{equation}
+converts the spatial traction $g$ into a traction per reference area. The displacement that defines
+$j$ must not depend on the history of the iteration.
+
+\begin{proposition}[Consistency of the area ratio]\label{prop:area_ratio}
+Let $j$ be evaluated with the displacement of the \emph{previous} state evaluation, $d^{(k-1)}$.
+Then the computed residual is $m_k(g)=\hat m(g;d^{(k-1)})$, a function of $g$ and of the previous
+iterate, and in the first evaluation of a time step (where $d^{(0)}=\tilde d_{n+1}$) it differs from
+all later evaluations at the same control by
+$\hat m(g;\tilde d_{n+1})-\hat m(g;d_s(g))=O\big(\|\nabla_X(d_s(g)-\tilde d_{n+1})\|\,\|g\|\big)$,
+i.e.\ by the effect of the predictor error of the displacement on the area ratio. With $j$ frozen
+at the geometry of the time step, $j=j(\tilde d_{n+1})$ (\code{AreaRatioFromState = false}),
+$m$ is a function of $g$ alone; the implicit choice $j=j(d_s(g))$ is the follower load of the
+Dirichlet--Neumann scheme with pulled-back traction.
+\end{proposition}
+
+At a converged iterate the lagged and the implicit area ratio coincide up to the last increment of
+the displacement, so that the lagged variant reproduces the Dirichlet--Neumann solution; but every
+method sees, in its first iteration of a time step, a jump of the map that its linear or secant
+model cannot represent (\cref{sec:fast_derivatives}).
+
+\paragraph{Shape sensitivity.} With the implicit geometry the residual depends on $g$ also through
+the mesh,
+\begin{equation}\label{eq:shape}
+  J=\frac{\partial m}{\partial g}=I-\Pis\Big(\frac{\partial T_f}{\partial w}\,V
+  +\frac{\partial T_f}{\partial x}\,\mathcal E\,V_d\Big),
+\end{equation}
+where $V=\partial v_s/\partial g$ and $V_d=\partial d_s/\partial g$ are the linearised structure
+responses, $\mathcal E$ the extension \eqref{eq:ale}, and $\partial T_f/\partial x$ the shape
+derivative of the fluid traction at fixed Dirichlet data, which contains the dependence of the
+discrete operators and of the grid velocity $w^{n+1}$ on the mesh. The tangent $S$ of
+\cref{sec:derivatives} omits the second term (frozen geometry); with the explicit geometry this
+term is absent and $S=J$.
+
+%=================================================================================================
+\section{Exact derivatives}\label{sec:derivatives}
+%=================================================================================================
+
+\subsection{Coupling operators and derivatives of the flux-control formulation}
 
 Denote by $E_f$ the evaluation of a structure finite element function at the fluid quadrature
 points of $\G$, by $P_f$ the evaluation of a fluid function at the structure quadrature points, and
@@ -345,30 +499,97 @@ tested with the shape functions by \code{FEPointEvaluation::test_and_sum}. A pit
 (one component) the per-cell offsets of vector-valued data are wrong. Before the fix the transpose
 tests failed by $46\%$ ($P_f$) and a factor 35 ($E_f$); afterwards they hold to $10^{-14}$.
 
-\subsection{Verification}
+\subsection{Native-traction formulation}\label{sec:native_adjoint}
 
-\Cref{tab:verification} collects the derivative tests: the adjoint (dot-product) test, the tangent
-against finite differences of the state map, and the Taylor test
-$|J(g+\varepsilon v)-J(g)-\varepsilon(r,v)_G| = O(\varepsilon^2)$.
+Write the native residual as $m(g) = g - \M^{-1}G(g)$, with
+$G = R_T\,A^{-1}\,D\,E_f\,c_vK^{-1}L_s$ for the linearised map, where $D$ maps the Dirichlet data
+at the fluid quadrature points of $\G$ to the right-hand side of the coupled fluid system,
+$R_T(u,p) = \int_{\G_0}\big(P_f(-I_\sigma(u,p))\big)\cdot\psi$, and $I_\sigma$ is the nodal stress
+interpolation. Then
+\begin{equation}
+  S = I - \M^{-1}G,\qquad S^*_{\M}w = w - \M^{-1}G^{\top}w,\qquad
+  G^{\top} = c_v L_s^{\top}K^{-1}E_f^{\top}D^{\top}A^{-1}R_T^{\top},
+\end{equation}
+using again the symmetry of $A$ and $K$. Two new transposes are needed.
 
-\begin{table}[ht]\centering
-\caption{Verification of derivatives (first time step, fluid refinement 0).}\label{tab:verification}
-\begin{tabular}{lccc}
-\toprule
-configuration & adjoint test & tangent vs.\ FD & Taylor ratio\\
-\midrule
-structure control, $L^2$ & $1.1\cdot10^{-10}$ & $9.3\cdot10^{-10}$--$2.6\cdot10^{-8}$ & $4.000$\\
-structure control, $H^{1/2}/H^{-1/2}$ & $9.6\cdot10^{-10}$ & $3\cdot10^{-8}$--$4\cdot10^{-9}$ & $4.000$\\
-fluid control, $L^2$ & $3.8\cdot10^{-10}$ & $1.0\cdot10^{-9}$--$1.7\cdot10^{-8}$ & $4.000$\\
-fluid control, degree reduction 1 & $2.9\cdot10^{-10}$ & $9.4\cdot10^{-10}$--$1.5\cdot10^{-8}$ & $4.000$\\
-\midrule
-\multicolumn{4}{l}{transposes: $P_f$ $3.9\cdot10^{-16}$, $E_f$ $1.4\cdot10^{-14}$, fluid load $1.2\cdot10^{-16}$}\\
-\bottomrule
-\end{tabular}
-\end{table}
+\begin{lemma}[Locality of the Dirichlet data]\label{lem:local}
+In the DG fluid with the mirror principle ($u^+=-u^-+2g$), the data $g$ enter the right-hand side
+through the inhomogeneous parts of the viscous (SIPG), velocity divergence and continuity-penalty
+boundary terms, linearly, and through the explicit convective term. Each contribution at a boundary
+quadrature point $x_q$ depends on $g(x_q)$ only. Hence
+$D^{\top}z\,(x_q) = \mathrm{JxW}_q\big(\sum_d e_d\,[\,V_q(e_d)\cdot z(x_q) + \mathcal G_q(e_d):\nabla
+z(x_q) + P_q(e_d)\,z_p(x_q)\,]\big)$, where $V_q,\mathcal G_q,P_q$ are the value, gradient and
+pressure coefficients of the boundary flux evaluated with the operator kernels for the unit data
+$e_d$.
+\end{lemma}
+
+\begin{lemma}[Explicit convective term]\label{lem:convective}
+With the convective formulation and the mirror principle, the normal transport velocity on a
+Dirichlet face is $a=(g-w)\cdot n$, independent of the interior value. The upwind flux minus the
+strong-form correction equals $(a-\zeta|a|)(g-u^-)$ and is affine in $u^-$. Consequently the
+extrapolated explicit term $\sum_i\beta_iC(u_i,g)$ equals $C(\tilde u,g)$ with
+$\tilde u=\sum_i\beta_iu_i$ (since $\sum_i\beta_i=1$), and its linearisation in $g$ is local. It is
+piecewise quadratic; the local derivative is evaluated by a central difference of the kernel flux,
+which is exact away from the kink $a=0$.
+\end{lemma}
+
+\begin{lemma}[Transpose of the nodal stress interpolation]\label{lem:stress}
+$I_\sigma$ writes $\rho_f(\nu F(u)n-pn)$ at the face nodes of the boundary cells, face by face,
+later faces overwriting nodes shared within a cell. Its transpose visits the faces in reverse order
+and uses each dual nodal value once (the last writer); the pointwise character is obtained by
+dividing the submitted gradient and value by the quadrature weight. ExaDG additionally writes the
+(irrelevant) interior nodal values of boundary cells; since the Gauss--Lobatto basis functions of
+these nodes vanish on the face, $P_f\circ I_\sigma$ and its transpose are unaffected.
+\end{lemma}
+
+The analytic tangent $S v = v - \M^{-1}R_TA^{-1}DE_f\,c_vK^{-1}L_s v$ costs one linearised
+structure solve and one linear fluid solve; it is consistent with the adjoint by construction.
+
+
+\begin{lemma}[Exact finite-difference tangent]\label{lem:fd}
+For frozen geometry the fluid step is a polynomial of degree at most two in the Dirichlet data: the
+data enter linearly, except in the explicit convective term on $\G$, where the upwind flux is
+bilinear in the data. Hence the central difference
+$T'(v)\,\delta v = \big(T(v+\varepsilon\delta v)-T(v-\varepsilon\delta v)\big)/(2\varepsilon)$ is
+exact (up to solver tolerances), and
+$S v = v - \Pis T'(v_s)\,c_vK^{-1}L_s v$ costs one linearised structure solve and two fluid steps.
+\end{lemma}
+
+\subsection{Tangent of the dual-splitting step}\label{sec:ds_tangent}
+
+The analytic tangent and the adjoint use the coupled saddle-point matrix \eqref{eq:saddle}. The
+dual-splitting step \eqref{eq:ds_conv}--\eqref{eq:ds_viscous} has no such matrix, but it has the
+same affine structure.
+
+\begin{lemma}[Affinity of the dual-splitting step]\label{lem:ds_affine}
+For frozen geometry, explicit convection and penalty parameters computed from the extrapolated
+velocity, the dual-splitting step is affine in the interface data $g$ up to the explicit convective
+boundary flux on $\G$: $g$ enters the pressure Neumann condition through
+$\gamma_0g^{n+1}/\Delta t$, the boundary terms of the viscous step and the boundary data of the
+continuity penalty, all linearly, while the upwind flux of the convective term on $\G$ contains
+$|(g-w)\cdot n|$ (\cref{lem:convective}).
+\end{lemma}
+
+Hence the fluid part of the native tangent can be computed by a forward difference of two fluid
+steps with the same history,
+\begin{equation}\label{eq:fd_tangent}
+  S\,v=v-\Pis\,\frac{T_f\big(v_s+\epsilon\,y\big)-T_f(v_s)}{\epsilon},\qquad
+  y=c_vK^{-1}L_sv,\qquad \epsilon=\epsilon_r\,\frac{\|v_s\|}{\|y\|},
+\end{equation}
+with the exact linearised structure solve and one dual-splitting step (\code{NativeTangentDifference
+= Forward}). The truncation error is $O(\epsilon)$ and stems only from the upwind flux; the error
+from the fluid solver tolerance $\tau_f$ is amplified by $1/\epsilon$. With
+$\epsilon_r=10^{-2}$ and $\tau_f=10^{-8}$ the tangent is accurate to about $10^{-4}$ relative,
+enough for the inexact Newton methods; a perturbation of the size of the data ($\epsilon_r=1$) is
+not exact because of the upwind flux. The fluid solves of the difference quotient may use a
+tolerance $f\tau_f$ with $f=100$ (\code{TangentDifferenceToleranceFactor}). The adjoint of the
+dual-splitting step would require the transposes of the acceleration term of the pressure Neumann
+condition, of the weak pressure gradient of the projection and of the Dirichlet terms of the
+viscous and penalty steps, applied in reverse order; it is not implemented, so that SD and L-BFGS
+require the coupled solver.
 
 %=================================================================================================
-\section{Optimisation and root-finding methods}\label{sec:methods}
+\section{Solution methods}\label{sec:methods}
 %=================================================================================================
 
 All methods (see \cite{NocedalWright2006} for the optimisation methods) are implemented once, for an abstract problem providing a state evaluation
@@ -437,9 +658,421 @@ update $x_{k+1}=\tilde x_k+W\alpha$, $\alpha=\arg\min\|r_k+V\alpha\|$, coincides
 \cref{alg:qn}.
 \end{remark}
 
+\paragraph{Initial inverse Jacobians.} \Cref{alg:qn} uses the initial inverse Jacobian $H_0=\omega I$. Two alternatives are implemented
+(parameter \code{QNInitialJacobian}); the update of the step is
+$\delta g=-H_0m-\sum_ic_i(\Delta g_i-H_0\Delta m_i)$ with the least-squares coefficients $c$.
+\begin{itemize}
+\item \emph{Multi-vector update} (IQN-IMVJ \cite{Bogaers2014}): after each time step,
+\begin{equation}\label{eq:imvj}
+  H\leftarrow H+(\Delta G-H\Delta M)\big(\Delta M^\top\M\Delta M\big)^{-1}(\M\Delta M)^\top,
+\end{equation}
+with the (filtered) secant pairs of the step, so that $H\Delta M=\Delta G$; $H$ is stored as a dense
+matrix in the interface degrees of freedom ($130$ here) and reset to $\omega I$ when the residual
+grows by more than \code{QNRestartFactor}.
+\item \emph{Frozen Jacobian}: $H_0=J^{-1}$ with the LU factorisation of the assembled interface
+Jacobian of \cref{sec:methods}, refreshed every ten steps.
+\end{itemize}
+
+\subsection{Recycled inverses and Krylov-subspace steps}\label{sec:fast_ingredients}
+
+\paragraph{Recycled inverses from exact derivative pairs.} Every application of $S$ yields an
+exact pair $(v,\,y=Sv)$. With the pairs of the current solve and of the last $q$ time steps
+(newest first), the images are orthonormalised by modified Gram--Schmidt in the $A$ inner product
+(dropping nearly dependent ones as in \cref{alg:qn}), $Y=QR$, and
+\begin{equation}\label{eq:recycled}
+  H = I + (V-Y)R^{-1}Q^{\top}A, \qquad H y_i = v_i,
+\end{equation}
+is the identity on the $A$-orthogonal complement of $\operatorname{span}Y$. $H$ is the right
+preconditioner of GMRES in IN. It is the multi-secant construction of IQN-IMVJ \cite{Bogaers2014}
+with \emph{exact tangent pairs} instead of secant pairs, so that it does not see the noise floor of
+the state map (\cref{sec:inexact}). In the same way the adjoint pairs $(w,\,S^*w)$ of the gradient
+evaluations define $H_A\approx S^{-*}$ (orthonormalisation in the $G$ inner product), and
+$P=H H_A\approx(S^*S)^{-1}$ preconditions the gradient methods. The symmetric choice $HH^*$ does
+not work: $H^*$ is no approximation of $S^{-*}$ outside $\operatorname{span}Y$, and GN needed about
+$80$ CG iterations per Gauss--Newton iteration and stagnated. Storage: $q=16$ time steps
+($40$ for the gradient methods), at most $240$ pairs of interface vectors.
+
+\paragraph{GN, LM and TR in the Krylov subspace.} For a square, invertible $S$ the Gauss--Newton step
+solves $Sd=-m$, so GN can use the GMRES solve of IN and needs no adjoint. LM and TR solve their
+subproblems in the GMRES subspace (hybrid Krylov methods \cite{BrownSaad1990}): with the search
+directions $Z$, the Arnoldi relation $SZ=V\bar H$ and $-m=\beta v_1$,
+\begin{equation}\label{eq:subspace}
+  \tfrac12\|m+SZy\|_A^2=\tfrac12\|\bar Hy-\beta e_1\|^2,
+\end{equation}
+and the subproblems are of size $k\times k$ ($k=1$--$3$ here):
+$y_{\mathrm{LM}}=(\bar H^{\top}\bar H+\lambda G_Z)^{-1}\beta\bar H^{\top}e_1$ with
+$G_Z=Z^{\top}GZ$, and for TR the same with $\lambda\ge0$ such that $\|Zy\|_G=\Delta$ (bisection) if
+the Gauss--Newton step lies outside the trust region. Gain ratio and update of $\lambda$ or $\Delta$
+are those of \cref{sec:methods} with the predicted reduction of \eqref{eq:subspace}; a rejected
+trial costs a state but no tangent solve.
+
+\paragraph{Preconditioned gradient methods.} SD uses $d=-HH_Ar$ and the step length of the exact
+quadratic model along $d$, $\alpha=-(r,d)_G/\|Sd\|_A^2$ (one tangent solve, which also adds a pair
+to $H$ and predicts the trial state); L-BFGS uses $HH_A$ as initial inverse Hessian and the same
+step length. Since $HH_A$ is not symmetric, $-HH_Ar$ need not be a descent direction when the
+recycled pairs are outdated (large changes of $\Delta t$): if the angle condition
+$(r,d)_G\le-10^{-4}\|r\|_G\|d\|_G$ fails, the pairs of previous time steps are discarded and $d$ is
+recomputed, finally $d=-r$. Without this safeguard $7$ of $66$ steps of L-BFGS ended with a failed
+line search in the start-up phase. For all methods, a failed line search is repeated once with
+accurate derivatives and without recycled pairs, and no gradient is computed at the converged
+point.
+
+\paragraph{Orthogonalisation in the interface metric.} The recycled inverses \eqref{eq:recycled} and
+the least-squares problem of \cref{alg:qn} orthogonalise $k$ vectors in the inner product
+$(a,b)_{\M}=a^{\top}\M b$, whose evaluation applies the boundary mass matrix. Modified Gram--Schmidt
+with $(Q_i,q)_{\M}$ evaluated directly costs $k^2/2$ applications of $\M$ ($k\le240$ for $H$, up to
+$130$ secant columns on the limit cycle). Storing the images $\M Q_i$ and updating $\M q$ by
+linearity during the orthogonalisation,
+\begin{equation}\label{eq:metric_images}
+  r_i=(\M Q_i)\cdot q,\qquad q\leftarrow q-r_iQ_i,\qquad \M q\leftarrow\M q-r_i\,\M Q_i,
+\end{equation}
+requires one application of $\M$ per column, and the application of $H$ becomes
+$Hx=x+\sum_jW_j\,(\M Q_j\cdot x)$.
+
+\paragraph{Forcing terms.} The forcing term of the Krylov solves combines the Eisenstat--Walker type
+choice with a target that lets the linear model reach the interface tolerance $\tau$ but no further,
+\begin{align}
+  \eta_k&=\min\Big\{\eta_{\max},\ \Big(\frac{\|r_k\|}{\|r_0\|}\Big)^{1/2}\Big\}
+  &&\text{(gradient methods)},\nonumber\\
+  \eta_k&=\min\Big\{\eta_{\mathrm t},\ \max\Big\{10^{-12},\ \frac{\theta\,\tau}{\|m_k\|_A}\Big\}\Big\}
+  &&\text{(interface equation)},\label{eq:forcing}
+\end{align}
+with $\theta=1$ and $\eta_{\mathrm t}=\eta_{\max}=10^{-2}$, or $\eta_{\mathrm t}=0.5$
+(\code{ForcingTermTargetMax}) to relax the last iteration close to the tolerance. The linear fluid
+solves inside $S$ and $S^*$ use the relative tolerance
+\begin{equation}\label{eq:lin_tol}
+  \varepsilon_k=\min\Big\{10^{-2},\ \max\Big\{\varepsilon_{\min},\ \kappa\,\frac{\tau}{\|m_k\|_A}\Big\}\Big\},
+  \qquad \kappa=1,\ \varepsilon_{\min}=10^{-5}.
+\end{equation}
+
+\paragraph{Stopping criteria.} All methods stop on the interface residual, i.e.\ on the cost
+$J=\frac12\|m\|_{\M}^2$, with
+\begin{equation}\label{eq:tolerance}
+  \|m_k\|_{\M}\le\tau,\qquad
+  \tau=\max\big\{\tau_{\mathrm{abs}},\ \tau_{\mathrm{rel}}\|g_k\|_{\M},\ c\,\|m_0\|_{\M}\big\},
+\end{equation}
+where $\tau_{\mathrm{rel}}$ relates the tolerance to the size of the traction and the optional
+reduction factor $c$ (\code{MismatchReduction}) relates it to the error of the predictor, which
+estimates the local time error. A stagnation test stops the iteration if $\|m\|_{\M}$ has not
+decreased for $N_s=10$ iterations; the gradient criterion of the gradient methods is not used.
+Since \eqref{eq:tolerance} is an absolute statement on the coupling error, $\tau$ must lie above the
+noise floor of the state map (\cref{rem:noise}) and should lie below the time discretisation error
+(\cref{sec:fast_tolerances,sec:fast_production}).
+
+
+\paragraph{Target forcing term.} With $H$, one GMRES iteration reduces the linear residual by about
+$10^{-5}$. With $\eta=10^{-2}$ GMRES stops there, and the Newton step gives
+$\|m_1\|/\|m_0\|\approx1.2\cdot10^{-5}$ (median); tangent solves accurate to $10^{-10}$ instead of
+$10^{-6}$ give the same ratio ($1.1\cdot10^{-5}$), so the GMRES residual, not the accuracy of $S$,
+limits the step. Whenever this lands just above the tolerance $\tau$, a second Newton iteration
+costs a state and three to four tangent solves, whereas one more GMRES iteration costs one tangent
+solve. The forcing term $\eta_k=\min\{\eta_{\max},\theta\tau/\|m_k\|\}$, $\theta=1$, makes the linear
+model reach the tolerance: $1.01$ instead of $1.5$ Newton iterations per step.
+
+\paragraph{Accuracy of the derivatives.} The linear fluid solves inside $S$ and $S^*$ use the
+relative tolerance $\varepsilon_k=\min\{10^{-2},\max\{10^{-5},\kappa\tau/\|m_k\|\}\}$, $\kappa=1$:
+the step needs $S$ only to the accuracy that brings the residual below $\tau$. A fixed
+$\varepsilon=10^{-4}$ is too loose ($1.67$ Newton iterations per step); $\varepsilon=10^{-5}$ needs
+$23$ fluid iterations per solve at constant $\Delta t$ instead of $27$ for $10^{-6}$; the adaptive
+choice pays off in the start-up phase (IN: $294\to251$ fluid iterations per step).
+
+
 %=================================================================================================
-\section{Behaviour of the optimisation methods}\label{sec:results_methods}
+\section{Predictions, warm starts and recycled solves}\label{sec:acceleration}
 %=================================================================================================
+
+\subsection{Predictor of the control}\label{sec:control_predictor}
+
+The iteration of each time step starts from the
+extrapolation $g^{(0)}_{n+1}=2g_n-g_{n-1}$, whose coefficients assume a constant time step. With
+the adaptive time step of the start-up phase (changes of up to $20\%$ per step) this predictor is
+only first-order accurate. \code{ControlExtrapolationOrder}~$=p$ replaces it by the Lagrange
+extrapolation through the converged controls of the last $p+1$ time steps at their actual times.
+On the limit cycle of \cref{sec:fast_periodic}, the relative error of the predicted control force
+is $1.6\cdot10^{-3}$ for the linear, $1.7\cdot10^{-4}$ for the quadratic and $1.3\cdot10^{-4}$ for
+the cubic extrapolation; we use $p=2$. Since the mismatch of the initial guess is proportional to
+the error of the predictor, and the remainder after one Newton step is proportional to a power of
+it, the better predictor saves iterations of all methods.
+
+\subsection{Prediction of the fluid state}\label{sec:state_prediction}
+
+\paragraph{State prediction from the tangent solves.} For frozen geometry the fluid step is affine
+in the interface data (\cref{lem:affine}). The tangent solves of the GMRES directions $z_j$ provide
+the fluid responses $\delta u_j$, and for the step $d=\sum_jc_jz_j$
+\begin{equation}\label{eq:prediction}
+  u(g+\alpha d)\approx u(g)+\alpha\sum_jc_j\,\delta u_j
+\end{equation}
+up to the nonlinearity of the structure and of the geometry. The state solve of the trial point
+starts from \eqref{eq:prediction}. To keep the state map a function of $g$ only
+(\cref{sec:inexact}), it stops at the absolute accuracy of a solve from the extrapolation,
+$\tau_f\|r_0^{\mathrm{extr}}\|$ with the initial residual of the first (extrapolated) state of the
+time step, and not at a reduction of its own, much smaller, initial residual. A predicted state
+costs $15$ instead of $32$ fluid iterations at constant $\Delta t$. The gradient methods predict
+their trial state from the tangent solve of their step length. The same stopping rule makes warm
+starts of the secant method consistent (\code{WarmStartAbsoluteTolerance}); it is used for the
+second QN row of \cref{tab:fast_methods}.
+
+
+\paragraph{Affine state prediction.} Within a time step, the fluid step is affine in its Dirichlet
+data $w$, the structure velocity on the interface (\cref{lem:affine}), up to the bilinear
+convective boundary term (\cref{lem:fd}) and the motion of the mesh inside the state. Every state
+solve of the time step yields a pair $(w_i,u_i)$, every tangent solve a pair $(\delta w_j,\delta
+u_j)$ with $u(w+\delta w_j)=u(w)+\delta u_j$. Since the structure is solved first, $w$ is known
+before the fluid solve, and the fluid state is predicted by least squares,
+\begin{equation}\label{eq:affine_prediction}
+  u(w)\approx u_k+\sum_i a_i(u_i-u_k)+\sum_j b_j\,\delta u_j,\qquad
+  (a,b)=\operatorname*{arg\,min}\Big\|w-w_k-\sum_ia_i(w_i-w_k)-\sum_jb_j\,\delta w_j\Big\|,
+\end{equation}
+with the latest state $k$ as base and modified Gram--Schmidt on the interface vectors
+(\code{AffineStatePrediction}). Unlike \eqref{eq:prediction}, the prediction is not a linearisation
+in the control: the structure nonlinearity does not enter, because the prediction uses the actual
+data of the fluid. It applies to every method, also to the secant method, whose iterates within a
+time step span part of the new step: the part of $w-w_k$ outside the span of the pairs is $50$--$60\%$
+for the secant method and $1$--$5\%$ for IN. The state solve stops at the absolute accuracy of the
+solve from the extrapolation, as in \cref{sec:fast_ingredients}.
+
+\subsection{Inexact evaluations and the noise floor}\label{sec:noise}
+
+The single-field solvers are iterative and stop at finite tolerances, so that the computed residual is a perturbation of $m$. Whether this perturbation is harmless depends on its dependence on the iteration.
+
+\begin{remark}[Consistent versus history-dependent inexactness]\label{rem:noise}
+Let $\tilde m(g)=m(g)+e$ be the computed residual, where $e$ collects the errors of the iterative
+single-field solvers. If every evaluation starts from the same initial guess (the extrapolation in
+time), $e=e(g)$ is a deterministic, piecewise smooth function of $g$, and the secant method
+converges for the perturbed map $\tilde m$ to arbitrary accuracy; its root differs from the exact
+one by $O(\|e\|)$, which is invisible in $\|\tilde m\|$. If the initial guess is the previous
+iterate, $e$ depends on the iteration history and behaves like noise of size $\varepsilon$
+between evaluations. The differences $\Delta m$ of the secant pairs then carry a relative error
+$\varepsilon/\|\Delta m\|$, and once $\|m\|$ approaches $\varepsilon$ the least-squares model of
+\cref{alg:qn} is dominated by noise and the iteration stagnates. A tolerance below the noise floor
+is meaningless; it is not more accurate, only more expensive.
+\end{remark}
+
+\subsection{Initial guesses with absolute targets}\label{sec:absolute_target}
+
+Every state, tangent or adjoint solve inside an iteration can start from a better initial guess
+than the extrapolation in time: the previous evaluation (warm start), a prediction from the pairs of
+the time step, or a projection onto previous solutions. By \cref{rem:noise}, the computed state
+map then depends on the initial guess unless the solve is stopped at an accuracy that does not.
+For every linear solver $\mathcal L x=b$ of a step we therefore record the norm of the initial
+residual of its first solve in the time step, which starts from the extrapolation,
+$\rho^{\mathrm{cold}}=\|b-\mathcal Lx^{\mathrm{extr}}\|$, and stop every later solve at the
+\emph{absolute} target
+\begin{equation}\label{eq:absolute_target}
+  \|b-\mathcal Lx\|\le\eta\,\rho^{\mathrm{cold}}
+\end{equation}
+instead of the relative criterion $\|b-\mathcal Lx\|\le\eta\|b-\mathcal Lx_0\|$, where $\eta$ is the
+nominal relative tolerance (multiplied by a factor $f$ for the fluid steps of a difference
+quotient). The accuracy is that of the cold solve, independent of the initial guess, and the
+saving is the number of iterations needed to reduce the residual of the initial guess to the
+target. For the coupled solver the target applies to the FGMRES solve of \eqref{eq:saddle}; for the
+dual splitting to the pressure, viscous and penalty solvers separately
+(\code{WarmStart}, \code{WarmStartAbsoluteTolerance}).
+
+\subsection{Recycled linear fluid solves}\label{sec:recycling}
+
+Within a time step, all tangent solves of the coupled solver use the same matrix $A$ of
+\eqref{eq:saddle} (explicit geometry), and $A$ changes only slowly from step to step. Let
+$X=[x_1,\dots,x_r]$ be the last $r$ solutions of tangent solves. When $A$ has changed, the images
+are recomputed with the current matrix and orthonormalised,
+\begin{equation}\label{eq:recycle_qr}
+  AX=QR,\qquad Q^{\top}Q=I,\qquad W=XR^{-1},
+\end{equation}
+which costs $r$ applications of $A$ per time step. For a new right-hand side $b$ the projection
+\begin{equation}\label{eq:fischer}
+  x_0=W\,Q^{\top}b=\operatorname*{arg\,min}_{x\in\operatorname{span}X}\|b-Ax\|_2
+\end{equation}
+(Fischer's projection for successive right-hand sides) is the initial guess, and FGMRES continues
+to the absolute target $\eta\|b\|$. A solved system adds the pair $(x,b)$ with $Ax\approx b$ to
+\eqref{eq:recycle_qr} without a new application of $A$ (\code{FluidKrylovRecycling}; the adjoint
+solves use a second pool). A cheaper variant uses a least-squares fit in the interface data
+instead of the residual, $x_0=\sum_ja_j\,\delta u_j$ with
+$a=\arg\min\|w-\sum_ja_jw_j\|$ over previous tangent pairs $(w_j,\delta u_j)$, which ignores the
+change of $A$ (\code{TangentInitialGuess}).
+
+\subsection{Subproblem solvers}\label{sec:subsolvers}
+
+\paragraph{Coarse-grid solver of the Schur complement.} The multigrid V-cycle in
+\eqref{eq:block_prec} ends with a coarse-grid solve. The default of ExaDG is a Chebyshev iteration
+whose degree is chosen from the estimated eigenvalues of the Jacobi-preconditioned coarse operator,
+\begin{equation}\label{eq:chebyshev_degree}
+  k_{\mathrm c}=\bigg\lfloor\frac{\ln\big(1/\epsilon+\sqrt{1/\epsilon^2-1}\big)}{\ln(1/\sigma)}\bigg\rfloor,
+  \qquad \sigma=\frac{1-\sqrt{1/\kappa}}{1+\sqrt{1/\kappa}},\qquad
+  k_{\mathrm c}\approx\tfrac12\sqrt\kappa\,\ln(2/\epsilon),
+\end{equation}
+with the condition number $\kappa$ of the coarse operator and the relative accuracy $\epsilon$. On
+the coarse mesh of the benchmark, whose cells around the flag are strongly anisotropic, $\kappa$ is
+large and $k_{\mathrm c}$ dominates the cost of every application of the preconditioner. Conjugate
+gradients preconditioned by algebraic multigrid on the coarse level remove this cost
+(\code{CoupledSchurCoarseSolver}, \code{CoupledSchurCoarsePreconditioner}).
+
+\paragraph{Direct solvers for the small subproblems.} The structure (some hundred unknowns) and the
+linear mesh motion (some thousand) are small. For both, the system matrix is assembled from the
+matrix-free operator and factorised by a sparse direct solver (Trilinos Amesos, KLU), which is used
+as preconditioner of the Krylov solver: for the mesh motion \eqref{eq:ale} the matrix is constant and
+factorised once, so that every solve is one forward and backward substitution; for the structure
+the tangent stiffness of the last factorisation, refactorised every $N$ time steps and Newton
+iterations, preconditions FGMRES almost exactly as long as the deformation changes little
+(\code{StructurePreconditioner = Direct}, \code{StructurePreconditionerUpdate},
+\code{ALEPreconditioner = Direct}).
+
+%=================================================================================================
+\section{Analysis of the cost}\label{sec:analysis}
+%=================================================================================================
+
+\subsection{Cost model and fresh directions}\label{sec:cost_model}
+
+Let $C_s$ be the cost of a state evaluation (structure, mesh motion, fluid), $C_t$ that of a
+tangent and $C_a$ that of an adjoint solve. The cost of a time step is
+\begin{equation}\label{eq:cost}
+  C=n_s\,C_s+n_t\,C_t+n_a\,C_a ,
+\end{equation}
+and the ratio between the predictor error and the tolerance,
+\begin{equation}\label{eq:rho}
+  \varrho=\frac{\|m(g^{(0)})\|_{\M}}{\tau},
+\end{equation}
+determines how much the iteration has to reduce the residual. A method whose model reduces the
+residual by the factor $\kappa$ per new piece of information (a state or a tangent solve) needs
+\begin{equation}\label{eq:directions}
+  n_{\mathrm{dir}}\approx\frac{\ln\varrho}{\ln(1/\kappa)}
+\end{equation}
+fresh directions per time step. The secant method obtains one direction per state evaluation: for
+a linear residual and without reuse of previous time steps it is equivalent to GMRES
+\cite{WalkerNi2011}, with the state evaluation as matrix--vector product, so that
+$n_s\approx1+n_{\mathrm{dir}}$ and $n_t=0$. Interface Newton spends one state per Newton iteration
+and one tangent per GMRES iteration, $n_s\approx1+n_{\mathrm N}$ and $n_t\approx n_{\mathrm{dir}}$.
+Both use the same Krylov information, so that IN is cheaper than the secant method only if
+$C_t<C_s$ by a margin, or if its exact derivatives reduce the number of directions; with
+$C_t\approx C_s$ the two costs are close. Recycling the information of previous time steps
+(recycled inverses, secant pairs of previous steps) increases $\kappa$ of the first directions,
+the predictor of the control reduces $\varrho$, and the tolerance enters through
+$\ln\varrho$: one decade of $\tau$ saves about $1/\log_{10}(1/\kappa)$ directions per step.
+
+\subsection{Newton's method with an inexact Jacobian}\label{sec:newton_error}
+
+Let the Newton step $d$ satisfy $\|m+Sd\|_A\le\eta\|m\|_A$ with a tangent $S$ that differs from the
+true Jacobian $J$, and let $\delta=\|(J-S)S^{-1}\|$. Then
+\begin{equation}\label{eq:newton_error}
+  \|m(g+d)\|_A\le(\eta+\delta)\,\|m(g)\|_A+O(\|d\|^2),
+\end{equation}
+and a single Newton iteration reaches the tolerance only if $(\eta+\delta)\,\varrho\le1$. The target
+forcing term \eqref{eq:forcing} chooses $\eta=\theta/\varrho$. With the implicit geometry,
+$J-S$ is the shape term of \eqref{eq:shape}; we measure $\delta\approx(1$--$2)\cdot10^{-2}$ on the
+limit cycle of FSI2, where $\varrho=300$--$1000$, so that a second Newton iteration is unavoidable.
+With the explicit geometry $\delta$ vanishes up to the nonlinearity of the structure and of the
+convective boundary flux, and one iteration suffices in most steps.
+
+\subsection{Tangent models from previous time steps}\label{sec:structured_model}
+
+The native tangent has the block structure
+\begin{equation}\label{eq:block_structure}
+  S=I-FV,\qquad F=\Pis\frac{\partial T_f}{\partial w},\qquad V=\frac{\partial v_s}{\partial g},
+\end{equation}
+with the fluid map $F$ (interface velocity to traction), which for the explicit geometry is the
+same linear map for all evaluations of a time step, and the structure map $V$, which costs one
+linearised structure solve. A model $\tilde S=I-\tilde FV$ with the exact $V$ and a least-squares
+model $\tilde F$ from pairs $(\Delta w_j,\Delta T_j)$ of previous time steps (differences of states,
+which are exact pairs of $F$ at no cost) gives the Newton step $\tilde d$ of
+$\tilde S\tilde d=-m$, with the contraction
+\begin{equation}\label{eq:model_contraction}
+  \kappa_{\mathrm{model}}=\frac{\|m+S\tilde d\|_A}{\|m\|_A}
+  \le\big\|(F-\tilde F)V\tilde S^{-1}\big\| .
+\end{equation}
+If $F$ changes by $\delta_F$ per time step (geometry, $\Delta t$, penalty parameters), a model of
+pairs from the last $q$ steps has the error $q\,\delta_F$ on its span and is uninformative on the
+complement; the best $q$ balances the two. The diagnostics of \cref{sec:fast_derivatives}
+measure $\kappa_{\mathrm{model}}=2\cdot10^{-2}$ at best ($q=16$), consistent with
+$\delta_F\approx10^{-3}$, against $4.5\cdot10^{-2}$ for the first step of the secant method; a model
+of previous time steps cannot replace the fresh directions of the current step.
+
+\subsection{Solving fluid and structure simultaneously}\label{sec:two_cyclic}
+
+In the native formulation the structure precedes the fluid within an evaluation. Two controls, the
+traction $g$ and the interface velocity $w$, allow both subproblems to be solved at the same time,
+\begin{equation}\label{eq:two_control}
+  R(g,w)=\begin{bmatrix}g-\Pis T_f(w)\\ w-v_s(g)\end{bmatrix}=0,\qquad
+  \mathcal J=\begin{bmatrix}I&-F\\-V&I\end{bmatrix},
+\end{equation}
+with the same root as the native formulation and the Schur complement $S=I-FV$ of $\mathcal J$.
+
+\begin{proposition}[2-cyclic Jacobian]\label{prop:two_cyclic}
+$(I-\mathcal J)^2=\operatorname{diag}(FV,VF)$, hence for every polynomial $p$ of degree $k$ with
+$p(0)=1$ the polynomial $q(\lambda)=p\big(1-(1-\lambda)^2\big)$ of degree $2k$ satisfies $q(0)=1$ and
+\begin{equation}\label{eq:two_cyclic}
+  q(\mathcal J)=\operatorname{diag}\big(p(I-FV),\,p(I-VF)\big)=\operatorname{diag}\big(p(S),\,p(\bar S)\big),
+  \qquad \bar S=I-VF .
+\end{equation}
+The eigenvalues of $\mathcal J$ are $1\pm\sqrt\mu$ for the eigenvalues $\mu$ of $FV$, symmetric about
+$1$.
+\end{proposition}
+\begin{proof}
+$I-\mathcal J=\begin{psmallmatrix}0&F\\V&0\end{psmallmatrix}$, whose square is
+$\operatorname{diag}(FV,VF)$; the rest follows by substitution. If $FVx=\mu x$, then
+$(I-\mathcal J)\binom{\sqrt\mu\,x}{Vx}=\sqrt\mu\binom{\sqrt\mu\,x}{Vx}$, and similarly for $-\sqrt\mu$.
+\end{proof}
+
+A Krylov method on $\mathcal J$ therefore reaches with $2k$ iterations what the same method reaches
+with $k$ iterations on $S$, and because the spectrum is symmetric about $1$, the odd degrees add
+little; on a model with the spectrum of the added-mass operator (a few eigenvalues $\mu>1$, the rest
+decaying) GMRES needs $1.7$ to $2.0$ times the iterations on $\mathcal J$. With fluid and structure
+solved in parallel, an iteration on $\mathcal J$ costs $\max(C_f,C_s)$, an iteration on $S$ costs
+$C_f+C_s$, and
+\begin{equation}\label{eq:parallel_cost}
+  2k\,\max(C_f,C_s)\ \ge\ k\,(C_f+C_s),
+\end{equation}
+with equality only for $C_f=C_s$; the total work doubles. The same holds for the secant method,
+which is GMRES-like. The velocity-mismatch formulation, whose subproblems are independent given $g$
+alone, avoids the 2-cyclic structure, but its interface operator, a sum of two
+Neumann-to-Dirichlet maps, is poorly conditioned ($46$--$113$ tangent solves per step,
+\cref{tab:methods}) and it changes the discretisation of the no-slip condition
+(\cref{sec:diagnosis}).
+
+%=================================================================================================
+\section{Numerical results}\label{sec:results}
+%=================================================================================================
+
+\subsection{Setup and verification}\label{sec:res_setup}
+
+The test case is the FSI2 configuration of \cref{sec:model}. \Cref{tab:verification} collects the derivative tests of the flux-control formulation: the adjoint (dot-product) test, the tangent against finite differences of the state map, and the Taylor test $|J(g+\varepsilon v)-J(g)-\varepsilon(r,v)_G| = O(\varepsilon^2)$; \cref{tab:native_verification} those of the native formulation.
+
+
+\begin{table}[ht]\centering
+\caption{Verification of derivatives (first time step, fluid refinement 0).}\label{tab:verification}
+\begin{tabular}{lccc}
+\toprule
+configuration & adjoint test & tangent vs.\ FD & Taylor ratio\\
+\midrule
+structure control, $L^2$ & $1.1\cdot10^{-10}$ & $9.3\cdot10^{-10}$--$2.6\cdot10^{-8}$ & $4.000$\\
+structure control, $H^{1/2}/H^{-1/2}$ & $9.6\cdot10^{-10}$ & $3\cdot10^{-8}$--$4\cdot10^{-9}$ & $4.000$\\
+fluid control, $L^2$ & $3.8\cdot10^{-10}$ & $1.0\cdot10^{-9}$--$1.7\cdot10^{-8}$ & $4.000$\\
+fluid control, degree reduction 1 & $2.9\cdot10^{-10}$ & $9.4\cdot10^{-10}$--$1.5\cdot10^{-8}$ & $4.000$\\
+\midrule
+\multicolumn{4}{l}{transposes: $P_f$ $3.9\cdot10^{-16}$, $E_f$ $1.4\cdot10^{-14}$, fluid load $1.2\cdot10^{-16}$}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\begin{table}[ht]\centering
+\caption{Verification of the native tangent and adjoint (first time step, refinement 0).}
+\label{tab:native_verification}
+\begin{tabular}{lc}
+\toprule
+test & relative difference\\
+\midrule
+$D$ against the fluid operator used as a black box & $1.0\cdot10^{-8}$\\
+$(Dc,z) = (c,D^{\top}z)$ & $1.9\cdot10^{-15}$\\
+$(I_\sigma x,w) = (x,I_\sigma^{\top}w)$, $w$ in the range of $P_f^{\top}$ & $6.3\cdot10^{-15}$\\
+$(Sv,w)_{\M} = (v,S^*w)_{\M}$ & $1.1\cdot10^{-9}$\\
+analytic tangent against finite differences of the state & $1.2$--$1.4\cdot10^{-7}$\\
+Taylor ratio & $4.000$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{The flux-control formulation}\label{sec:res_fluxcontrol}
+
+\subsubsection{Behaviour of the optimisation methods}\label{sec:results_methods}
 
 \Cref{tab:methods} compares the methods for the velocity-mismatch formulation with structure
 control and $L^2$ metrics (four time steps, tolerance $\|m\|\le10^{-9}$). The cost is dominated by
@@ -506,11 +1139,9 @@ frozen, every 10 steps & $4.5+8$ & 1.8 & 25.0 s\\
 \end{tabular}
 \end{table}
 
-%=================================================================================================
-\section{Choice of the control space}\label{sec:spaces}
-%=================================================================================================
+\subsubsection{Choice of the control space}\label{sec:spaces}
 
-\subsection{Structure trace: an unstable coupling}
+\paragraph{Structure trace: an unstable coupling}
 
 With the control in the trace space of the structure ($Q_2$, 16 cells along the flag) and the fluid
 at refinement 0 (five interface faces), the coupled scheme grows exponentially
@@ -554,7 +1185,7 @@ on the defect of the space) while making each step 2--4 times more expensive.
 (IQN-ILS, tolerance $10^{-10}$, same mesh).}\label{fig:stability}
 \end{figure}
 
-\subsection{Fluid trace and a common interface space}
+\paragraph{Fluid trace and a common interface space}
 
 With the control in the trace of the DG fluid velocity space (40 against 130 interface degrees of
 freedom at $r=0$) the scheme is stable, the control coincides with the fluid traction within
@@ -578,9 +1209,7 @@ degree 0 & 10 & 0.867\\
 \end{tabular}
 \end{table}
 
-%=================================================================================================
-\section{Diagnosis of the remaining discrepancy}\label{sec:diagnosis}
-%=================================================================================================
+\subsubsection{Diagnosis of the remaining discrepancy}\label{sec:diagnosis}
 
 With fluid control the velocity-mismatch formulation is stable but differs from the reference by
 $22\%$ at refinement 0 in the tip displacement. We isolate the cause.
@@ -678,40 +1307,7 @@ by less than $0.5\%$: $\nu\beta\ll1/\Delta t$, and the face means of the no-slip
 imposed by the multiplier. (iii) For the full fluid trace, any penalty tested on the same trace
 vanishes identically at convergence by the orthogonality of $\Pi$.
 
-%=================================================================================================
-\section{A native-traction formulation}\label{sec:native}
-%=================================================================================================
-
-Since the two discretisations of the interface conditions differ, no optimisation method can drive
-the velocity-mismatch formulation to the native solution. We therefore change the state and the
-residual while keeping the traction as unknown:
-\begin{enumerate}
-  \item Structure with the load $j\,g$, giving $d_s$ and $v_s$; the fluid mesh is moved with $d_s$
-  (geometry inside the state evaluation).
-  \item Fluid with the native \code{DirichletCached} condition $u=v_s$.
-  \item Residual $m(g) = g - \Pis T_f(u_f,p_f)$, with the native traction $T_f$
-  (\code{interpolate_stress_bc}) projected onto the structure trace space.
-\end{enumerate}
-
-\begin{proposition}
-$m(g)=0$ if and only if $(g,v_s,u_f,p_f)$ is a fixed point of the native Dirichlet--Neumann
-scheme. Moreover, the structure load is unchanged by the projection:
-$\int_{\G_0}\Pis T_f\cdot\psi = \int_{\G_0} T_f\cdot\psi$ for all structure test functions $\psi$.
-\end{proposition}
-\begin{proof}
-At a root the structure is loaded by the native traction of a fluid solution with Dirichlet data
-$v_s$, which is the DN fixed point; the second statement is the definition of the $L^2$ projection
-(up to the area ratio, which is one at convergence of the geometry).
-\end{proof}
-
-\begin{lemma}[Exact finite-difference tangent]\label{lem:fd}
-For frozen geometry the fluid step is a polynomial of degree at most two in the Dirichlet data: the
-data enter linearly, except in the explicit convective term on $\G$, where the upwind flux is
-bilinear in the data. Hence the central difference
-$T'(v)\,\delta v = \big(T(v+\varepsilon\delta v)-T(v-\varepsilon\delta v)\big)/(2\varepsilon)$ is
-exact (up to solver tolerances), and
-$S v = v - \Pis T'(v_s)\,c_vK^{-1}L_s v$ costs one linearised structure solve and two fluid steps.
-\end{lemma}
+\subsection{The native-traction formulation}\label{sec:res_native}
 
 \paragraph{Results.} With interface Newton the solution coincides with the reference to all digits
 reported (ratio $1.0000$ at refinements 0 and 1), and Newton converges quadratically
@@ -742,70 +1338,8 @@ IN, frozen Jacobian, forward FD & 20.4 s & 4.8 + 34 fluid & 74.9 s & 4.8 + 41 fl
 \end{tabular}}
 \end{table}
 
-%=================================================================================================
-\section{Exact adjoint of the native formulation}\label{sec:native_adjoint}
-%=================================================================================================
 
-Write the native residual as $m(g) = g - \M^{-1}G(g)$, with
-$G = R_T\,A^{-1}\,D\,E_f\,c_vK^{-1}L_s$ for the linearised map, where $D$ maps the Dirichlet data
-at the fluid quadrature points of $\G$ to the right-hand side of the coupled fluid system,
-$R_T(u,p) = \int_{\G_0}\big(P_f(-I_\sigma(u,p))\big)\cdot\psi$, and $I_\sigma$ is the nodal stress
-interpolation. Then
-\begin{equation}
-  S = I - \M^{-1}G,\qquad S^*_{\M}w = w - \M^{-1}G^{\top}w,\qquad
-  G^{\top} = c_v L_s^{\top}K^{-1}E_f^{\top}D^{\top}A^{-1}R_T^{\top},
-\end{equation}
-using again the symmetry of $A$ and $K$. Two new transposes are needed.
 
-\begin{lemma}[Locality of the Dirichlet data]\label{lem:local}
-In the DG fluid with the mirror principle ($u^+=-u^-+2g$), the data $g$ enter the right-hand side
-through the inhomogeneous parts of the viscous (SIPG), velocity divergence and continuity-penalty
-boundary terms, linearly, and through the explicit convective term. Each contribution at a boundary
-quadrature point $x_q$ depends on $g(x_q)$ only. Hence
-$D^{\top}z\,(x_q) = \mathrm{JxW}_q\big(\sum_d e_d\,[\,V_q(e_d)\cdot z(x_q) + \mathcal G_q(e_d):\nabla
-z(x_q) + P_q(e_d)\,z_p(x_q)\,]\big)$, where $V_q,\mathcal G_q,P_q$ are the value, gradient and
-pressure coefficients of the boundary flux evaluated with the operator kernels for the unit data
-$e_d$.
-\end{lemma}
-
-\begin{lemma}[Explicit convective term]\label{lem:convective}
-With the convective formulation and the mirror principle, the normal transport velocity on a
-Dirichlet face is $a=(g-w)\cdot n$, independent of the interior value. The upwind flux minus the
-strong-form correction equals $(a-\zeta|a|)(g-u^-)$ and is affine in $u^-$. Consequently the
-extrapolated explicit term $\sum_i\beta_iC(u_i,g)$ equals $C(\tilde u,g)$ with
-$\tilde u=\sum_i\beta_iu_i$ (since $\sum_i\beta_i=1$), and its linearisation in $g$ is local. It is
-piecewise quadratic; the local derivative is evaluated by a central difference of the kernel flux,
-which is exact away from the kink $a=0$.
-\end{lemma}
-
-\begin{lemma}[Transpose of the nodal stress interpolation]\label{lem:stress}
-$I_\sigma$ writes $\rho_f(\nu F(u)n-pn)$ at the face nodes of the boundary cells, face by face,
-later faces overwriting nodes shared within a cell. Its transpose visits the faces in reverse order
-and uses each dual nodal value once (the last writer); the pointwise character is obtained by
-dividing the submitted gradient and value by the quadrature weight. ExaDG additionally writes the
-(irrelevant) interior nodal values of boundary cells; since the Gauss--Lobatto basis functions of
-these nodes vanish on the face, $P_f\circ I_\sigma$ and its transpose are unaffected.
-\end{lemma}
-
-The analytic tangent $S v = v - \M^{-1}R_TA^{-1}DE_f\,c_vK^{-1}L_s v$ costs one linearised
-structure solve and one linear fluid solve; it is consistent with the adjoint by construction.
-
-\begin{table}[ht]\centering
-\caption{Verification of the native tangent and adjoint (first time step, refinement 0).}
-\label{tab:native_verification}
-\begin{tabular}{lc}
-\toprule
-test & relative difference\\
-\midrule
-$D$ against the fluid operator used as a black box & $1.0\cdot10^{-8}$\\
-$(Dc,z) = (c,D^{\top}z)$ & $1.9\cdot10^{-15}$\\
-$(I_\sigma x,w) = (x,I_\sigma^{\top}w)$, $w$ in the range of $P_f^{\top}$ & $6.3\cdot10^{-15}$\\
-$(Sv,w)_{\M} = (v,S^*w)_{\M}$ & $1.1\cdot10^{-9}$\\
-analytic tangent against finite differences of the state & $1.2$--$1.4\cdot10^{-7}$\\
-Taylor ratio & $4.000$\\
-\bottomrule
-\end{tabular}
-\end{table}
 
 \paragraph{All methods on the native solution.} \Cref{tab:native_methods} repeats the comparison of
 \cref{sec:results_methods} for the native formulation. All converged methods reproduce the
@@ -840,9 +1374,7 @@ steepest descent & 200 (limit) & 201 & 200 & 200 & $11\%$ & & \\
 \end{tabular}}
 \end{table}
 
-%=================================================================================================
-\section{Reducing the cost of the secant solver}\label{sec:speedup}
-%=================================================================================================
+\subsection{Reducing the cost of the secant solver}\label{sec:speedup}
 
 In all configurations above more than $95\%$ of the run time is spent in the linear solves of the
 fluid step; the interface algebra, the structure and the ALE update are negligible. We therefore
@@ -852,7 +1384,7 @@ evaluations (\cref{sec:initial_jacobian}). All runs in this section use fluid re
 structure refinement 0, $t\in[0,0.02]$ (11 time steps) and 4 processes; wall times are only
 comparable within one group of simultaneous runs, so every table reports runs started together.
 
-\subsection{Inexact state evaluations and the noise floor of the state map}\label{sec:inexact}
+\subsubsection{Inexact state evaluations and the noise floor of the state map}\label{sec:inexact}
 
 \paragraph{Warm start.} The fluid step is solved by FGMRES with absolute tolerance $10^{-14}$ and
 relative tolerance $10^{-10}$, starting from the extrapolation in time. Within one time step,
@@ -881,20 +1413,9 @@ always starts from the extrapolation; only the fluid is warm-started.
 \end{enumerate}
 
 With both corrections the secant method still stagnates at $\|m\|\approx10^{-8}$ in some time
-steps. The reason is the following.
+steps, for the reason given in \cref{rem:noise}.
 
-\begin{remark}[Consistent versus history-dependent inexactness]\label{rem:noise}
-Let $\tilde m(g)=m(g)+e$ be the computed residual, where $e$ collects the errors of the iterative
-single-field solvers. If every evaluation starts from the same initial guess (the extrapolation in
-time), $e=e(g)$ is a deterministic, piecewise smooth function of $g$, and the secant method
-converges for the perturbed map $\tilde m$ to arbitrary accuracy; its root differs from the exact
-one by $O(\|e\|)$, which is invisible in $\|\tilde m\|$. If the initial guess is the previous
-iterate, $e$ depends on the iteration history and behaves like noise of size $\varepsilon$
-between evaluations. The differences $\Delta m$ of the secant pairs then carry a relative error
-$\varepsilon/\|\Delta m\|$, and once $\|m\|$ approaches $\varepsilon$ the least-squares model of
-\cref{alg:qn} is dominated by noise and the iteration stagnates. A tolerance below the noise floor
-is meaningless; it is not more accurate, only more expensive.
-\end{remark}
+
 
 For the coupled fluid solver with tolerances $10^{-14}/10^{-10}$ the noise floor is
 $\varepsilon\approx10^{-8}$ in $\|m\|$ (with $\|m_0\|$ between $1$ and $17$), that is round-off level
@@ -943,7 +1464,7 @@ the displacements during the start-up are of order $10^{-10}$ to $10^{-6}$. At e
 secant method on the native formulation with warm start and adaptive tolerance is $2.4$ times faster
 (\cref{tab:speedup}).
 
-\subsection{A cheaper fluid solver}\label{sec:splitting}
+\subsubsection{A cheaper fluid solver}\label{sec:splitting}
 
 The derivatives of \cref{sec:native_adjoint} require the coupled fluid solver, whose system matrix
 is the symmetric saddle-point matrix. \Cref{alg:qn} needs no derivatives, so on the native
@@ -1002,22 +1523,8 @@ secant, dual splitting, $10^{-5}$ & 2.1 s & 0.8 s & 8.6 & $\approx40$\\
 \end{tabular}
 \end{table}
 
-\subsection{Initial Jacobians}\label{sec:initial_jacobian}
+\subsubsection{Initial Jacobians}\label{sec:initial_jacobian}
 
-\Cref{alg:qn} uses the initial inverse Jacobian $H_0=\omega I$. Two alternatives are implemented
-(parameter \code{QNInitialJacobian}); the update of the step is
-$\delta g=-H_0m-\sum_ic_i(\Delta g_i-H_0\Delta m_i)$ with the least-squares coefficients $c$.
-\begin{itemize}
-\item \emph{Multi-vector update} (IQN-IMVJ \cite{Bogaers2014}): after each time step,
-\begin{equation}\label{eq:imvj}
-  H\leftarrow H+(\Delta G-H\Delta M)\big(\Delta M^\top\M\Delta M\big)^{-1}(\M\Delta M)^\top,
-\end{equation}
-with the (filtered) secant pairs of the step, so that $H\Delta M=\Delta G$; $H$ is stored as a dense
-matrix in the interface degrees of freedom ($130$ here) and reset to $\omega I$ when the residual
-grows by more than \code{QNRestartFactor}.
-\item \emph{Frozen Jacobian}: $H_0=J^{-1}$ with the LU factorisation of the assembled interface
-Jacobian of \cref{sec:methods}, refreshed every ten steps.
-\end{itemize}
 Neither pays off during the start-up phase. With \eqref{eq:imvj} the secant method needs
 $10.1$ evaluations per step without reuse of old pairs and $16.4$ with reuse of eight steps, against
 $9.0$ and $10.2$ for $H_0=\omega I$: the Jacobian changes too quickly between time steps. (Reusing
@@ -1026,9 +1533,7 @@ to $6.9$ per step, but its assembly costs $2\times130$ tangent solves per refres
 $24$ per step, and the run takes $78$~s instead of $10$~s. Both options are meant for the periodic
 regime, where the Jacobian changes slowly and the refresh interval can be long.
 
-%=================================================================================================
-\section{Long simulations of FSI2}\label{sec:longruns}
-%=================================================================================================
+\subsection{Long simulations of FSI2}\label{sec:longruns}
 
 We now run the FSI2 configuration over the end time of the ExaDG application, $T=4L/U=10$~s,
 and beyond, with the dual-splitting fluid solver (the default of the application). Two
@@ -1038,7 +1543,7 @@ resolution of the previous sections), and fluid $Q_6$, structure $Q_4$, both wit
 is adaptive (CFL $0.5$), about $4150$ and $5900$ steps for $10$~s, respectively. The tip
 displacement is recorded at point $A=(0.6,0.2)$ in every time step.
 
-\subsection{Robustness of IQN-ILS}\label{sec:iqn_fix}
+\subsubsection{Robustness of IQN-ILS}\label{sec:iqn_fix}
 
 With the coarser resolution and the tolerances of the standard input ($\mathrm{AbsTol}=10^{-8}$,
 $\mathrm{RelTol}=10^{-3}$, eight reused time steps, $\omega_0=0.3$), the IQN-ILS implementation of
@@ -1061,7 +1566,7 @@ With these changes the standard-tolerance run completes the $10$~s with $2.52$ i
 and the run with $10^{-11}/10^{-6}$ needs $3.32$ instead of $3.78$ iterations per step with an
 unchanged solution (deviation $\le2\cdot10^{-3}$).
 
-\subsection{Accuracy of the fluid solves}\label{sec:fluid_accuracy}
+\subsubsection{Accuracy of the fluid solves}\label{sec:fluid_accuracy}
 
 Over $10$~s, the converged secant solution and the converged Dirichlet--Neumann solution first
 seemed to differ by up to $30\%$ in the tip displacement. The difference is not a property of the
@@ -1125,7 +1630,7 @@ IQN-ILS, $10^{-11}/10^{-6}$ & default & $1.6\cdot10^{-2}$ & $6.7\cdot10^{-2}$ & 
 \end{tabular}}
 \end{table}
 
-\subsection{Stopping criteria of the secant method}\label{sec:stopping}
+\subsubsection{Stopping criteria of the secant method}\label{sec:stopping}
 
 At the finer resolution the secant method with the absolute tolerance $\|m\|\le10^{-5}$ needed
 $22.8$ state evaluations per step on average, five times as long as IQN-ILS. A run with iteration
@@ -1151,7 +1656,7 @@ needs fewer state evaluations than IQN-ILS, but each one starts from the extrapo
 more fluid iterations; at equal accuracy (accurate fluid solves for the Dirichlet--Neumann
 iteration) the costs are comparable.
 
-\subsection{Periodic regime and comparison with the benchmark}\label{sec:benchmark}
+\subsubsection{Periodic regime and comparison with the benchmark}\label{sec:benchmark}
 
 To reach the periodic regime we extend the simulation to $t=25$~s (fluid $Q_6$, structure $Q_4$)
 and compare four couplings: the secant method on the native formulation with the stopping
@@ -1278,7 +1783,7 @@ periodic regime the choice of the coupling therefore affects the cost but not th
 the growth phase, only the secant method and the Dirichlet--Neumann iteration with accurate fluid
 solves give the same trajectory.
 
-\subsection{Resolution study}\label{sec:resolution}
+\subsubsection{Resolution study}\label{sec:resolution}
 
 To identify the source of the remaining deviations from the reference, we vary one discretisation
 parameter at a time with respect to the configuration of \cref{sec:benchmark} (fluid $Q_6$ on the
@@ -1348,7 +1853,7 @@ $\rho_\infty=0.8$, mapping of the degree of the fluid velocity, band-stiffened m
 \cref{sec:instabilities} allow the finer grids.}\label{fig:resolution}
 \end{figure}
 
-\subsection{Two instabilities at fine resolution}\label{sec:instabilities}
+\subsubsection{Two instabilities at fine resolution}\label{sec:instabilities}
 
 The combined refinements (fluid refined twice, fluid $Q_8$ refined once, fluid refined once with
 CFL $0.25$) initially diverged. Two distinct phenomena are involved; both are independent of the
@@ -1444,7 +1949,7 @@ the stiffness matters: with $r_0=0.05$ the run with fluid refined twice still fa
 mesh motion fails earlier ($6.5$~s) and a nonlinear (large-deformation) elasticity problem for the
 mesh motion does not help either ($8.06$~s).
 
-\subsection{Comparison with the benchmark at the finest resolution}\label{sec:final_comparison}
+\subsubsection{Comparison with the benchmark at the finest resolution}\label{sec:final_comparison}
 
 \Cref{tab:final,fig:resolution} collect the periodic regime with the remedies of
 \cref{sec:instabilities} (Bossak $\rho_\infty=0$, mapping of degree $4$). With fluid $Q_8$ refined
@@ -1475,16 +1980,14 @@ $Q_6$, refined twice & \eqref{eq:ale_stiffening} & 53312 & $-14.61\pm12.53\ [3.8
 \end{tabular}}
 \end{table}
 
-%=================================================================================================
-\section{Derivative-based methods at the cost of the secant method}\label{sec:fast}
-%=================================================================================================
+\subsection{Derivative-based methods at the cost of the secant method}\label{sec:fast}
 
 On the native formulation all methods of \cref{sec:methods} converge to the same solution, but at
 very different cost. At the start of this study (exact linear solves, no preconditioner), the
 first $20$ steps of the start-up phase of FSI2 cost, in seconds per time step, $1.68$ for the
 secant method, $1.62$ for IQN-ILS, $2.60$ for IN, $13.6$ for GN, $14.5$ for LM, $14.1$ for TR,
 $12.8$ for L-BFGS and $108.6$ for SD. This section shows how the gap is closed without giving up
-exact derivatives and without assembling any matrix: every ingredient below is matrix-free and
+exact derivatives and without assembling any matrix: every technique of \cref{sec:methods,sec:acceleration} is matrix-free and
 works with interface vectors (a few hundred degrees of freedom) or with fluid vectors that the
 method computes anyway.
 
@@ -1499,83 +2002,7 @@ of the fluid. Since the wall times of identical runs varied by up to $20\%$ on t
 the cost is measured by the number of Krylov iterations of the fluid solver per time step (state
 solves and the linear solves inside $S$ and $S^*$); wall times are given for orientation.
 
-\subsection{Ingredients}\label{sec:fast_ingredients}
-
-\paragraph{Recycled inverses from exact derivative pairs.} Every application of $S$ yields an
-exact pair $(v,\,y=Sv)$. With the pairs of the current solve and of the last $q$ time steps
-(newest first), the images are orthonormalised by modified Gram--Schmidt in the $A$ inner product
-(dropping nearly dependent ones as in \cref{alg:qn}), $Y=QR$, and
-\begin{equation}\label{eq:recycled}
-  H = I + (V-Y)R^{-1}Q^{\top}A, \qquad H y_i = v_i,
-\end{equation}
-is the identity on the $A$-orthogonal complement of $\operatorname{span}Y$. $H$ is the right
-preconditioner of GMRES in IN. It is the multi-secant construction of IQN-IMVJ \cite{Bogaers2014}
-with \emph{exact tangent pairs} instead of secant pairs, so that it does not see the noise floor of
-the state map (\cref{sec:inexact}). In the same way the adjoint pairs $(w,\,S^*w)$ of the gradient
-evaluations define $H_A\approx S^{-*}$ (orthonormalisation in the $G$ inner product), and
-$P=H H_A\approx(S^*S)^{-1}$ preconditions the gradient methods. The symmetric choice $HH^*$ does
-not work: $H^*$ is no approximation of $S^{-*}$ outside $\operatorname{span}Y$, and GN needed about
-$80$ CG iterations per Gauss--Newton iteration and stagnated. Storage: $q=16$ time steps
-($40$ for the gradient methods), at most $240$ pairs of interface vectors.
-
-\paragraph{Target forcing term.} With $H$, one GMRES iteration reduces the linear residual by about
-$10^{-5}$. With $\eta=10^{-2}$ GMRES stops there, and the Newton step gives
-$\|m_1\|/\|m_0\|\approx1.2\cdot10^{-5}$ (median); tangent solves accurate to $10^{-10}$ instead of
-$10^{-6}$ give the same ratio ($1.1\cdot10^{-5}$), so the GMRES residual, not the accuracy of $S$,
-limits the step. Whenever this lands just above the tolerance $\tau$, a second Newton iteration
-costs a state and three to four tangent solves, whereas one more GMRES iteration costs one tangent
-solve. The forcing term $\eta_k=\min\{\eta_{\max},\theta\tau/\|m_k\|\}$, $\theta=1$, makes the linear
-model reach the tolerance: $1.01$ instead of $1.5$ Newton iterations per step.
-
-\paragraph{Accuracy of the derivatives.} The linear fluid solves inside $S$ and $S^*$ use the
-relative tolerance $\varepsilon_k=\min\{10^{-2},\max\{10^{-5},\kappa\tau/\|m_k\|\}\}$, $\kappa=1$:
-the step needs $S$ only to the accuracy that brings the residual below $\tau$. A fixed
-$\varepsilon=10^{-4}$ is too loose ($1.67$ Newton iterations per step); $\varepsilon=10^{-5}$ needs
-$23$ fluid iterations per solve at constant $\Delta t$ instead of $27$ for $10^{-6}$; the adaptive
-choice pays off in the start-up phase (IN: $294\to251$ fluid iterations per step).
-
-\paragraph{State prediction from the tangent solves.} For frozen geometry the fluid step is affine
-in the interface data (\cref{lem:affine}). The tangent solves of the GMRES directions $z_j$ provide
-the fluid responses $\delta u_j$, and for the step $d=\sum_jc_jz_j$
-\begin{equation}\label{eq:prediction}
-  u(g+\alpha d)\approx u(g)+\alpha\sum_jc_j\,\delta u_j
-\end{equation}
-up to the nonlinearity of the structure and of the geometry. The state solve of the trial point
-starts from \eqref{eq:prediction}. To keep the state map a function of $g$ only
-(\cref{sec:inexact}), it stops at the absolute accuracy of a solve from the extrapolation,
-$\tau_f\|r_0^{\mathrm{extr}}\|$ with the initial residual of the first (extrapolated) state of the
-time step, and not at a reduction of its own, much smaller, initial residual. A predicted state
-costs $15$ instead of $32$ fluid iterations at constant $\Delta t$. The gradient methods predict
-their trial state from the tangent solve of their step length. The same stopping rule makes warm
-starts of the secant method consistent (\code{WarmStartAbsoluteTolerance}); it is used for the
-second QN row of \cref{tab:fast_methods}.
-
-\paragraph{GN, LM and TR in the Krylov subspace.} For a square, invertible $S$ the Gauss--Newton step
-solves $Sd=-m$, so GN can use the GMRES solve of IN and needs no adjoint. LM and TR solve their
-subproblems in the GMRES subspace (hybrid Krylov methods \cite{BrownSaad1990}): with the search
-directions $Z$, the Arnoldi relation $SZ=V\bar H$ and $-m=\beta v_1$,
-\begin{equation}\label{eq:subspace}
-  \tfrac12\|m+SZy\|_A^2=\tfrac12\|\bar Hy-\beta e_1\|^2,
-\end{equation}
-and the subproblems are of size $k\times k$ ($k=1$--$3$ here):
-$y_{\mathrm{LM}}=(\bar H^{\top}\bar H+\lambda G_Z)^{-1}\beta\bar H^{\top}e_1$ with
-$G_Z=Z^{\top}GZ$, and for TR the same with $\lambda\ge0$ such that $\|Zy\|_G=\Delta$ (bisection) if
-the Gauss--Newton step lies outside the trust region. Gain ratio and update of $\lambda$ or $\Delta$
-are those of \cref{sec:methods} with the predicted reduction of \eqref{eq:subspace}; a rejected
-trial costs a state but no tangent solve.
-
-\paragraph{Preconditioned gradient methods.} SD uses $d=-HH_Ar$ and the step length of the exact
-quadratic model along $d$, $\alpha=-(r,d)_G/\|Sd\|_A^2$ (one tangent solve, which also adds a pair
-to $H$ and predicts the trial state); L-BFGS uses $HH_A$ as initial inverse Hessian and the same
-step length. Since $HH_A$ is not symmetric, $-HH_Ar$ need not be a descent direction when the
-recycled pairs are outdated (large changes of $\Delta t$): if the angle condition
-$(r,d)_G\le-10^{-4}\|r\|_G\|d\|_G$ fails, the pairs of previous time steps are discarded and $d$ is
-recomputed, finally $d=-r$. Without this safeguard $7$ of $66$ steps of L-BFGS ended with a failed
-line search in the start-up phase. For all methods, a failed line search is repeated once with
-accurate derivatives and without recycled pairs, and no gradient is computed at the converged
-point.
-
-\subsection{Results}\label{sec:fast_results}
+\subsubsection{Results}\label{sec:fast_results}
 
 \Cref{tab:fast_progress} shows the effect of the ingredients on IN at constant time step. Each
 ingredient removes a specific cost: the recycled preconditioner the Krylov iterations, the target
@@ -1667,7 +2094,7 @@ and $35$ adjoint solves per step ($5.2$~s), the squared condition number remains
 preconditioner of the normal equations or of the gradient (see above). (iv) A longer recycling
 memory than $16$ time steps for IN, and tangent solves looser than $10^{-5}$ at constant $\Delta t$.
 
-\subsection{Periodic regime}\label{sec:fast_periodic}
+\subsubsection{Periodic regime}\label{sec:fast_periodic}
 
 The two benchmarks above have small time steps and small deflections. To test the methods on the
 limit cycle of FSI2, one run with the setting above and the adaptive time step is integrated to
@@ -1737,40 +2164,12 @@ methods agree on each discretisation, so the difference is one of the fluid disc
 (coupled solution with explicit convection against dual splitting, together with the penalty
 parameters computed from the extrapolated velocity); it was not investigated further.
 
-\subsection{Predictors and tolerances}\label{sec:fast_tolerances}
+\subsubsection{Predictors and tolerances}\label{sec:fast_tolerances}
 
-The ingredients of \cref{sec:fast_ingredients} reduce the cost of the derivatives. Three further
-sources of cost are common to all methods: the initial guess of the control, the initial guess of
-the fluid state, and the accuracy to which the coupled problem and the fluid are solved.
-
-\paragraph{Predictor of the control.} The iteration of each time step starts from the
-extrapolation $g^{(0)}_{n+1}=2g_n-g_{n-1}$, whose coefficients assume a constant time step. With
-the adaptive time step of the start-up phase (changes of up to $20\%$ per step) this predictor is
-only first-order accurate. \code{ControlExtrapolationOrder}~$=p$ replaces it by the Lagrange
-extrapolation through the converged controls of the last $p+1$ time steps at their actual times.
-On the limit cycle of \cref{sec:fast_periodic}, the relative error of the predicted control force
-is $1.6\cdot10^{-3}$ for the linear, $1.7\cdot10^{-4}$ for the quadratic and $1.3\cdot10^{-4}$ for
-the cubic extrapolation; we use $p=2$. Since the mismatch of the initial guess is proportional to
-the error of the predictor, and the remainder after one Newton step is proportional to a power of
-it, the better predictor saves iterations of all methods.
-
-\paragraph{Affine state prediction.} Within a time step, the fluid step is affine in its Dirichlet
-data $w$, the structure velocity on the interface (\cref{lem:affine}), up to the bilinear
-convective boundary term (\cref{lem:fd}) and the motion of the mesh inside the state. Every state
-solve of the time step yields a pair $(w_i,u_i)$, every tangent solve a pair $(\delta w_j,\delta
-u_j)$ with $u(w+\delta w_j)=u(w)+\delta u_j$. Since the structure is solved first, $w$ is known
-before the fluid solve, and the fluid state is predicted by least squares,
-\begin{equation}\label{eq:affine_prediction}
-  u(w)\approx u_k+\sum_i a_i(u_i-u_k)+\sum_j b_j\,\delta u_j,\qquad
-  (a,b)=\operatorname*{arg\,min}\Big\|w-w_k-\sum_ia_i(w_i-w_k)-\sum_jb_j\,\delta w_j\Big\|,
-\end{equation}
-with the latest state $k$ as base and modified Gram--Schmidt on the interface vectors
-(\code{AffineStatePrediction}). Unlike \eqref{eq:prediction}, the prediction is not a linearisation
-in the control: the structure nonlinearity does not enter, because the prediction uses the actual
-data of the fluid. It applies to every method, also to the secant method, whose iterates within a
-time step span part of the new step: the part of $w-w_k$ outside the span of the pairs is $50$--$60\%$
-for the secant method and $1$--$5\%$ for IN. The state solve stops at the absolute accuracy of the
-solve from the extrapolation, as in \cref{sec:fast_ingredients}.
+The techniques of \cref{sec:methods} reduce the cost of the derivatives. Three further sources of
+cost are common to all methods: the initial guess of the control (\cref{sec:control_predictor}),
+the initial guess of the fluid state (\cref{sec:state_prediction}), and the accuracy to which the
+coupled problem and the fluid are solved, studied here.
 
 \paragraph{Stopping criterion.} All methods stop on the size of the interface residual,
 $\|m\|_{\M}\le\tau=\max\{10^{-5},10^{-6}\|g\|_{\M}\}$, i.e.\ on the cost $J=\frac12\|m\|_{\M}^2$ and
@@ -1909,7 +2308,7 @@ next step converges again and the trajectory is unaffected. With $\tau_f=10^{-8}
 method would probably need fewer iterations at a higher cost per state; on the limit cycle this was
 not tested.
 
-\subsection{Solver configuration and the dual-splitting fluid solver}\label{sec:fast_solvers}
+\subsubsection{Solver configuration and the dual-splitting fluid solver}\label{sec:fast_solvers}
 
 The fluid iterations measure the work of the methods, not its price. On the limit cycle of
 \cref{tab:fast_periodic_tol} a state solve of the coupled fluid solver costs $87$~ms, i.e.\
@@ -1933,24 +2332,7 @@ of the Schur complement costs the same; multigrid for the velocity block
 (\code{CoupledVelocityPreconditioner}) saves $17\%$ of the iterations but costs $60\%$ more time,
 because the velocity block is dominated by the mass matrix at these time steps.
 
-\paragraph{Dual splitting.} With explicit convection, frozen geometry and the penalty parameters
-computed from the extrapolated velocity, the dual-splitting step is affine in the Dirichlet data
-$w$ as well: $w$ enters the Neumann condition of the pressure Poisson equation through the
-discrete acceleration $\gamma_0w/\Delta t$, the Dirichlet terms of the viscous step and, if used,
-the boundary data of the continuity penalty. A forward difference of two fluid steps,
-\[
-  T_f'(v)\,y=\frac{T_f(v+\epsilon y)-T_f(v)}{\epsilon},
-\]
-is therefore exact up to the tolerance of the fluid solver, for any $\epsilon$; together with the
-exact linearised structure solve it gives the tangent $S$ at the price of one fluid step
-(\code{NativeTangentDifference = Forward}). This suffices for the methods that need no adjoint: the
-secant method, IN, and GN, LM and TR solved in the Krylov subspace of the interface equation. The
-driver now accepts any fluid solver if no method of the schedule needs the adjoint. SD and L-BFGS
-need the adjoint of the dual-splitting step (transposes of the acceleration term of the pressure
-Neumann condition, of the weak pressure gradient of the projection, and of the Dirichlet terms of
-the viscous and penalty steps, applied in reverse order), which was not implemented.
-
-The noise of the state map matters more than for the coupled solver. With the default relative
+\paragraph{Dual splitting.} With the difference tangent of \cref{sec:ds_tangent}, the secant method, IN, and GN, LM and TR in the Krylov subspace of the interface equation run with the dual-splitting solver; the driver accepts any fluid solver if no method of the schedule needs the adjoint. The noise of the state map matters more than for the coupled solver. With the default relative
 tolerance $10^{-6}$ of the dual-splitting solvers, the tip displacement of all methods deviates by
 $4\cdot10^{-4}$ from a reference with tolerances $10^{-10}$, TR needs $1.63$ iterations per step
 in the start-up phase, and on the limit cycle its ratio test fails in every step from $t=18.1$~s
@@ -2017,7 +2399,7 @@ order in the fluid, the mesh motion and the structure, and the derivative-based 
 as much per step as the secant method because of their tangent solves; these, not the fluid solver,
 are the next targets.
 
-\subsection{Derivative-based methods on the limit cycle}\label{sec:fast_derivatives}
+\subsubsection{Derivative-based methods on the limit cycle}\label{sec:fast_derivatives}
 
 On the limit cycle IN needs two Newton iterations per step (\cref{tab:fast_periodic,tab:fast_solvers}).
 The iteration history shows why. The first GMRES solve reaches its forcing term ($\eta\approx10^{-3}$),
@@ -2142,7 +2524,7 @@ iterations at $10$--$17\%$ more time: at these time steps the velocity block is 
 mass matrix ($\gamma_0/\Delta t\approx800$ against $\nu/h^2\approx100$), whose inverse is already
 the preconditioner.
 
-\subsection{Tolerances, subproblem solvers and single-method runs}\label{sec:fast_production}
+\subsubsection{Tolerances, subproblem solvers and single-method runs}\label{sec:fast_production}
 
 \paragraph{Coupling tolerance on the limit cycle.} The interface tolerance
 $\tau_{\mathrm{rel}}=10^{-6}$ was chosen in the start-up phase, where $10^{-5}$ saved only
@@ -2156,17 +2538,6 @@ tangent right-hand sides onto the images $AX$ of the last $16$ tangent solutions
 current matrix (\code{FluidKrylovRecycling}), reduces the FGMRES iterations of a tangent from $28$
 to $18$ and the time of IN by $11\%$; the new interface directions of each tangent are only partly
 covered by previous solutions.
-
-\paragraph{Solving fluid and structure simultaneously.} In the native formulation the structure
-precedes the fluid within a state evaluation. A formulation with two controls, $(g,w)$, with the
-residual $(g-T_f(w),\,w-V(g))$, evaluates both subproblems at once; its Jacobian
-$J=\begin{pmatrix}I&-F\\-V&I\end{pmatrix}$ is 2-cyclic, and a Krylov or secant method on $J$ needs
-about twice the iterations of the same method on the Schur complement $S=I-FV$ (a polynomial of
-degree $2k$ in $J$ reproduces one of degree $k$ in $S$; on a model with the spectrum of the
-added-mass operator the ratio was $1.7$--$2.0$). The wall time $2k\max(C_f,C_s)$ therefore never
-undercuts the sequential $k(C_f+C_s)$, and the work doubles. The velocity-mismatch formulation,
-whose subproblems are independent given $g$, needs $46$--$113$ tangent solves per step
-(\cref{tab:methods}) and changes the discretisation of the no-slip condition.
 
 \paragraph{Subproblem solvers.} With the fluid solver configured, the structure and the mesh
 motion take almost half of the time of a state with the dual-splitting solver. The structure has $650$ unknowns; a sparse direct
@@ -2223,8 +2594,60 @@ dual splitting & secant & 69~s & 6657 & 0.010 & 1.35 & 2.35 & 0 & -- & 56 / 17 /
 \end{tabular}}
 \end{table}
 
+\paragraph{Comparison with Dirichlet--Neumann IQN-ILS.} \Cref{tab:iqn_comparison} repeats the
+single-method runs for the partitioned Dirichlet--Neumann scheme of ExaDG accelerated by IQN-ILS
+(implicit geometry, pulled-back traction, reuse of eight time steps), with the same subproblem
+solvers. Its stopping criterion is on the interface displacement,
+$\|r\|\le\mathrm{RelTol}\,\|v_s\|\Delta t$, and therefore not directly comparable with
+\eqref{eq:tolerance}; we use three tolerances and measure the accuracy against the run with
+$\mathrm{RelTol}=10^{-7}$. The secant method with the implicit geometry solves the same scheme.
+With the coupled fluid solver it reaches the accuracy of IQN-ILS between the tolerances $10^{-5}$
+and $10^{-4}$ in half the time: IQN-ILS needs $2.7$--$3.1$ Dirichlet--Neumann iterations per step,
+each with a fluid solve from the extrapolation ($89\%$ of its time in the fluid), whereas the
+optimisation-based methods need $1.8$--$1.9$ states per step, all but the first of which start from
+the affine prediction of \cref{sec:state_prediction}. All seven methods are faster than IQN-ILS
+with the coupled solver. With the dual-splitting solver the secant method is as fast as IQN-ILS with
+$\mathrm{RelTol}=10^{-4}$ and $19\%$ faster with the explicit geometry, while the derivative-based
+methods cost about $25\%$ more, since every difference quotient costs a fluid step. All deviations
+are $2$ to $300$ times below the time discretisation error ($8.5\cdot10^{-3}$). The advantage of the
+coupled runs comes partly from the predictions and absolute targets of \cref{sec:acceleration},
+which the partitioned solver of ExaDG does not use; they would narrow the gap if added to it. In a
+first attempt, IQN-ILS with the dual-splitting solver failed for $\mathrm{RelTol}\le10^{-5}$ at
+$t\approx8.7$~s: when consecutive iterates barely differ, the initial residual of the pressure
+Poisson solve becomes so small that its absolute tolerance $10^{-12}$ lies below the round-off
+level of the residual; the runs of the table use the absolute tolerance $10^{-11}$.
+
+\begin{table}[ht]\centering
+\caption{FSI2 from rest to $t=15$~s, $2$ processes, same subproblem solvers: Dirichlet--Neumann
+with IQN-ILS against the optimisation-based methods. Iterations: Dirichlet--Neumann iterations
+(IQN-ILS) or state evaluations per step; deviation: maximal deviation of the tip displacement from
+IQN-ILS with $\mathrm{RelTol}=10^{-7}$ of the same fluid solver, relative to its maximum. Implicit
+geometry: same scheme as IQN-ILS.}
+\label{tab:iqn_comparison}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llccc}
+\toprule
+fluid solver & coupling & wall time & iterations / states & deviation\\
+\midrule
+coupled & IQN-ILS, $\mathrm{RelTol}=10^{-4}$ & 388~s & 2.67 & $1.3\cdot10^{-3}$\\
+ & IQN-ILS, $\mathrm{RelTol}=10^{-5}$ & 451~s & 3.11 & $8.8\cdot10^{-4}$\\
+ & IQN-ILS, $\mathrm{RelTol}=10^{-7}$ & 593~s & 4.28 & --\\
+ & secant, implicit geometry & \textbf{191~s} & 1.91 & $1.1\cdot10^{-3}$\\
+ & secant, explicit geometry & 196~s & 1.85 & $2.0\cdot10^{-3}$\\
+ & IN / TR, explicit geometry & 208 / 198~s & 1.77 & $2.1\cdot10^{-3}$ / $2.0\cdot10^{-3}$\\
+\midrule
+dual splitting & IQN-ILS, $\mathrm{RelTol}=10^{-4}$ & 85~s & 2.67 & $1.6\cdot10^{-4}$\\
+ & IQN-ILS, $\mathrm{RelTol}=10^{-5}$ & 95~s & 3.12 & $2.6\cdot10^{-5}$\\
+ & IQN-ILS, $\mathrm{RelTol}=10^{-7}$ & 125~s & 4.24 & --\\
+ & secant, implicit geometry & 84~s & 2.37 & $4.1\cdot10^{-4}$\\
+ & secant, explicit geometry & \textbf{69~s} & 2.35 & $3.8\cdot10^{-3}$\\
+ & IN / TR, explicit geometry & 108 / 108~s & 1.93 & $2.8\cdot10^{-3}$ / $2.7\cdot10^{-3}$\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
 %=================================================================================================
-\section{Conclusions and outlook}
+\section{Conclusions and outlook}\label{sec:conclusions}
 %=================================================================================================
 
 The optimisation-based coupling can be implemented in a production high-order FSI code with exact
@@ -2320,7 +2743,10 @@ undercuts the sequential one. Direct solvers for the small structure ($650$ unkn
 mesh-motion ($2664$) problems and warm-started dual-splitting solves cut the remaining cost of a
 state, and all seven methods integrate FSI2 to $t=15$~s within $20\%$ of each other ($196$--$234$~s
 with the coupled fluid solver, $69$--$108$~s with dual splitting), about $18$ to $50$ times faster
-than at the start of the study.
+than at the start of the study. At equal accuracy they are about twice as fast as the
+Dirichlet--Neumann scheme of ExaDG with IQN-ILS when the coupled fluid solver is used, mostly
+because the predicted fluid states are cheap; with the dual-splitting solver the secant method is
+as fast as IQN-ILS.
 \end{enumerate}
 Open points are the source of the energy that feeds the high-frequency mode of
 \cref{sec:instabilities}, which the dissipation of the structure integrator only suppresses, the
@@ -2423,7 +2849,8 @@ model and secant reference), \code{lt_c3}, \code{tg16}, \code{tg16a} (tangent in
 \cref{sec:fast_production} are \code{tq6}, \code{tq5}, \code{ti5}, \code{lr_win5}, \code{lr_ds3}
 (tolerance), \code{kr16} (recycling), \code{sl_base}, \code{sl_dir10}, \code{sl_dir10a},
 \code{sl_ws}, \code{sd_*} (subproblem solvers), \code{lr_win6}, \code{lr_ds4} (long runs) and
-\code{m15_c_*}, \code{m15_d_*} (\cref{tab:fast_m15}).
+\code{m15_c_*}, \code{m15_d_*} (\cref{tab:fast_m15}); \code{iqn15_c_*}, \code{iqn15_d_*} and
+\code{m15_c_qn_geo1}, \code{m15_d_qn_geo1} (\cref{tab:iqn_comparison}).
 The output directory in each file has to exist, and
 \code{doc/fsi_optimal_control/bench.py} summarises the runs (iterations, solves and fluid
 Krylov iterations per time step); \code{doc/fsi_optimal_control/deviation.py} computes the
