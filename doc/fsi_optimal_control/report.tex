@@ -717,6 +717,25 @@ line search in the start-up phase. For all methods, a failed line search is repe
 accurate derivatives and without recycled pairs, and no gradient is computed at the converged
 point.
 
+\paragraph{Tangents on demand.} For an affine state map $m(g)=Sg-b$ (explicit geometry, affine
+fluid step, linear structure) a tangent and a difference of states carry the same information,
+$m(g+d)-m(g)=Sd$, and the step of the recycled inverse \eqref{eq:recycled} leaves the residual
+\begin{equation}\label{eq:model_step}
+  m(g-Hm)=m-SHm=(I-S)(I-P_Y)\,m,
+\end{equation}
+with the $A$-orthogonal projection $P_Y$ onto $\operatorname{span}Y$: the residual of the secant
+step of \cref{alg:qn} (with $\omega=1$) on the same pairs. The first application of $S$ in the
+GMRES solve of a Newton iteration therefore often only verifies that $H$ is already good enough,
+while the secant method verifies with the next state, which it needs anyway. With
+\code{ModelNewtonSteps} the interface-equation methods (IN, and GN, LM, TR in the Krylov subspace)
+first take the model step $d=-Hm$ without tangent solves. The state of $g+d$ verifies it, and the
+difference $m(g+d)-m(g)$ is added to $H$ as an exact pair (up to the nonlinearity of the
+structure). If $\|m(g+d)\|\le\tau$ the solve is finished; otherwise it continues with tangents from
+the better of the two points. A model step costs a state ($c_S$) and saves the tangents of the solve
+($\ge c_T$), so it pays if it succeeds with a probability $p\gtrsim c_S/c_T$. The success rate is
+estimated by a moving average (weight $0.1$); while it is below $0.5$ the model step is only tried
+every $10$ solves, and not at all in the first two time steps, where $H$ has hardly any pairs.
+
 \paragraph{Orthogonalisation in the interface metric.} The recycled inverses \eqref{eq:recycled} and
 the least-squares problem of \cref{alg:qn} orthogonalise $k$ vectors in the inner product
 $(a,b)_{\M}=a^{\top}\M b$, whose evaluation applies the boundary mass matrix. Modified Gram--Schmidt
@@ -2739,6 +2758,80 @@ explicit run grows from $2\%$ at $\mathrm{CFL}=1$ to $25\%$ at $\mathrm{CFL}=4$ 
 the oscillation). Larger time steps would need a velocity preconditioner that handles convection at
 the price of a few substitutions, which is not available for this discretisation.
 
+\subsubsection{Derivative-based methods at the price of the secant method}\label{sec:fast_model}
+
+With the fluid solves as cheap as they are now, the derivative-based methods cost $1.09$ (coupled)
+and $1.39$ (dual splitting) times the secant method on $[0,15]$. Per time step the costs are
+\begin{equation}\label{eq:cost_in_qn}
+  C_{\mathrm{IN}}=c_1+n_N\,c_{\mathrm{post}}+n_T\,c_T,\qquad C_{\mathrm{QN}}=c_1+n_Q\,c_Q,
+\end{equation}
+with the first state $c_1$, common to both, $n_N$ Newton iterations whose states cost
+$c_{\mathrm{post}}$, $n_T$ tangents of cost $c_T$, and $n_Q$ further secant states of cost $c_Q$.
+With the coupled solver the state after a Newton step is predicted exactly from the tangent
+responses (\cref{sec:state_prediction}; remainder outside the span $0.00$, against $0.98$ for the
+secant states), so that $c_{\mathrm{post}}\approx0$ and IN saves $9$ FGMRES iterations per step on
+the states; it pays $n_T=1.17$ tangents of $12.5$ iterations against $n_Q=0.85$ secant states of
+about $11$. With dual splitting a tangent is a difference quotient, i.e.\ a fluid step
+($c_T\approx1.4\,c_Q$), and the states after a Newton step were not predicted. Three measures
+address the three terms:
+\begin{enumerate}
+\item \emph{Tangents on demand} (\cref{sec:fast_ingredients}, \eqref{eq:model_step}) reduce $n_T$.
+In the start-up phase the model step reaches the tolerance in about $95\%$ of the solves in which it
+is tried (dual splitting, $[0,5]$: tangents $0.93\to0.17$ per step, wall time equal to the secant
+method); on the limit cycle $H$ only halves the residual, the success rate drops and the model steps
+switch themselves off, so that IN is unchanged there. A first version that repeated model steps as
+long as they halved $\|m\|$ made IN $17$--$27\%$ slower on the limit cycle.
+\item \emph{The accuracy of the difference quotient.} The fluid steps of the quotient were solved
+with $100$ times the relative tolerance of a state, starting from the state at the distance
+$\epsilon=10^{-2}$; the quotient then has a relative accuracy of about $100\cdot10^{-8}/\epsilon=10^{-4}$,
+whereas a tangent needs about $10^{-2}$ (\cref{sec:fast_fluid}: $\kappa\approx(0.1$--$0.4)\epsilon$). With the factor
+$10^4$ (\code{TangentDifferenceToleranceFactor}, now the default) IN is $13\%$ faster on the limit
+cycle with the same Newton iterations and trajectory ($3\cdot10^{-7}$); $10^5$ gains nothing more.
+\item \emph{State prediction for the dual-splitting solver.} The solutions $X=(p,\hat{\hat u},u)$ of
+the pressure Poisson, viscous and penalty steps are affine in $w$ as well (explicit geometry, penalty
+parameters from the extrapolated velocity). The states of the time step give pairs $(w_i,X_i)$, the
+difference quotients pairs $(\delta w_j,\delta X_j)$, and the initial guesses of a new state are
+the least-squares prediction in their span, solved to the absolute targets of the warm start
+(\cref{sec:absolute_target}; \code{AffineStatePrediction}, now also for dual splitting). The CG
+iterations per step drop by about $13\%$ in all three sub-steps; the secant method gains nothing,
+since its new states lie outside the span of the previous ones (remainder $0.86$).
+\end{enumerate}
+\Cref{tab:fast_model} shows the effect on $[0,15]$. The machine was in use during these runs; the
+wall times of identical computations varied by about $10\%$, and the table also gives the wall time
+relative to that of the mesh motion, which does the same work in all runs. With the coupled solver
+the derivative-based methods now cost $1.07$--$1.08$ times the secant method, with dual splitting
+$1.06$--$1.17$ (two runs of IN with all measures: $1.06$ and $1.14$). All runs converge in every
+step and deviate from the secant method by at most $2.4\cdot10^{-3}$. The remaining difference is
+the limit cycle, where every Newton iteration needs about one tangent more than the secant method a
+state, and a difference quotient costs a full fluid step with its fixed costs (convective term,
+right-hand sides).
+
+\begin{table}[ht]\centering
+\caption{Derivative-based methods against the secant method, FSI2 to $t=15$~s, $2$ processes,
+direct pressure preconditioners. Wall time, wall time relative to the mesh motion (same work in all
+runs), and per step: states, tangents, model steps (tried / reaching the tolerance). Measures:
+M = model steps, T = tolerance factor $10^4$ of the difference quotient, P = state prediction.}
+\label{tab:fast_model}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lllcccccc}
+\toprule
+fluid solver & method & measures & wall & wall/mesh & rel.\ to secant & states & $S$ & model steps\\
+\midrule
+coupled & secant & -- & 121.7~s & 14.8 & 1.00 & 1.85 & -- & --\\
+ & IN & -- & 132.1~s & 16.1 & 1.09 & 1.77 & 1.17 & --\\
+ & IN & M & 127.2~s & 15.8 & 1.07 & 1.79 & 0.37 & 0.62 / 0.59\\
+ & GN / LM / TR & M & 127.5 / 129.6 / 127.6~s & 15.8 / 15.9 / 15.8 & 1.07 / 1.08 / 1.07 & 1.79 & 0.35--0.38 & 0.62 / 0.59\\
+\midrule
+dual splitting & secant & -- & 52.4 / 58.1~s & 6.67 / 6.71 & 1.00 & 2.35 & -- & --\\
+ & IN & -- & 76.1~s & 9.30 & 1.39 & 1.92 & 1.75 & --\\
+ & IN & M & 70.6~s & 8.41 & 1.26 & 1.97 & 1.04 & 0.57 / 0.53\\
+ & IN & M, T & 65.1~s & 7.98 & 1.20 & 1.96 & 1.04 & 0.56 / 0.52\\
+ & IN & M, T, P & 94.2 / 69.8~s & 7.08 / 7.68 & 1.06 / 1.14 & 1.97 & 1.03 & 0.57 / 0.53\\
+ & GN / LM / TR & M, T, P & 69.3 / 70.3 / 73.0~s & 7.73 / 7.71 / 7.84 & 1.15 / 1.15 / 1.17 & 1.97 & 1.01--1.06 & 0.56 / 0.52\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
 \begin{table}[ht]\centering
 \caption{FSI2 from rest to $t=15$~s, $2$ processes, same subproblem solvers: Dirichlet--Neumann
 with IQN-ILS against the optimisation-based methods. Iterations: Dirichlet--Neumann iterations
@@ -2878,6 +2971,15 @@ secant method $29\%$ (coupled) and $18\%$ (dual splitting) faster on $[0,15]$ wi
 iterations; this is a property of the small benchmark, not of the method. An implicit convective
 term with larger time steps breaks even at best, because the velocity block lacks a cheap
 preconditioner for convection, and loses accuracy.
+\item For an affine state map a tangent and a difference of states carry the same information, and
+the step of the recycled inverse is the secant step on the same pairs. Derivative-based methods
+therefore reach the cost of the secant method when they spend tangents only where the model fails:
+model steps verified by the next state (and added to the model as exact pairs), tangents on demand
+with an estimated success rate, difference quotients solved only to the accuracy a tangent needs,
+and initial guesses of all fluid sub-steps predicted from the tangent responses. On $[0,15]$ IN,
+GN, LM and TR cost $1.07$--$1.08$ (coupled) and about $1.1$ (dual splitting, previously $1.39$) times
+the secant method; the remaining difference lies on the limit cycle, where the model is too weak and
+every Newton iteration needs a tangent.
 \end{enumerate}
 Open points are the source of the energy that feeds the high-frequency mode of
 \cref{sec:instabilities}, which the dissipation of the structure integrator only suppresses, the
@@ -2996,7 +3098,14 @@ incompressible Navier--Stokes solver. The defaults of the application are now
 input files set the previous values explicitly. Inputs: \code{cheap_diag} (shadow computation),
 \code{k_base}, \code{k_acc03}, \code{k_acc1} (tangent accuracy), \code{dp_d_*}, \code{dp_c_*},
 \code{m15_d_qn_re}, \code{m15_d_qn_pdir}, \code{m15_c_qn_re}, \code{m15_c_qn_sdir}
-(\cref{tab:fast_fluid}) and \code{im_*} (implicit convection).
+(\cref{tab:fast_fluid}) and \code{im_*} (implicit convection). For \cref{sec:fast_model}:
+parameters \code{ModelNewtonSteps}, \code{ModelStepMinSuccess}, \code{ModelStepRateWeight} and
+\code{ModelStepProbeInterval} of the subsection \code{OptimalControl}; \code{AffineStatePrediction}
+for the dual-splitting solver (with \code{TimeIntBDFDualSplitting::get_warm_start_vector});
+new defaults \code{ModelNewtonSteps = true}, \code{AffineStatePrediction = true} (dual splitting:
+only with the warm start) and \code{TangentDifferenceToleranceFactor = 1e4}; all earlier input files
+set the previous values explicitly. Inputs: \code{mn_*} ($[0,5]$ and limit cycle, \code{mn_lc_*}),
+\code{m15m_*}, \code{m15p_*} (\cref{tab:fast_model}).
 The output directory in each file has to exist, and
 \code{doc/fsi_optimal_control/bench.py} summarises the runs (iterations, solves and fluid
 Krylov iterations per time step); \code{doc/fsi_optimal_control/deviation.py} computes the

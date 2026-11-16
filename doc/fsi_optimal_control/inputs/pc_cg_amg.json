@@ -66,6 +66,8 @@
         "MismatchToleranceRelative": "1.e-6",
         "StagnationIterations": "10",
         "ControlExtrapolationOrder": "2",
-        "AffineStatePrediction": "true"
+        "AffineStatePrediction": "true",
+        "ModelNewtonSteps": "false",
+        "TangentDifferenceToleranceFactor": "1.0"
     }
 }

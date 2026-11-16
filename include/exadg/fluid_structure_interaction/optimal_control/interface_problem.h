@@ -48,6 +48,7 @@
 #include <exadg/grid/marked_vertices.h>
 #include <exadg/incompressible_navier_stokes/spatial_discretization/operator_coupled.h>
 #include <exadg/incompressible_navier_stokes/time_integration/time_int_bdf_coupled_solver.h>
+#include <exadg/incompressible_navier_stokes/time_integration/time_int_bdf_dual_splitting.h>
 #include <exadg/matrix_free/integrators.h>
 
 namespace ExaDG
@@ -270,10 +271,21 @@ public:
       warm_start or tangent_state_prediction or affine_state_prediction);
     time_integrator_coupled =
       std::dynamic_pointer_cast<IncNS::TimeIntBDFCoupled<dim, Number>>(fluid->time_integrator);
+    time_integrator_splitting =
+      std::dynamic_pointer_cast<IncNS::TimeIntBDFDualSplitting<dim, Number>>(
+        fluid->time_integrator);
+    // dual splitting: AffineStatePrediction predicts the initial guesses of the warm-started
+    // solves (pressure Poisson, viscous and penalty steps)
+    // (only with the warm start, whose absolute targets stop the predicted solves)
+    if(time_integrator_splitting.get())
+    {
+      splitting_state_prediction = affine_state_prediction and projection_warm_start;
+      affine_state_prediction    = false;
+    }
     if(tangent_state_prediction or affine_state_prediction)
       AssertThrow(time_integrator_coupled.get() and operator_coupled.get(),
                   dealii::ExcMessage("TangentStatePrediction and AffineStatePrediction require "
-                                     "the coupled fluid solver."));
+                                     "the coupled or the dual-splitting fluid solver."));
     qn_initial_relaxation         = param.qn_initial_relaxation;
     tangent_difference            = param.tangent_difference;
     native_tangent_step           = param.native_tangent_step;
@@ -1143,6 +1155,103 @@ public:
   }
 
   /*
+   * AffineStatePrediction with the dual-splitting solver: the step is affine in w (explicit
+   * geometry, penalty parameters from the extrapolated velocity), and so are the solutions of its
+   * pressure Poisson, viscous and penalty steps. The states of the time step give pairs (w_i, X_i),
+   * the forward differences of the tangents pairs (dw_j, dX_j), X = the three solutions; the
+   * initial guesses of a new state are predicted by least squares in w (as for the coupled solver).
+   */
+  using SplittingVectors = std::array<VectorType, 3>;
+
+  SplittingVectors
+  splitting_vectors() const
+  {
+    SplittingVectors x;
+    for(unsigned int i = 0; i < 3; ++i)
+      x[i] = time_integrator_splitting->get_warm_start_vector(i);
+    return x;
+  }
+
+  // returns the relative remainder of w outside the span of the pairs
+  double
+  predict_splitting_state(SplittingVectors & x, VectorType const & w) const
+  {
+    unsigned int const k = splitting_state_w.size() - 1;
+    x                    = splitting_state_x[k];
+
+    VectorType r(w);
+    r.add(-1.0, splitting_state_w[k]);
+    double const r_norm = r.l2_norm();
+    if(r_norm == 0.0)
+      return 0.0;
+
+    // directions in w with their solution increments: other states of the step relative to the
+    // base k, then the tangent pairs (newest first)
+    std::vector<VectorType>               E;
+    std::vector<SplittingVectors>         D;
+    for(unsigned int i = k; i-- > 0;)
+    {
+      E.emplace_back(splitting_state_w[i]);
+      E.back().add(-1.0, splitting_state_w[k]);
+      SplittingVectors dx = splitting_state_x[i];
+      for(unsigned int c = 0; c < 3; ++c)
+        dx[c].add(-1.0, splitting_state_x[k][c]);
+      D.push_back(std::move(dx));
+    }
+    for(unsigned int j = splitting_tangent_w.size(); j-- > 0;)
+    {
+      E.emplace_back(splitting_tangent_w[j]);
+      D.push_back(splitting_tangent_x[j]);
+    }
+
+    // modified Gram-Schmidt (twice) with Q_l = sum_i T[l][i] E_i
+    unsigned int const               n = E.size();
+    std::vector<VectorType>          Q;
+    std::vector<std::vector<double>> T;
+    for(unsigned int l = 0; l < n; ++l)
+    {
+      double const e_norm = E[l].l2_norm();
+      if(e_norm == 0.0)
+        continue;
+      VectorType          v(E[l]);
+      std::vector<double> c(n, 0.0);
+      c[l] = 1.0;
+      for(unsigned int pass = 0; pass < 2; ++pass)
+        for(unsigned int i = 0; i < Q.size(); ++i)
+        {
+          double const a = Q[i] * v;
+          v.add(-a, Q[i]);
+          for(unsigned int j = 0; j < n; ++j)
+            c[j] -= a * T[i][j];
+        }
+      double const v_norm = v.l2_norm();
+      if(v_norm <= 1.e-10 * e_norm)
+        continue;
+      v *= 1.0 / v_norm;
+      for(double & cj : c)
+        cj /= v_norm;
+      Q.push_back(v);
+      T.push_back(c);
+    }
+
+    std::vector<double> coefficients(n, 0.0);
+    VectorType          remainder(r);
+    for(unsigned int l = 0; l < Q.size(); ++l)
+    {
+      double const a = Q[l] * r;
+      remainder.add(-a, Q[l]);
+      for(unsigned int j = 0; j < n; ++j)
+        coefficients[j] += a * T[l][j];
+    }
+    for(unsigned int j = 0; j < n; ++j)
+      if(coefficients[j] != 0.0)
+        for(unsigned int c = 0; c < 3; ++c)
+          x[c].add(coefficients[j], D[j][c]);
+
+    return remainder.l2_norm() / r_norm;
+  }
+
+  /*
    * AffineStatePrediction: for a frozen geometry the fluid step is affine in its Dirichlet data
    * w (the structure velocity on the interface). Every state solve of the time step yields a pair
    * (w_i, u_i), every tangent solve a pair (dw_j, du_j) with u(w + dw_j) = u(w) + du_j. The state
@@ -1151,6 +1260,10 @@ public:
   void
   clear_affine_pairs()
   {
+    splitting_state_w.clear();
+    splitting_state_x.clear();
+    splitting_tangent_w.clear();
+    splitting_tangent_x.clear();
     affine_state_w.clear();
     affine_state_u.clear();
     affine_tangent_w.clear();
@@ -1953,6 +2066,21 @@ private:
     if(projection_target)
       set_projection_absolute_tolerances(1.0);
 
+    VectorType w_splitting;
+    if(splitting_state_prediction)
+    {
+      w_splitting = native_velocity;
+      w_splitting.scale(structure_space.mask);
+      if(projection_target and not splitting_state_w.empty())
+      {
+        SplittingVectors x;
+        affine_remainder_sum += predict_splitting_state(x, w_splitting);
+        for(unsigned int i = 0; i < 3; ++i)
+          time_integrator_splitting->get_warm_start_vector(i) = x[i];
+        ++predicted_states;
+      }
+    }
+
     VectorType traction;
     initialize_vector(traction);
     fluid->pde_operator->set_solver_tolerance_factor(state_tolerance_factor);
@@ -1976,6 +2104,16 @@ private:
     {
       affine_state_w.push_back(w);
       affine_state_u.push_back(time_integrator_coupled->get_solution_np());
+    }
+    if(splitting_state_prediction)
+    {
+      splitting_state_w.push_back(w_splitting);
+      splitting_state_x.push_back(splitting_vectors());
+      if(splitting_state_w.size() > affine_max_pairs)
+      {
+        splitting_state_w.erase(splitting_state_w.begin());
+        splitting_state_x.erase(splitting_state_x.begin());
+      }
     }
 
     // data of the linearisation of the fluid boundary terms: Dirichlet data of the state and the
@@ -2087,6 +2225,24 @@ private:
       native_fluid_response(t_plus, v_plus, not projection_target);
       if(projection_target)
         fluid->pde_operator->set_solver_absolute_tolerances({{0.0, 0.0, 0.0}});
+      if(splitting_state_prediction and not splitting_state_x.empty())
+      {
+        // pair (dw, dX) per unit of the perturbation eps y of the latest state
+        SplittingVectors dx = splitting_vectors();
+        for(unsigned int c = 0; c < 3; ++c)
+        {
+          dx[c].add(-1.0, splitting_state_x.back()[c]);
+          dx[c] *= 1.0 / eps;
+        }
+        splitting_tangent_w.push_back(y);
+        splitting_tangent_w.back().scale(structure_space.mask);
+        splitting_tangent_x.push_back(std::move(dx));
+        if(splitting_tangent_w.size() > affine_max_pairs)
+        {
+          splitting_tangent_w.erase(splitting_tangent_w.begin());
+          splitting_tangent_x.erase(splitting_tangent_x.begin());
+        }
+      }
       if(tangent_difference == TangentDifference::Central)
       {
         VectorType v_minus(native_velocity), t_minus;
@@ -3548,6 +3704,12 @@ private:
 
   // AffineStatePrediction: pairs of the current time step (frozen geometry)
   bool                                 affine_state_prediction = false;
+  bool splitting_state_prediction = false;
+  std::shared_ptr<IncNS::TimeIntBDFDualSplitting<dim, Number>> time_integrator_splitting;
+  std::vector<VectorType>                                      splitting_state_w;
+  std::vector<std::array<VectorType, 3>>                       splitting_state_x;
+  mutable std::vector<VectorType>                              splitting_tangent_w;
+  mutable std::vector<std::array<VectorType, 3>>               splitting_tangent_x;
   unsigned int                         affine_max_pairs        = 64;
   std::vector<VectorType>              affine_state_w;
   std::vector<BlockVectorType>         affine_state_u;

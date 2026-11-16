@@ -79,6 +79,8 @@
         "AffineStatePrediction": "true",
         "SurrogateDiagnostics": "false",
         "TangentInitialGuess": "true",
-        "TangentInitialGuessPairs": "16"
+        "TangentInitialGuessPairs": "16",
+        "ModelNewtonSteps": "false",
+        "TangentDifferenceToleranceFactor": "1.0"
     }
 }

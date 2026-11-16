@@ -76,6 +76,8 @@
         "InterfaceEquation": "true",
         "MethodSchedule": "0:InterfaceQuasiNewton",
         "ControlExtrapolationOrder": "2",
-        "AffineStatePrediction": "true"
+        "AffineStatePrediction": "true",
+        "ModelNewtonSteps": "false",
+        "TangentDifferenceToleranceFactor": "1.0"
     }
 }

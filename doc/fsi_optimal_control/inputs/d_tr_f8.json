@@ -73,6 +73,8 @@
         "LinearizedToleranceTarget": "1.0",
         "InterfaceEquation": "true",
         "AffineStatePrediction": "false",
-        "ControlExtrapolationOrder": "2"
+        "ControlExtrapolationOrder": "2",
+        "ModelNewtonSteps": "false",
+        "TangentDifferenceToleranceFactor": "1.0"
     }
 }

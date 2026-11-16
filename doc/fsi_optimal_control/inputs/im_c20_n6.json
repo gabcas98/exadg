@@ -86,6 +86,8 @@
         "ControlExtrapolationOrder": "2",
         "AffineStatePrediction": "true",
         "FluidKrylovRecycling": "16",
-        "TangentInitialGuessAccuracy": "0.1"
+        "TangentInitialGuessAccuracy": "0.1",
+        "ModelNewtonSteps": "false",
+        "TangentDifferenceToleranceFactor": "1.0"
     }
 }

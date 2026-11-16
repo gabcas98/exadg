@@ -1,0 +1,85 @@
+{
+    "General": {
+        "Precision": "double",
+        "Dim": "2",
+        "IsTest": "false"
+    },
+    "SpatialResolutionFluid": {
+        "Degree": "3",
+        "RefineSpace": "1"
+    },
+    "SpatialResolutionStructure": {
+        "Degree": "4",
+        "RefineSpace": "0"
+    },
+    "FSI": {
+        "AccelerationMethod": "OptimalControl",
+        "AbsTol": "1.e-14",
+        "RelTol": "1.e-10",
+        "OmegaInit": "0.3",
+        "ReusedTimeSteps": "8",
+        "PartitionedIterMax": "100",
+        "MonitorPoint": "0.6,0.2"
+    },
+    "Application": {
+        "TractionCoupling": "false",
+        "CoupledFluidSolver": "false",
+        "PullBackTraction": "false",
+        "EndTime": "5.0",
+        "SpectralRadius": "0.0",
+        "AdaptiveTimeStepping": "true",
+        "FluidSolverRelTol": "1.e-8",
+        "FluidSolverAbsTol": "1.e-12",
+        "StructurePreconditioner": "Direct",
+        "StructurePreconditionerUpdate": "10",
+        "ALEPreconditioner": "Direct",
+        "PressurePoissonPreconditioner": "Direct",
+        "CoupledSchurDirect": "true"
+    },
+    "Output": {
+        "OutputDirectory": "output/mn_d_gnm/",
+        "OutputName": "mn_d_gnm",
+        "WriteOutput": "false"
+    },
+    "OptimalControl": {
+        "Method": "GaussNewton",
+        "Regularization": "0",
+        "MaxIterations": "200",
+        "MismatchTolerance": "1.e-5",
+        "GradientToleranceRelative": "1.e-14",
+        "KrylovMaxIterations": "200",
+        "ForcingTermMax": "1.e-2",
+        "GeometryIterations": "1",
+        "GeometryTolerance": "1.e-9",
+        "UseAreaScaling": "true",
+        "VerifyDerivatives": "false",
+        "Verbose": "false",
+        "ControlSpace": "Structure",
+        "Preconditioner": "None",
+        "PreconditionerUpdateInterval": "10",
+        "Formulation": "NativeTraction",
+        "GeometryInState": "false",
+        "NativeTangentDifference": "Forward",
+        "ExtrapolateControl": "true",
+        "WarmStart": "true",
+        "AdaptiveInnerTolerance": "false",
+        "QNInitialJacobian": "Relaxation",
+        "QNReuseTimeSteps": "8",
+        "MismatchToleranceRelative": "1.e-5",
+        "StagnationIterations": "10",
+        "RecycledPreconditioner": "true",
+        "RecycleTimeSteps": "16",
+        "LinearizedToleranceFactor": "1.e2",
+        "ForcingTermTarget": "1.0",
+        "TangentStatePrediction": "false",
+        "RecycleMaxPairs": "240",
+        "LinearizedToleranceTarget": "1.0",
+        "InterfaceEquation": "true",
+        "MethodSchedule": "",
+        "ControlExtrapolationOrder": "2",
+        "AffineStatePrediction": "false",
+        "TangentDifferenceToleranceFactor": "100",
+        "WarmStartAbsoluteTolerance": "true",
+        "ModelNewtonSteps": "true"
+    }
+}

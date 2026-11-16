@@ -155,7 +155,7 @@ struct Parameters
       recycled_preconditioner(false),
       linearized_initial_guess(false),
       tangent_state_prediction(false),
-      affine_state_prediction(false),
+      affine_state_prediction(true),
       affine_prediction_max_pairs(64),
       warm_start_absolute_tolerance(false),
       interface_equation(false),
@@ -171,6 +171,10 @@ struct Parameters
       forcing_term_max(1.e-1),
       forcing_term_target(0.0),
       forcing_term_target_max(0.0),
+      model_newton_steps(true),
+      model_step_min_success(0.5),
+      model_step_rate_weight(0.1),
+      model_step_probe_interval(10),
       native_tangent_step(1.e-2),
       area_ratio_from_state(true),
       surrogate_diagnostics(false),
@@ -179,7 +183,7 @@ struct Parameters
       tangent_initial_guess_pairs(48),
       tangent_initial_guess_accuracy(1.0),
       fluid_krylov_recycling(0),
-      tangent_difference_tolerance_factor(1.0),
+      tangent_difference_tolerance_factor(1.e4),
       lbfgs_memory(10),
       lm_lambda_initial(1.e-2),
       lm_lambda_min(1.e-12),
@@ -297,7 +301,10 @@ struct Parameters
         "(dw_j, du_j) of the tangent solves of the time step predict the fluid state of a new w "
         "by least squares, u = u_k + sum a_l (u_l - u_k) + sum b_j du_j; the state solve starts "
         "from this prediction and stops at the absolute accuracy of the solve from the "
-        "extrapolation (relative tolerance times its initial residual).",
+        "extrapolation (relative tolerance times its initial residual). Dual splitting (with "
+        "WarmStart and WarmStartAbsoluteTolerance, otherwise ignored): prediction of the initial "
+        "guesses of the pressure Poisson, viscous and penalty steps from the states and the "
+        "difference-quotient tangents of the time step.",
         dealii::Patterns::Bool(),
         false);
       prm.add_parameter("AffinePredictionMaxPairs",
@@ -407,6 +414,36 @@ struct Parameters
         dealii::Patterns::Double(0.0, 1.0),
         false);
       prm.add_parameter(
+        "ModelNewtonSteps",
+        model_newton_steps,
+        "InterfaceNewton and the InterfaceEquation variants of GaussNewton: try the step "
+        "d = -H m of the recycled inverse H (exact on the tangent pairs of previous steps and on "
+        "the secant pairs of the current solve) before any tangent solve. The state of the trial "
+        "point verifies the step and gives an exact secant pair (S d for the affine fluid step); "
+        "the Krylov solve with tangents is only done if the model step does not reach the mismatch "
+        "tolerance (tangents on demand).",
+        dealii::Patterns::Bool(),
+        false);
+      prm.add_parameter(
+        "ModelStepMinSuccess",
+        model_step_min_success,
+        "ModelNewtonSteps: the model step is tried while the moving average of its success "
+        "(tolerance reached without tangents) is at least this value; otherwise only every "
+        "ModelStepProbeInterval solves. A failed model step costs a state, a successful one saves "
+        "the tangents of the solve.",
+        dealii::Patterns::Double(0.0, 1.0),
+        false);
+      prm.add_parameter("ModelStepRateWeight",
+                        model_step_rate_weight,
+                        "ModelNewtonSteps: weight of the last solve in the moving average.",
+                        dealii::Patterns::Double(0.0, 1.0),
+                        false);
+      prm.add_parameter("ModelStepProbeInterval",
+                        model_step_probe_interval,
+                        "ModelNewtonSteps: probe interval (solves) while the success rate is low.",
+                        dealii::Patterns::Integer(1),
+                        false);
+      prm.add_parameter(
         "TangentInitialGuess",
         tangent_initial_guess,
         "Analytic tangent (coupled fluid solver): initial guess of the fluid solve from the "
@@ -469,7 +506,10 @@ struct Parameters
         "TangentDifferenceToleranceFactor",
         tangent_difference_tolerance_factor,
         "NativeTangentDifference Forward/Central: factor on the relative tolerances of the fluid "
-        "solvers in the fluid steps of the difference quotient.",
+        "solvers in the fluid steps of the difference quotient. The quotient needs the relative "
+        "accuracy of a tangent (about 1e-2), not the one of a state: with the warm start from the "
+        "state at the distance NativeTangentStep, the default 1e4 gives a relative accuracy of about "
+        "1e4 * (fluid tolerance) / NativeTangentStep.",
         dealii::Patterns::Double(1.0),
         false);
       prm.add_parameter("LBFGSMemory",
@@ -700,6 +740,10 @@ struct Parameters
   double       forcing_term_max;
   double       forcing_term_target;
   double       forcing_term_target_max;
+  bool         model_newton_steps;
+  double       model_step_min_success;
+  double       model_step_rate_weight;
+  unsigned int model_step_probe_interval;
   double       native_tangent_step;
   bool         area_ratio_from_state;
   bool         surrogate_diagnostics;

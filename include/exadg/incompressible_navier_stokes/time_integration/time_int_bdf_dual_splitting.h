@@ -76,6 +76,19 @@ public:
   VectorType const &
   get_pressure_np() const final;
 
+  /*
+   * Initial guesses of a partitioned solve without extrapolation (warm start): i = 0 pressure
+   * Poisson, i = 1 viscous step, i = 2 penalty (projection) step. They can be overwritten with a
+   * prediction of the solution before the next solve.
+   */
+  VectorType &
+  get_warm_start_vector(unsigned int const i)
+  {
+    AssertThrow(i < 3, dealii::ExcIndexRange(i, 0, 3));
+    return i == 0 ? pressure_last_iter :
+                    (i == 1 ? velocity_viscous_last_iter : velocity_projection_last_iter);
+  }
+
 private:
   void
   allocate_vectors() final;

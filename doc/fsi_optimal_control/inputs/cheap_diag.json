@@ -82,6 +82,8 @@
         "AffineStatePrediction": "true",
         "FluidKrylovRecycling": "16",
         "TangentInitialGuessAccuracy": "0.1",
-        "CheapTangentDiagnostics": "true"
+        "CheapTangentDiagnostics": "true",
+        "ModelNewtonSteps": "false",
+        "TangentDifferenceToleranceFactor": "1.0"
     }
 }

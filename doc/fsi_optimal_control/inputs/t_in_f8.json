@@ -69,6 +69,9 @@
         "ForcingTermTarget": "1.0",
         "TangentStatePrediction": "true",
         "RecycleMaxPairs": "240",
-        "LinearizedToleranceTarget": "1.0"
+        "LinearizedToleranceTarget": "1.0",
+        "ModelNewtonSteps": "false",
+        "AffineStatePrediction": "false",
+        "TangentDifferenceToleranceFactor": "1.0"
     }
 }

@@ -79,6 +79,7 @@
         "ControlExtrapolationOrder": "2",
         "AffineStatePrediction": "false",
         "TangentDifferenceToleranceFactor": "100",
-        "WarmStartAbsoluteTolerance": "true"
+        "WarmStartAbsoluteTolerance": "true",
+        "ModelNewtonSteps": "false"
     }
 }

@@ -70,6 +70,9 @@
         "RecycleMaxPairs": "240",
         "LinearizedToleranceTarget": "1.0",
         "InterfaceEquation": "true",
-        "MethodSchedule": "0:InterfaceQuasiNewton,14:InterfaceNewton,15:GaussNewton,16:LevenbergMarquardt,17:TrustRegion,18:SteepestDescent,19:LBFGS,20:InterfaceQuasiNewton"
+        "MethodSchedule": "0:InterfaceQuasiNewton,14:InterfaceNewton,15:GaussNewton,16:LevenbergMarquardt,17:TrustRegion,18:SteepestDescent,19:LBFGS,20:InterfaceQuasiNewton",
+        "ModelNewtonSteps": "false",
+        "AffineStatePrediction": "false",
+        "TangentDifferenceToleranceFactor": "1.0"
     }
 }

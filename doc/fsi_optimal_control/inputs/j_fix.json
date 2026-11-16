@@ -76,6 +76,7 @@
         "ControlExtrapolationOrder": "2",
         "AffineStatePrediction": "false",
         "TangentDifferenceToleranceFactor": "100",
-        "AreaRatioFromState": "false"
+        "AreaRatioFromState": "false",
+        "ModelNewtonSteps": "false"
     }
 }

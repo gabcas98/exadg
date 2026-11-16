@@ -72,6 +72,8 @@
         "InterfaceEquation": "true",
         "MethodSchedule": "0:InterfaceQuasiNewton,15:InterfaceNewton,16:GaussNewton,17:LevenbergMarquardt,18:TrustRegion,19:InterfaceQuasiNewton",
         "ControlExtrapolationOrder": "2",
-        "AffineStatePrediction": "false"
+        "AffineStatePrediction": "false",
+        "ModelNewtonSteps": "false",
+        "TangentDifferenceToleranceFactor": "1.0"
     }
 }

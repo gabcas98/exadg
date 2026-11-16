@@ -209,6 +209,22 @@ public:
     // after a failed step: derivatives at full accuracy, no recycled pairs of previous steps
     bool safeguarded = false;
 
+    // ModelNewtonSteps: one step of the recycled inverse per solve, if such steps have recently
+    // reached the tolerance often enough (with a probe every ModelStepProbeInterval solves)
+    bool model_steps_enabled = false;
+    // (not in the first time steps, where the recycled inverse has hardly any pairs)
+    if(param.model_newton_steps and recycle_history.size() >= 2 and
+       (active_method == Method::InterfaceNewton or uses_interface_equation()))
+    {
+      ++model_solves_since_probe;
+      if(model_success_rate >= param.model_step_min_success or
+         model_solves_since_probe >= param.model_step_probe_interval)
+      {
+        model_steps_enabled      = true;
+        model_solves_since_probe = 0;
+      }
+    }
+
     // L-BFGS bookkeeping
     VectorType r_old, s_old;
     bool       has_pending_pair = false;
@@ -276,6 +292,55 @@ public:
       if(param.verbose)
         pcout << "      tolerance = " << std::scientific << std::setprecision(3) << tolerance
               << ", ||m|| / tolerance = " << m_norm / tolerance << std::defaultfloat << std::endl;
+
+      /*
+       * Model step without tangent solves (ModelNewtonSteps): d = -H m with the recycled inverse
+       * H, exact on the tangent pairs of previous steps and on the secant pairs of this solve.
+       * For the affine fluid step (explicit geometry) the difference m(g + d) - m(g) is S d up to
+       * the nonlinearity of the structure, i.e. an exact pair for H. Tangents are only computed
+       * if the model step does not reach the mismatch tolerance.
+       */
+      if(model_steps_enabled and not safeguarded and
+         (active_method == Method::InterfaceNewton or uses_interface_equation()))
+      {
+        rebuild_recycled_preconditioner();
+        if(has_recycled_preconditioner())
+        {
+          apply_recycled(d, m);
+          d *= -1.0;
+          trial_g = g;
+          trial_g.add(1.0, d);
+          double const J_trial    = evaluate(trial_m, trial_g);
+          double const trial_norm = norm_mismatch(trial_m);
+          ++model_steps_tried;
+          if(param.recycled_preconditioner and std::isfinite(trial_norm))
+          {
+            VectorType y(trial_m);
+            y.add(-1.0, m);
+            recycle_now.emplace_back(d, y);
+          }
+          if(std::isfinite(trial_norm) and trial_norm < m_norm)
+          {
+            g = trial_g;
+            m = trial_m;
+            J = J_trial;
+            save_linearization();
+            ++stats.iterations;
+          }
+          else
+            restore_linearization();
+          // success: the model step alone reached the tolerance; otherwise the solve continues
+          // with tangents (from the better point, if the model step reduced ||m||)
+          bool const success = std::isfinite(trial_norm) and trial_norm <= tolerance;
+          if(success)
+            ++model_steps_accepted;
+          model_success_rate = (1.0 - param.model_step_rate_weight) * model_success_rate +
+                               param.model_step_rate_weight * (success ? 1.0 : 0.0);
+          model_steps_enabled = false;
+          if(std::isfinite(trial_norm) and trial_norm < m_norm)
+            continue;
+        }
+      }
 
       bool step_accepted = false;
 
@@ -1829,6 +1894,10 @@ private:
 
 public:
   unsigned int recycled_restarts = 0; // history discarded (no descent direction)
+  unsigned int model_steps_tried    = 0; // ModelNewtonSteps: steps d = -H m evaluated
+  unsigned int model_steps_accepted = 0; // ... that reached the tolerance
+  double       model_success_rate       = 1.0; // moving average of the success of model steps
+  unsigned int model_solves_since_probe = 0;
   // wall time of the recycled inverse: rebuild (orthogonalization) and application
   double         time_recycled_rebuild = 0.0;
   mutable double time_recycled_apply   = 0.0;

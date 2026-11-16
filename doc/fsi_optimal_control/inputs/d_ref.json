@@ -66,6 +66,8 @@
         "StagnationIterations": "10",
         "ControlExtrapolationOrder": "2",
         "AffineStatePrediction": "false",
-        "TangentStatePrediction": "false"
+        "TangentStatePrediction": "false",
+        "ModelNewtonSteps": "false",
+        "TangentDifferenceToleranceFactor": "1.0"
     }
 }
