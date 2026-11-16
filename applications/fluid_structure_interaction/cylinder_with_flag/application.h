@@ -293,6 +293,46 @@ private:
                         ale_large_deformation,
                         "Nonlinear (large-deformation) elasticity for the ALE mesh motion.",
                         dealii::Patterns::Bool());
+      prm.add_parameter("CoupledConvectiveImplicit",
+                        coupled_convective_implicit,
+                        "Coupled fluid solver: implicit convective term (Newton), no CFL limit of "
+                        "the explicit convection (only for methods without analytic derivatives).",
+                        dealii::Patterns::Bool());
+      prm.add_parameter("CoupledNewtonAbsTol",
+                        coupled_newton_abs_tol,
+                        "CoupledConvectiveImplicit: absolute tolerance of the Newton solver.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("CoupledNewtonRelTol",
+                        coupled_newton_rel_tol,
+                        "CoupledConvectiveImplicit: relative tolerance of the Newton solver.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("CoupledVelocityMultigridType",
+                        coupled_velocity_multigrid_type,
+                        "Multigrid type of the velocity block of the coupled fluid solver.",
+                        Patterns::Enum<MultigridType>());
+      prm.add_parameter("CoupledSchurDirect",
+                        coupled_schur_direct,
+                        "Coupled fluid solver: Laplace operator of the Schur-complement "
+                        "preconditioner inverted by a sparse direct solver instead of multigrid.",
+                        dealii::Patterns::Bool());
+      prm.add_parameter("PressurePoissonPreconditioner",
+                        pressure_poisson_preconditioner,
+                        "Dual splitting: preconditioner of the pressure Poisson equation (Direct: "
+                        "sparse direct solver of the assembled matrix).",
+                        Patterns::Enum<IncNS::PreconditionerPressurePoisson>());
+      prm.add_parameter("ViscousPreconditioner",
+                        viscous_preconditioner,
+                        "Dual splitting: preconditioner of the viscous step.",
+                        Patterns::Enum<IncNS::MomentumPreconditioner>());
+      prm.add_parameter("ProjectionPreconditioner",
+                        projection_preconditioner,
+                        "Dual splitting: preconditioner of the penalty (projection) step.",
+                        Patterns::Enum<IncNS::PreconditionerProjection>());
+      prm.add_parameter("FluidPreconditionerUpdate",
+                        fluid_preconditioner_update,
+                        "Renewal of the matrix-based (Direct) fluid preconditioners every ... time "
+                        "steps (0: never, the matrix of the first time step is kept).",
+                        dealii::Patterns::Integer(0));
       prm.add_parameter("PenaltyTerms",
                         penalty_terms,
                         "Divergence and continuity penalty terms of the fluid.",
@@ -316,6 +356,18 @@ private:
   double                        coupled_rel_tol        = 1.e-10;
   bool                          penalty_terms          = true;
   bool                          adaptive_time_stepping = true;
+  IncNS::PreconditionerPressurePoisson pressure_poisson_preconditioner =
+    IncNS::PreconditionerPressurePoisson::Direct;
+  IncNS::MomentumPreconditioner viscous_preconditioner =
+    IncNS::MomentumPreconditioner::InverseMassMatrix;
+  IncNS::PreconditionerProjection projection_preconditioner =
+    IncNS::PreconditionerProjection::InverseMassMatrix;
+  unsigned int                  fluid_preconditioner_update = 0;
+  bool                          coupled_schur_direct        = true;
+  MultigridType                 coupled_velocity_multigrid_type = MultigridType::cphMG;
+  bool                          coupled_convective_implicit = false;
+  double                        coupled_newton_abs_tol      = 1.e-12;
+  double                        coupled_newton_rel_tol      = 1.e-8;
   IncNS::MomentumPreconditioner coupled_velocity_preconditioner =
     IncNS::MomentumPreconditioner::InverseMassMatrix;
   IncNS::SchurComplementPreconditioner coupled_schur_preconditioner =
@@ -421,7 +473,13 @@ private:
     // pressure Poisson equation
     param.solver_data_pressure_poisson =
       SolverData(1000, fluid_abs_tol, fluid_rel_tol, LinearSolver::CG, 100);
-    param.preconditioner_pressure_poisson      = PreconditionerPressurePoisson::Multigrid;
+    param.preconditioner_pressure_poisson      = pressure_poisson_preconditioner;
+    if(pressure_poisson_preconditioner == PreconditionerPressurePoisson::Direct and
+       fluid_preconditioner_update > 0)
+    {
+      param.update_preconditioner_pressure_poisson                  = true;
+      param.update_preconditioner_pressure_poisson_every_time_steps = fluid_preconditioner_update;
+    }
     param.multigrid_data_pressure_poisson.type = MultigridType::cphMG;
     param.multigrid_data_pressure_poisson.smoother_data.smoother = MultigridSmoother::Chebyshev;
     param.multigrid_data_pressure_poisson.smoother_data.preconditioner =
@@ -432,7 +490,14 @@ private:
 
     // projection step
     param.solver_data_projection = SolverData(1000, fluid_abs_tol, fluid_rel_tol, LinearSolver::CG);
-    param.preconditioner_projection = PreconditionerProjection::InverseMassMatrix;
+    param.preconditioner_projection = projection_preconditioner;
+    if(projection_preconditioner == PreconditionerProjection::Direct and
+       fluid_preconditioner_update > 0)
+    {
+      // the penalty parameters depend on the velocity
+      param.update_preconditioner_projection                  = true;
+      param.update_preconditioner_projection_every_time_steps = fluid_preconditioner_update;
+    }
 
     // HIGH-ORDER DUAL SPLITTING SCHEME
 
@@ -445,7 +510,14 @@ private:
     {
       this->param.solver_data_momentum =
         SolverData(1000, fluid_abs_tol, fluid_rel_tol, LinearSolver::CG);
-      this->param.preconditioner_momentum = MomentumPreconditioner::InverseMassMatrix;
+      this->param.preconditioner_momentum = viscous_preconditioner;
+      if(viscous_preconditioner == MomentumPreconditioner::Direct and
+         fluid_preconditioner_update > 0)
+      {
+        // the time step size changes the mass coefficient
+        this->param.update_preconditioner_momentum                  = true;
+        this->param.update_preconditioner_momentum_every_time_steps = fluid_preconditioner_update;
+      }
     }
 
 
@@ -489,11 +561,19 @@ private:
     // preconditioner linear solver
     param.preconditioner_coupled        = PreconditionerCoupled::BlockTriangular;
     param.update_preconditioner_coupled = false;
+    if(fluid_preconditioner_update > 0 and
+       (coupled_velocity_preconditioner == MomentumPreconditioner::Direct or coupled_schur_direct))
+    {
+      // the time step size changes the mass coefficient, the mesh moves (ALE)
+      param.update_preconditioner_coupled                  = true;
+      param.update_preconditioner_coupled_every_time_steps = fluid_preconditioner_update;
+      param.update_preconditioner_coupled_every_newton_iter = 1000;
+    }
 
     // preconditioner momentum block
     param.preconditioner_velocity_block          = coupled_velocity_preconditioner;
     param.multigrid_operator_type_velocity_block = MultigridOperatorType::ReactionDiffusion;
-    param.multigrid_data_velocity_block.type     = MultigridType::cphMG;
+    param.multigrid_data_velocity_block.type     = coupled_velocity_multigrid_type;
     param.multigrid_data_velocity_block.smoother_data.smoother = MultigridSmoother::Chebyshev;
     param.multigrid_data_velocity_block.smoother_data.preconditioner =
       PreconditionerSmoother::PointJacobi;
@@ -503,6 +583,7 @@ private:
 
     // preconditioner Schur-complement block
     param.preconditioner_pressure_block                       = coupled_schur_preconditioner;
+    param.direct_solve_of_pressure_block                      = coupled_schur_direct;
     param.multigrid_data_pressure_block.type                  = coupled_schur_multigrid_type;
     param.multigrid_data_pressure_block.coarse_problem.solver = coupled_schur_coarse_solver;
     param.multigrid_data_pressure_block.coarse_problem.preconditioner =
@@ -520,6 +601,18 @@ private:
       // sensitivities and adjoints are only as accurate as the linear solves
       param.solver_data_coupled =
         SolverData(1e4, coupled_abs_tol, coupled_rel_tol, LinearSolver::FGMRES, 100);
+
+      if(coupled_convective_implicit)
+      {
+        // nonlinear fluid step: Newton with linear solves to CoupledSolverAbs/RelTol
+        param.treatment_of_convective_term = TreatmentOfConvectiveTerm::Implicit;
+        param.newton_solver_data_coupled =
+          Newton::SolverData(100, coupled_newton_abs_tol, coupled_newton_rel_tol);
+        param.multigrid_operator_type_velocity_block =
+          MultigridOperatorType::ReactionConvectionDiffusion;
+        if(param.update_preconditioner_coupled)
+          param.update_preconditioner_coupled_every_newton_iter = 1;
+      }
     }
   }
 

@@ -31,7 +31,9 @@
         "CoupledSolverRelTol": "1.e-8",
         "CoupledSchurCoarseSolver": "CG",
         "CoupledSchurCoarsePreconditioner": "AMG",
-        "CoupledSchurMultigridType": "cphMG"
+        "CoupledSchurMultigridType": "cphMG",
+        "PressurePoissonPreconditioner": "Multigrid",
+        "CoupledSchurDirect": "false"
     },
     "Output": {
         "OutputDirectory": "output/ti5/",

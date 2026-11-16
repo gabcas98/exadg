@@ -27,7 +27,9 @@
         "PullBackTraction": "false",
         "EndTime": "1.0",
         "SpectralRadius": "0.0",
-        "AdaptiveTimeStepping": "true"
+        "AdaptiveTimeStepping": "true",
+        "PressurePoissonPreconditioner": "Multigrid",
+        "CoupledSchurDirect": "false"
     },
     "Output": {
         "OutputDirectory": "output/t_in_i5/",

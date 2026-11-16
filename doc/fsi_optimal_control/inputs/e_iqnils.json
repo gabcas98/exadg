@@ -1,35 +1,37 @@
 {
- "General": {
-  "Precision": "double",
-  "Dim": "2",
-  "IsTest": "false"
- },
- "SpatialResolutionFluid": {
-  "Degree": "3",
-  "RefineSpace": "1"
- },
- "SpatialResolutionStructure": {
-  "Degree": "4",
-  "RefineSpace": "0"
- },
- "FSI": {
-  "AccelerationMethod": "IQN_ILS",
-  "AbsTol": "1.e-11",
-  "RelTol": "1.e-6",
-  "OmegaInit": "0.3",
-  "ReusedTimeSteps": "8",
-  "PartitionedIterMax": "100",
-  "MonitorPoint": "0.6,0.2"
- },
- "Application": {
-  "EndTime": "0.0625",
-  "CoupledFluidSolver": "true",
-  "SpectralRadius": "0.0",
-  "AdaptiveTimeStepping": "false"
- },
- "Output": {
-  "OutputDirectory": "output/e_iqnils/",
-  "OutputName": "e_iqnils",
-  "WriteOutput": "false"
- }
+    "General": {
+        "Precision": "double",
+        "Dim": "2",
+        "IsTest": "false"
+    },
+    "SpatialResolutionFluid": {
+        "Degree": "3",
+        "RefineSpace": "1"
+    },
+    "SpatialResolutionStructure": {
+        "Degree": "4",
+        "RefineSpace": "0"
+    },
+    "FSI": {
+        "AccelerationMethod": "IQN_ILS",
+        "AbsTol": "1.e-11",
+        "RelTol": "1.e-6",
+        "OmegaInit": "0.3",
+        "ReusedTimeSteps": "8",
+        "PartitionedIterMax": "100",
+        "MonitorPoint": "0.6,0.2"
+    },
+    "Application": {
+        "EndTime": "0.0625",
+        "CoupledFluidSolver": "true",
+        "SpectralRadius": "0.0",
+        "AdaptiveTimeStepping": "false",
+        "PressurePoissonPreconditioner": "Multigrid",
+        "CoupledSchurDirect": "false"
+    },
+    "Output": {
+        "OutputDirectory": "output/e_iqnils/",
+        "OutputName": "e_iqnils",
+        "WriteOutput": "false"
+    }
 }

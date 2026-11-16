@@ -22,6 +22,7 @@
 #include <exadg/incompressible_navier_stokes/spatial_discretization/operator_projection_methods.h>
 #include <exadg/poisson/preconditioners/multigrid_preconditioner.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/jacobi_preconditioner.h>
+#include <exadg/solvers_and_preconditioners/preconditioners/preconditioner_direct.h>
 #include <exadg/solvers_and_preconditioners/utilities/check_multigrid.h>
 
 namespace ExaDG
@@ -202,6 +203,13 @@ OperatorProjectionMethods<dim, Number>::setup_preconditioner_pressure_poisson()
                                   dirichlet_boundary_conditions,
                                   dirichlet_bc_component_mask);
   }
+  else if(this->param.preconditioner_pressure_poisson == PreconditionerPressurePoisson::Direct)
+  {
+    // factorization of the matrix on the current mesh, renewed when the preconditioner is updated
+    preconditioner_pressure_poisson =
+      std::make_shared<PreconditionerDirect<Poisson::LaplaceOperator<dim, Number, 1>, Number>>(
+        laplace_operator, false);
+  }
   else
   {
     AssertThrow(false,
@@ -298,6 +306,12 @@ OperatorProjectionMethods<dim, Number>::setup_momentum_preconditioner()
                                   this->param.ale_formulation,
                                   dirichlet_boundary_conditions,
                                   dirichlet_bc_component_mask);
+  }
+  else if(this->param.preconditioner_momentum == MomentumPreconditioner::Direct)
+  {
+    momentum_preconditioner =
+      std::make_shared<PreconditionerDirect<MomentumOperator<dim, Number>, Number>>(
+        this->momentum_operator, false);
   }
   else
   {

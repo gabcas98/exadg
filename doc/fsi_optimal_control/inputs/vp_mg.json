@@ -32,7 +32,9 @@
         "CoupledSchurCoarseSolver": "CG",
         "CoupledSchurCoarsePreconditioner": "AMG",
         "CoupledSchurMultigridType": "cphMG",
-        "CoupledVelocityPreconditioner": "Multigrid"
+        "CoupledVelocityPreconditioner": "Multigrid",
+        "PressurePoissonPreconditioner": "Multigrid",
+        "CoupledSchurDirect": "false"
     },
     "Output": {
         "OutputDirectory": "output/vp_mg/",

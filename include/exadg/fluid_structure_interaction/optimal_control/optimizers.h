@@ -201,6 +201,8 @@ public:
     double const m0_norm = norm_mismatch(m);
     if(param.surrogate_diagnostics)
       problem.surrogate_diagnostics(m, pcout);
+    if(param.cheap_tangent_diagnostics)
+      problem.cheap_tangent_diagnostics(m, pcout);
 
     double r0_norm = 0.0;
 

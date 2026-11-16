@@ -32,6 +32,7 @@
 #include <exadg/solvers_and_preconditioners/preconditioners/block_jacobi_preconditioner.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/inverse_mass_preconditioner.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/jacobi_preconditioner.h>
+#include <exadg/solvers_and_preconditioners/preconditioners/preconditioner_direct.h>
 #include <exadg/time_integration/restart.h>
 #include <exadg/utilities/exceptions.h>
 
@@ -1951,6 +1952,11 @@ SpatialOperatorBase<dim, Number>::setup_projection_solver()
       // preconditioning.
       preconditioner_projection =
         std::make_shared<BlockJacobiPreconditioner<ProjOperator>>(*projection_operator, false);
+    }
+    else if(param.preconditioner_projection == PreconditionerProjection::Direct)
+    {
+      preconditioner_projection =
+        std::make_shared<PreconditionerDirect<ProjOperator, Number>>(*projection_operator, false);
     }
     else if(param.preconditioner_projection == PreconditionerProjection::Multigrid)
     {

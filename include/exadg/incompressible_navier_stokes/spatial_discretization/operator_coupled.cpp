@@ -28,6 +28,7 @@
 #include <exadg/solvers_and_preconditioners/preconditioners/block_jacobi_preconditioner.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/inverse_mass_preconditioner.h>
 #include <exadg/solvers_and_preconditioners/preconditioners/jacobi_preconditioner.h>
+#include <exadg/solvers_and_preconditioners/preconditioners/preconditioner_direct.h>
 #include <exadg/solvers_and_preconditioners/utilities/check_multigrid.h>
 
 namespace ExaDG
@@ -521,6 +522,14 @@ OperatorCoupled<dim, Number>::initialize_preconditioner_velocity_block()
       std::make_shared<InverseMassPreconditioner<dim, dim, Number>>(this->get_matrix_free(),
                                                                     inverse_mass_operator_data);
   }
+  else if(type == MomentumPreconditioner::Direct)
+  {
+    // the mass coefficient (time step size) is known at the first update of the block
+    // preconditioner
+    preconditioner_momentum =
+      std::make_shared<PreconditionerDirect<MomentumOperator<dim, Number>, Number>>(
+        this->momentum_operator, false);
+  }
   else if(type == MomentumPreconditioner::Multigrid)
   {
     setup_multigrid_preconditioner_momentum();
@@ -699,6 +708,26 @@ OperatorCoupled<dim, Number>::setup_multigrid_preconditioner_schur_complement()
   laplace_operator_data.operator_is_singular  = this->is_pressure_level_undefined();
   laplace_operator_data.kernel_data.IP_factor = 1.0;
   laplace_operator_data.bc                    = this->boundary_descriptor_laplace;
+
+  if(this->param.direct_solve_of_pressure_block)
+  {
+    AssertThrow(not this->param.iterative_solve_of_pressure_block,
+                dealii::ExcMessage("direct_solve_of_pressure_block and "
+                                   "iterative_solve_of_pressure_block exclude each other."));
+
+    // sparse direct solver of the assembled negative Laplace operator, renewed with the block
+    // preconditioner (ALE)
+    laplace_operator = std::make_shared<Poisson::LaplaceOperator<dim, Number, 1>>();
+    laplace_operator->initialize(this->get_matrix_free(),
+                                 this->get_constraint_p(),
+                                 laplace_operator_data,
+                                 true /* assemble_matrix */);
+
+    multigrid_preconditioner_schur_complement =
+      std::make_shared<PreconditionerDirect<Poisson::LaplaceOperator<dim, Number, 1>, Number>>(
+        *laplace_operator, true);
+    return;
+  }
 
   MultigridData mg_data = this->param.multigrid_data_pressure_block;
 
@@ -968,7 +997,8 @@ OperatorCoupled<dim, Number>::update_block_preconditioner()
          type == SchurComplementPreconditioner::CahouetChabard or
          type == SchurComplementPreconditioner::PressureConvectionDiffusion)
       {
-        if(this->param.iterative_solve_of_pressure_block == true)
+        if(this->param.iterative_solve_of_pressure_block == true or
+           this->param.direct_solve_of_pressure_block == true)
         {
           laplace_operator->update_penalty_parameter();
         }
@@ -1136,7 +1166,7 @@ OperatorCoupled<dim, Number>::apply_preconditioner_velocity_block(VectorType &  
     dst = src;
   }
   else if(type == MomentumPreconditioner::PointJacobi or
-          type == MomentumPreconditioner::BlockJacobi)
+          type == MomentumPreconditioner::BlockJacobi or type == MomentumPreconditioner::Direct)
   {
     preconditioner_momentum->vmult(dst, src);
   }

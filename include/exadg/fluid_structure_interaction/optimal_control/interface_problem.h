@@ -858,6 +858,133 @@ public:
       fluid_history.pop_back();
   }
 
+  /*
+   * CheapTangentDiagnostics: Newton step with a cheap tangent S_eps, whose linear fluid solve stops
+   * at the relative accuracy eps (structure part exact), compared with the accurate tangent:
+   * kappa = ||m0 + S d_eps|| / ||m0||, and the fluid Krylov iterations per cheap tangent.
+   * Diagnostics only: no pairs are recorded and the iteration is not changed.
+   */
+  void
+  apply_S_eps(VectorType & dst, VectorType const & src, double const eps, unsigned int & its) const
+  {
+    VectorType load, y;
+    structure->pde_operator->initialize_dof_vector(load);
+    structure->pde_operator->initialize_dof_vector(y);
+    apply_L_s(load, src);
+    solve_structure(y, load);
+    y *= velocity_factor();
+    dst = src;
+    if(y.l2_norm() > 0.0)
+    {
+      structure_to_fluid->update_data(y);
+      BlockVectorType rhs_fluid, sol_fluid;
+      operator_coupled->initialize_block_vector_velocity_pressure(rhs_fluid);
+      operator_coupled->initialize_block_vector_velocity_pressure(sol_fluid);
+      native_boundary_terms(rhs_fluid, *fluid_neumann);
+      *fluid_neumann      = native_base_data;
+      double const factor = rhs_fluid.l2_norm();
+      if(factor > 0.0)
+      {
+        rhs_fluid *= 1.0 / factor;
+        operator_coupled->set_linear_solver_absolute_tolerance(eps);
+        VectorType dummy;
+        its += operator_coupled->solve_linear_problem(
+          sol_fluid,
+          rhs_fluid,
+          dummy,
+          false,
+          fluid->time_integrator->get_scaling_factor_time_derivative_term());
+        operator_coupled->set_linear_solver_absolute_tolerance(0.0);
+        sol_fluid *= factor;
+        VectorType traction;
+        initialize_vector(traction);
+        native_traction_of(traction, sol_fluid.block(0), sol_fluid.block(1));
+        dst.add(-1.0, traction);
+      }
+    }
+    dst.scale(structure_space.mask);
+  }
+
+  void
+  cheap_tangent_diagnostics(VectorType const & m0, dealii::ConditionalOStream const & pcout)
+  {
+    double const m0_norm = std::sqrt(inner_product_mismatch(m0, m0));
+    if(m0_norm == 0.0 or not operator_coupled)
+      return;
+    pcout << "CHEAP t = " << std::scientific << std::setprecision(4)
+          << fluid->time_integrator->get_next_time() << " m0 = " << m0_norm;
+    for(double const eps : {1.e-1, 3.e-2, 1.e-2, 1.e-3})
+    {
+      unsigned int its = 0, n_apply = 0;
+      // GMRES (no preconditioner, mismatch inner product) for S_eps d = -m0
+      unsigned int const               max_it = 60;
+      std::vector<VectorType>          V(1, m0);
+      std::vector<std::vector<double>> R;
+      std::vector<double>              cs, sn, e(1, m0_norm);
+      V[0] *= -1.0 / m0_norm;
+      unsigned int k = 0;
+      for(; k < max_it; ++k)
+      {
+        VectorType w;
+        initialize_vector(w);
+        apply_S_eps(w, V[k], eps, its);
+        ++n_apply;
+        std::vector<double> h(k + 2, 0.0);
+        for(unsigned int i = 0; i <= k; ++i)
+        {
+          h[i] = inner_product_mismatch(w, V[i]);
+          w.add(-h[i], V[i]);
+        }
+        h[k + 1] = std::sqrt(std::max(0.0, inner_product_mismatch(w, w)));
+        for(unsigned int i = 0; i < k; ++i)
+        {
+          double const tmp = cs[i] * h[i] + sn[i] * h[i + 1];
+          h[i + 1]         = -sn[i] * h[i] + cs[i] * h[i + 1];
+          h[i]             = tmp;
+        }
+        double const denom = std::sqrt(h[k] * h[k] + h[k + 1] * h[k + 1]);
+        cs.push_back(denom > 0.0 ? h[k] / denom : 1.0);
+        sn.push_back(denom > 0.0 ? h[k + 1] / denom : 0.0);
+        double const h_next = h[k + 1];
+        h[k]                = denom;
+        e.push_back(-sn[k] * e[k]);
+        e[k] = cs[k] * e[k];
+        R.push_back(h);
+        bool const breakdown = h_next <= 1.e-14 * m0_norm;
+        if(not breakdown)
+        {
+          V.push_back(w);
+          V.back() *= 1.0 / h_next;
+        }
+        if(std::abs(e[k + 1]) <= 1.e-4 * m0_norm or breakdown)
+        {
+          ++k;
+          break;
+        }
+      }
+      std::vector<double> c(k, 0.0);
+      for(int i = int(k) - 1; i >= 0; --i)
+      {
+        double sum = e[i];
+        for(unsigned int j = i + 1; j < k; ++j)
+          sum -= R[j][i] * c[j];
+        c[i] = sum / R[i][i];
+      }
+      VectorType d, Sd;
+      initialize_vector(d);
+      initialize_vector(Sd);
+      for(unsigned int j = 0; j < k; ++j)
+        d.add(c[j], V[j]);
+      unsigned int its_ref = 0;
+      apply_S_eps(Sd, d, 1.e-7, its_ref);
+      Sd.add(1.0, m0);
+      double const kappa = std::sqrt(std::max(0.0, inner_product_mismatch(Sd, Sd))) / m0_norm;
+      pcout << " | eps=" << std::setprecision(1) << eps << " fK/S=" << std::setprecision(3)
+            << double(its) / n_apply << " it=" << k << " kappa=" << kappa;
+    }
+    pcout << std::defaultfloat << std::endl;
+  }
+
   void
   surrogate_diagnostics(VectorType const & m0, dealii::ConditionalOStream const & pcout)
   {

@@ -369,7 +369,8 @@ enum class PreconditionerPressurePoisson
   None,
   PointJacobi,
   BlockJacobi,
-  Multigrid
+  Multigrid,
+  Direct // sparse direct solver of the assembled matrix (small problems)
 };
 
 /*
@@ -395,7 +396,8 @@ enum class PreconditionerProjection
   InverseMassMatrix,
   PointJacobi,
   BlockJacobi,
-  Multigrid
+  Multigrid,
+  Direct // sparse direct solver of the assembled matrix (small problems)
 };
 
 /**************************************************************************************/
@@ -464,7 +466,8 @@ enum class MomentumPreconditioner
   PointJacobi,
   BlockJacobi,
   InverseMassMatrix,
-  Multigrid
+  Multigrid,
+  Direct // sparse direct solver of the assembled matrix (small problems)
 };
 
 /*

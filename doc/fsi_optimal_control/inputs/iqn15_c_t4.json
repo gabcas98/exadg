@@ -34,7 +34,9 @@
         "CoupledSchurMultigridType": "cphMG",
         "StructurePreconditioner": "Direct",
         "StructurePreconditionerUpdate": "10",
-        "ALEPreconditioner": "Direct"
+        "ALEPreconditioner": "Direct",
+        "PressurePoissonPreconditioner": "Multigrid",
+        "CoupledSchurDirect": "false"
     },
     "Output": {
         "OutputDirectory": "output/iqn15_c_t4/",

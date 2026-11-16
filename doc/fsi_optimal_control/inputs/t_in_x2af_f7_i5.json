@@ -28,7 +28,9 @@
         "EndTime": "1.0",
         "SpectralRadius": "0.0",
         "AdaptiveTimeStepping": "true",
-        "CoupledSolverRelTol": "1.e-7"
+        "CoupledSolverRelTol": "1.e-7",
+        "PressurePoissonPreconditioner": "Multigrid",
+        "CoupledSchurDirect": "false"
     },
     "Output": {
         "OutputDirectory": "output/t_in_x2af_f7_i5/",

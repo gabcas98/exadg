@@ -32,7 +32,9 @@
         "CoupledSchurCoarseSolver": "CG",
         "CoupledSchurCoarsePreconditioner": "AMG",
         "CoupledSchurMultigridType": "cphMG",
-        "CoupledSchurPreconditioner": "CahouetChabard"
+        "CoupledSchurPreconditioner": "CahouetChabard",
+        "PressurePoissonPreconditioner": "Multigrid",
+        "CoupledSchurDirect": "false"
     },
     "Output": {
         "OutputDirectory": "output/pc_cc/",

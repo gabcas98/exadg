@@ -174,6 +174,7 @@ struct Parameters
       native_tangent_step(1.e-2),
       area_ratio_from_state(true),
       surrogate_diagnostics(false),
+      cheap_tangent_diagnostics(false),
       tangent_initial_guess(false),
       tangent_initial_guess_pairs(48),
       tangent_initial_guess_accuracy(1.0),
@@ -431,6 +432,13 @@ struct Parameters
                         tangent_initial_guess_accuracy,
                         "TangentInitialGuess: factor on the absolute target of the solve.",
                         dealii::Patterns::Double(0.0),
+                        false);
+      prm.add_parameter("CheapTangentDiagnostics",
+                        cheap_tangent_diagnostics,
+                        "Diagnostics: contraction of a Newton step with a tangent whose linear "
+                        "fluid solve is truncated at relative accuracies 1e-1 ... 1e-3 "
+                        "(coupled solver; first iteration of each time step, generic methods).",
+                        dealii::Patterns::Bool(),
                         false);
       prm.add_parameter(
         "SurrogateDiagnostics",
@@ -695,6 +703,7 @@ struct Parameters
   double       native_tangent_step;
   bool         area_ratio_from_state;
   bool         surrogate_diagnostics;
+  bool         cheap_tangent_diagnostics;
   bool         tangent_initial_guess;
   unsigned int tangent_initial_guess_pairs;
   double       tangent_initial_guess_accuracy;

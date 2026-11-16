@@ -29,7 +29,9 @@
         "SpectralRadius": "0.0",
         "AdaptiveTimeStepping": "true",
         "FluidSolverRelTol": "1.e-8",
-        "FluidSolverAbsTol": "1.e-12"
+        "FluidSolverAbsTol": "1.e-12",
+        "PressurePoissonPreconditioner": "Multigrid",
+        "CoupledSchurDirect": "false"
     },
     "Output": {
         "OutputDirectory": "output/sl_base/",

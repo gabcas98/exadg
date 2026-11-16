@@ -704,6 +704,10 @@ public:
   // solver data for Schur complement
   // (only relevant if iterative_solve_of_pressure_block == true)
   SolverData solver_data_pressure_block;
+
+  // The Laplace operator of the Schur-complement preconditioner is inverted with a sparse direct
+  // solver of its assembled matrix instead of a multigrid V-cycle (small problems)
+  bool direct_solve_of_pressure_block;
 };
 
 } // namespace IncNS

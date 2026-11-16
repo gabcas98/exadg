@@ -219,7 +219,8 @@ Parameters::Parameters()
     preconditioner_pressure_block(SchurComplementPreconditioner::PressureConvectionDiffusion),
     multigrid_data_pressure_block(MultigridData()),
     iterative_solve_of_pressure_block(false),
-    solver_data_pressure_block(SolverData(1e4, 1.e-12, 1.e-6, LinearSolver::CG, 100))
+    solver_data_pressure_block(SolverData(1e4, 1.e-12, 1.e-6, LinearSolver::CG, 100)),
+    direct_solve_of_pressure_block(false)
 {
 }
 
@@ -1356,7 +1357,12 @@ Parameters::print_parameters_coupled_solver(dealii::ConditionalOStream const & p
      preconditioner_pressure_block == SchurComplementPreconditioner::CahouetChabard or
      preconditioner_pressure_block == SchurComplementPreconditioner::PressureConvectionDiffusion)
   {
-    multigrid_data_pressure_block.print(pcout);
+    print_parameter(pcout,
+                    "Direct solver for Laplace operator",
+                    direct_solve_of_pressure_block);
+
+    if(not direct_solve_of_pressure_block)
+      multigrid_data_pressure_block.print(pcout);
 
     print_parameter(pcout,
                     "Exact inversion of Laplace operator",

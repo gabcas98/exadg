@@ -32,7 +32,9 @@
         "FluidSolverAbsTol": "1.e-12",
         "StructurePreconditioner": "Direct",
         "StructurePreconditionerUpdate": "10",
-        "ALEPreconditioner": "Direct"
+        "ALEPreconditioner": "Direct",
+        "PressurePoissonPreconditioner": "Multigrid",
+        "CoupledSchurDirect": "false"
     },
     "Output": {
         "OutputDirectory": "output/m15_d_tr/",

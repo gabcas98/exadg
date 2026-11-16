@@ -52,8 +52,10 @@ public:
     : pde_operator(pde_operator),
       solver(dealii::TrilinosWrappers::SolverDirect::AdditionalData(false, solver_type))
   {
-    pde_operator.init_system_matrix(
-      system_matrix, pde_operator.get_matrix_free().get_dof_handler().get_mpi_communicator());
+    pde_operator.init_system_matrix(system_matrix,
+                                    pde_operator.get_matrix_free()
+                                      .get_dof_handler(pde_operator.get_dof_index())
+                                      .get_mpi_communicator());
 
     if(initialize)
       this->update();

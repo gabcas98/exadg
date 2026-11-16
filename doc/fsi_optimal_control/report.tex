@@ -916,6 +916,19 @@ iterations, preconditions FGMRES almost exactly as long as the deformation chang
 (\code{StructurePreconditioner = Direct}, \code{StructurePreconditionerUpdate},
 \code{ALEPreconditioner = Direct}).
 
+\paragraph{Direct solvers for the pressure Laplacian.} The same applies to the scalar pressure
+Laplacian $L$ of the fluid, which appears in the pressure Poisson equation of the dual-splitting
+step and, as $(-L)^{-1}$, in the Schur-complement approximation of \eqref{eq:block_prec}. On the
+mesh of the benchmark ($2664$ pressure unknowns at the resolution of \cref{sec:fast}) a multigrid
+V-cycle with its levels, smoothers and algebraic coarse solver costs far more than the forward and
+backward substitution with a sparse factorisation of $L$. The matrix $L$ is assembled once from the
+matrix-free operator on the initial mesh and factorised by KLU; on the moving mesh it remains a
+preconditioner of $L(\mathcal T^{n})$ of the same quality as the multigrid hierarchy, which ExaDG
+does not update either (\code{PressurePoissonPreconditioner = Direct},
+\code{CoupledSchurDirect}; default for the benchmark). The velocity operators (viscous step,
+penalty step, velocity block) are vector-valued discontinuous Galerkin operators of degree $3$ with
+dense face couplings; their factorisations fill in strongly and are not competitive.
+
 %=================================================================================================
 \section{Analysis of the cost}\label{sec:analysis}
 %=================================================================================================
@@ -2617,6 +2630,115 @@ $t\approx8.7$~s: when consecutive iterates barely differ, the initial residual o
 Poisson solve becomes so small that its absolute tolerance $10^{-12}$ lies below the round-off
 level of the residual; the runs of the table use the absolute tolerance $10^{-11}$.
 
+\subsubsection{The price of a fluid solve}\label{sec:fast_fluid}
+
+Since the number of fresh directions per step is close to its lower bound for every method
+(\cref{sec:cost_model}), the remaining lever is the price of a fluid solve. We examine three ways
+to lower it: cheaper tangents, cheaper preconditioners and larger time steps.
+
+\paragraph{Cheaper tangents.} With the coupled solver, the tangent solves take about $45$ of the
+about $205$~s of IN in the setting of \cref{tab:fast_m15}. Even tangents at no cost (e.g.\ if the sensitivities
+were integrated alongside the state) would make IN at most $17\%$ faster than the secant method;
+with dual splitting, where a tangent is a difference of two fluid steps that cost as much as a
+state, the gain would vanish. A cheaper approximate tangent $\tilde S_\epsilon$, solved to the
+relative accuracy $\epsilon$, makes the Newton iteration contract with
+$\kappa\approx\|I-\tilde S_\epsilon^{-1}S\|$ (\cref{sec:newton_error}). A shadow computation on the
+limit cycle ($t\in[15,15.3]$, \code{CheapTangentDiagnostics}), which solves the Newton system of
+each step a second time with the accuracy $\epsilon$ and compares the steps, gives
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+$\epsilon$ & $10^{-1}$ & $3\cdot10^{-2}$ & $10^{-2}$ & $10^{-3}$\\
+\midrule
+FGMRES iterations per tangent & $8$ & $13$ & $20$ & $30$\\
+contraction $\kappa$ & $4\cdot10^{-2}$ & $9\cdot10^{-3}$ & $1.3\cdot10^{-3}$ & $10^{-4}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+i.e.\ $\kappa\approx(0.1\text{--}0.4)\,\epsilon$ and an iteration count that grows like
+$\ln(1/\epsilon)$: halving the cost of a tangent costs about one decimal of contraction. Since the
+interface tolerance is about $10^{-3}$ of the initial mismatch, $\epsilon=10^{-2}$ still converges in
+one Newton iteration in most steps. Run on the limit cycle (IN on $[15,16]$ after the secant method,
+coupled solver), loosening the accuracy of the predicted tangent solves
+(\code{TangentInitialGuessAccuracy} $0.1\to1$, effective $\epsilon\approx10^{-3}\to10^{-2}$)
+reduces the linear fluid iterations of the tangents by $43\%$ and their wall time by $21\%$, but
+raises the Newton iterations per step from $1.01$ to $1.08$ and the tangent solves from $2.16$ to
+$2.36$; the time of IN relative to the secant method in the same run decreases from $1.36$ to
+$1.24$, within the variation of the timings of identical computations ($20\%$ on this machine).
+Krylov recycling (\cref{sec:recycling}) has already reduced the tangents to $1$--$2$ fresh FGMRES
+iterations per step on average, so that subspace recycling of the GCRO-DR type has little left to
+remove.
+
+\paragraph{Direct solvers for the pressure Laplacian.} \Cref{tab:fast_fluid} compares the multigrid
+preconditioners of the pressure Laplacian with its sparse factorisation (\cref{sec:subsolvers}).
+With the coupled solver the FGMRES iterations stay the same ($44$ per step on $[0,15]$): the
+V-cycle approximates $(-L)^{-1}$ as well as the factorisation, but costs more than the
+substitution.
+With dual splitting the pressure Poisson equation takes $6.8$ instead of $7.3$ CG iterations and
+half the time. The secant method integrates FSI2 to $t=15$~s $29\%$ (coupled) and $18\%$ (dual
+splitting) faster; refactorising every $10$ or $50$ steps reduces the iterations further (pressure
+Poisson $3.1\to2.0$ on $[0,5]$) but costs more than it saves. The factorisations of the velocity
+operators make the runs $3$ to $7$ times slower. The trajectories deviate by at most
+$3\cdot10^{-3}$, the effect of the solver tolerances on the growing oscillation, below the time
+error. The derivative-based methods use the same preconditioners in their tangent solves.
+
+\begin{table}[ht]\centering
+\caption{Preconditioners of the fluid solves, secant method, $2$ processes. Top: $t\in[0,5]$;
+bottom: $t\in[0,15]$, baselines repeated in the same session (the times of \cref{tab:fast_m15}
+differ by the variation of the machine). Iterations: CG iterations of the pressure Poisson equation
+(dual splitting) or FGMRES iterations per step (coupled); deviation of the tip displacement from
+the baseline, relative to its maximum.}
+\label{tab:fast_fluid}
+\begin{tabular}{llccc}
+\toprule
+fluid solver & preconditioner & wall time & iterations & deviation\\
+\midrule
+dual splitting & multigrid (pressure) & 13.0~s & 4.7 & --\\
+ & direct pressure & \textbf{10.8~s} & 3.1 & $9\cdot10^{-4}$\\
+ & direct pressure, refactorised every 10 steps & 12.0~s & 2.0 & \\
+ & direct pressure, viscous and penalty & 96.6~s & 3.1 & \\
+coupled & multigrid (Schur) & 49.3~s & 48.4 & --\\
+ & direct Schur Laplacian & \textbf{35.0~s} & 48.0 & $9\cdot10^{-4}$\\
+ & direct Schur, refactorised every 10 steps & 36.6~s & 48.0 & \\
+ & direct Schur and velocity block & 142.9~s & 48.1 & \\
+\midrule
+dual splitting & multigrid, $[0,15]$ & 62.9~s & 7.3 & --\\
+ & direct pressure, $[0,15]$ & \textbf{51.7~s} & 6.8 & $2.0\cdot10^{-3}$\\
+coupled & multigrid, $[0,15]$ & 170.8~s & 44.3 & --\\
+ & direct Schur, $[0,15]$ & \textbf{122.1~s} & 44.0 & $2.8\cdot10^{-3}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Larger time steps.} Both fluid solvers treat the convective term explicitly, so that the
+CFL condition ($\mathrm{CFL}=0.5$) limits the time step. With the implicit convective term in the
+coupled solver (\code{CoupledConvectiveImplicit}; Newton's method for the fluid step, which is then
+no longer affine in the traction, so that only methods with difference tangents or none apply) the
+time step can grow. On $[0,5]$ with the secant method and the direct Schur Laplacian:
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+convection, CFL & steps & wall time & Newton it. & FGMRES per Newton it. & deviation\\
+\midrule
+explicit, $0.5$ & 1849 & 35.0~s & -- & -- & --\\
+implicit, $0.5$ & 1849 & 66.7~s & 3.2 & 29 & $6\cdot10^{-3}$\\
+implicit, $1$ (Newton $10^{-6}$) & 933 & 36.9~s & 2.2 & 42 & $1.8\cdot10^{-2}$\\
+implicit, $2$ (Newton $10^{-6}$) & 474 & 37.1~s & 2.3 & 67 & $6.9\cdot10^{-2}$\\
+implicit, $4$ & 243 & 70.2~s & 3.4 & 161 & $2.5\cdot10^{-1}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+The steps decrease in proportion to the CFL number, but each step needs two to three Newton
+iterations, and the FGMRES iterations per Newton iteration grow with the CFL number because the
+inverse mass matrix, the preconditioner of the velocity block, ignores the convection. A multigrid
+preconditioner of the linearised momentum operator reduces them from $75$ to $28$ at
+$\mathrm{CFL}=2$, but must be rebuilt in every Newton iteration and doubles the time; inexact Newton
+steps (linear tolerance $10^{-2}$) make the damped Newton iteration fail. At best the implicit
+convection breaks even, and it adds a time error that is no longer small (the deviation from the
+explicit run grows from $2\%$ at $\mathrm{CFL}=1$ to $25\%$ at $\mathrm{CFL}=4$ during the growth of
+the oscillation). Larger time steps would need a velocity preconditioner that handles convection at
+the price of a few substitutions, which is not available for this discretisation.
+
 \begin{table}[ht]\centering
 \caption{FSI2 from rest to $t=15$~s, $2$ processes, same subproblem solvers: Dirichlet--Neumann
 with IQN-ILS against the optimisation-based methods. Iterations: Dirichlet--Neumann iterations
@@ -2747,13 +2869,24 @@ than at the start of the study. At equal accuracy they are about twice as fast a
 Dirichlet--Neumann scheme of ExaDG with IQN-ILS when the coupled fluid solver is used, mostly
 because the predicted fluid states are cheap; with the dual-splitting solver the secant method is
 as fast as IQN-ILS.
+\item With the number of fresh directions near its lower bound, only the price of a fluid solve is
+left. Tangents at no cost would save at most $17\%$ (coupled solver) and nothing with dual
+splitting; tangents solved less accurately save linear iterations but cost Newton iterations
+($\kappa\approx(0.1\text{--}0.4)\,\epsilon$), with a net effect below the timing noise. A sparse
+factorisation of the pressure Laplacian instead of its multigrid V-cycle, computed once, makes the
+secant method $29\%$ (coupled) and $18\%$ (dual splitting) faster on $[0,15]$ with the same
+iterations; this is a property of the small benchmark, not of the method. An implicit convective
+term with larger time steps breaks even at best, because the velocity block lacks a cheap
+preconditioner for convection, and loses accuracy.
 \end{enumerate}
 Open points are the source of the energy that feeds the high-frequency mode of
 \cref{sec:instabilities}, which the dissipation of the structure integrator only suppresses, the
 periodic regime as a test case for the initial Jacobians of
 \cref{sec:initial_jacobian}, the second Newton iteration on the limit cycle and the difference
 between the limit cycles of the coupled and the dual-splitting fluid solver
-(\cref{sec:fast_periodic}), fewer tangent solves for the derivative-based methods, the sensitivity
+(\cref{sec:fast_periodic}), fewer tangent solves for the derivative-based methods, a cheap
+preconditioner of the convective velocity block that would allow larger time steps
+(\cref{sec:fast_fluid}), the sensitivity
 of the secant method to the fluid tolerance on the limit cycle (\cref{sec:fast_tolerances}), the
 cost of the mesh motion and of the structure per state and the adjoint of the dual-splitting step
 (\cref{sec:fast_solvers}), the shape derivative of the fluid step for the implicit geometry
@@ -2850,7 +2983,20 @@ model and secant reference), \code{lt_c3}, \code{tg16}, \code{tg16a} (tangent in
 (tolerance), \code{kr16} (recycling), \code{sl_base}, \code{sl_dir10}, \code{sl_dir10a},
 \code{sl_ws}, \code{sd_*} (subproblem solvers), \code{lr_win6}, \code{lr_ds4} (long runs) and
 \code{m15_c_*}, \code{m15_d_*} (\cref{tab:fast_m15}); \code{iqn15_c_*}, \code{iqn15_d_*} and
-\code{m15_c_qn_geo1}, \code{m15_d_qn_geo1} (\cref{tab:iqn_comparison}).
+\code{m15_c_qn_geo1}, \code{m15_d_qn_geo1} (\cref{tab:iqn_comparison}). For
+\cref{sec:fast_fluid}: parameters \code{CheapTangentDiagnostics} (subsection \code{OptimalControl},
+diagnostics only), \code{PressurePoissonPreconditioner}, \code{ViscousPreconditioner},
+\code{ProjectionPreconditioner}, \code{FluidPreconditionerUpdate}, \code{CoupledSchurDirect},
+\code{CoupledVelocityMultigridType}, \code{CoupledConvectiveImplicit}, \code{CoupledNewtonAbsTol}
+and \code{CoupledNewtonRelTol} of the application; the options \code{Direct} of the ExaDG
+enumerations \code{PreconditionerPressurePoisson}, \code{MomentumPreconditioner} and
+\code{PreconditionerProjection} and the parameter \code{direct_solve_of_pressure_block} of the
+incompressible Navier--Stokes solver. The defaults of the application are now
+\code{PressurePoissonPreconditioner = Direct} and \code{CoupledSchurDirect = true}; all earlier
+input files set the previous values explicitly. Inputs: \code{cheap_diag} (shadow computation),
+\code{k_base}, \code{k_acc03}, \code{k_acc1} (tangent accuracy), \code{dp_d_*}, \code{dp_c_*},
+\code{m15_d_qn_re}, \code{m15_d_qn_pdir}, \code{m15_c_qn_re}, \code{m15_c_qn_sdir}
+(\cref{tab:fast_fluid}) and \code{im_*} (implicit convection).
 The output directory in each file has to exist, and
 \code{doc/fsi_optimal_control/bench.py} summarises the runs (iterations, solves and fluid
 Krylov iterations per time step); \code{doc/fsi_optimal_control/deviation.py} computes the

@@ -30,7 +30,9 @@
         "AdaptiveTimeStepping": "true",
         "CoupledSolverRelTol": "1.e-12",
         "CoupledSolverAbsTol": "1.e-18",
-        "CFL": "0.25"
+        "CFL": "0.25",
+        "PressurePoissonPreconditioner": "Multigrid",
+        "CoupledSchurDirect": "false"
     },
     "Output": {
         "OutputDirectory": "output/t_ref_cfl/",
