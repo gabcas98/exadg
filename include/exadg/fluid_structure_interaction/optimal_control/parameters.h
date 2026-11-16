@@ -160,7 +160,7 @@ struct Parameters
       warm_start_absolute_tolerance(false),
       interface_equation(false),
       linearized_history(30),
-      recycle_time_steps(4),
+      recycle_time_steps(8),
       recycle_max_pairs(60),
       method_schedule(""),
       stagnation_iterations(0),
@@ -350,7 +350,9 @@ struct Parameters
                         false);
       prm.add_parameter("RecycleTimeSteps",
                         recycle_time_steps,
-                        "RecycledPreconditioner: number of previous solves whose pairs are kept.",
+                        "RecycledPreconditioner: number of previous solves whose pairs are kept. The tangent map "
+                        "changes from step to step; on the limit cycle of FSI2 pairs older than "
+                        "about 8 steps make the recycled inverse worse.",
                         dealii::Patterns::Integer(0),
                         false);
       prm.add_parameter("RecycleMaxPairs",
@@ -416,12 +418,12 @@ struct Parameters
       prm.add_parameter(
         "ModelNewtonSteps",
         model_newton_steps,
-        "InterfaceNewton and the InterfaceEquation variants of GaussNewton: try the step "
-        "d = -H m of the recycled inverse H (exact on the tangent pairs of previous steps and on "
-        "the secant pairs of the current solve) before any tangent solve. The state of the trial "
-        "point verifies the step and gives an exact secant pair (S d for the affine fluid step); "
-        "the Krylov solve with tangents is only done if the model step does not reach the mismatch "
-        "tolerance (tangents on demand).",
+        "All derivative-based methods: try the step d = -H m of the recycled inverse H (exact on "
+        "the tangent pairs of previous steps and on the secant pairs of the current solve) before "
+        "any tangent or adjoint solve. The state of the trial point verifies the step and gives an "
+        "exact secant pair (S d for the affine fluid step); the method continues with its own "
+        "iteration (from the better point) only if the model step does not reach the mismatch "
+        "tolerance (derivatives on demand).",
         dealii::Patterns::Bool(),
         false);
       prm.add_parameter(

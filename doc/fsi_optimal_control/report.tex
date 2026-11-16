@@ -2772,8 +2772,9 @@ responses (\cref{sec:state_prediction}; remainder outside the span $0.00$, again
 secant states), so that $c_{\mathrm{post}}\approx0$ and IN saves $9$ FGMRES iterations per step on
 the states; it pays $n_T=1.17$ tangents of $12.5$ iterations against $n_Q=0.85$ secant states of
 about $11$. With dual splitting a tangent is a difference quotient, i.e.\ a fluid step
-($c_T\approx1.4\,c_Q$), and the states after a Newton step were not predicted. Three measures
-address the three terms:
+($c_T\approx1.4\,c_Q$), and the states after a Newton step were not predicted. The first three
+measures address the three terms, the last two the age of the recycled pairs and the gradient
+methods:
 \begin{enumerate}
 \item \emph{Tangents on demand} (\cref{sec:fast_ingredients}, \eqref{eq:model_step}) reduce $n_T$.
 In the start-up phase the model step reaches the tolerance in about $95\%$ of the solves in which it
@@ -2795,39 +2796,70 @@ the least-squares prediction in their span, solved to the absolute targets of th
 (\cref{sec:absolute_target}; \code{AffineStatePrediction}, now also for dual splitting). The CG
 iterations per step drop by about $13\%$ in all three sub-steps; the secant method gains nothing,
 since its new states lie outside the span of the previous ones (remainder $0.86$).
+\item \emph{The length of the recycled history.} On the limit cycle the tangent map changes
+faster than in the start-up phase, and pairs from $16$ time steps back no longer describe it: they
+enter $H$ with the weight of the current ones and GMRES needs further tangents to correct them. In
+one run with IN on $[15,16]$ and the secant method on $[16,17]$ (same limit cycle, same machine
+load) the time of IN relative to the secant method is
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+history (time steps) & 16 & 8 & 4 & 2\\
+\midrule
+dual splitting: IN / secant (tangents per step) & 1.18 (2.98) & 0.92 (2.18) & 0.91 (2.19) & 0.95 (2.57)\\
+coupled: IN / secant (tangents per step) & 1.17 (2.17) & 1.08 (1.32) & 1.08 (1.56) & --\\
+\bottomrule
+\end{tabular}
+\end{center}
+On $[0,15]$ a history of $4$ steps is worse than $8$ (fewer model steps succeed); $8$ is the new
+default (\code{RecycleTimeSteps}). The secant method keeps its $8$ steps (\code{QNReuseTimeSteps}).
+\item \emph{Derivatives on demand for the gradient methods.} SD and L-BFGS take the model step before
+their gradient: if it reaches the tolerance, neither the adjoint nor the tangent of the iteration
+is computed; otherwise the method continues with its own iteration from the better point. A
+successful model step makes the iteration a secant step, a failed one leaves the method unchanged.
 \end{enumerate}
 \Cref{tab:fast_model} shows the effect on $[0,15]$. The machine was in use during these runs; the
 wall times of identical computations varied by about $10\%$, and the table also gives the wall time
-relative to that of the mesh motion, which does the same work in all runs. With the coupled solver
-the derivative-based methods now cost $1.07$--$1.08$ times the secant method, with dual splitting
-$1.06$--$1.17$ (two runs of IN with all measures: $1.06$ and $1.14$). All runs converge in every
-step and deviate from the secant method by at most $2.4\cdot10^{-3}$. The remaining difference is
-the limit cycle, where every Newton iteration needs about one tangent more than the secant method a
-state, and a difference quotient costs a full fluid step with its fixed costs (convective term,
-right-hand sides).
+relative to that of the mesh motion, which does the same work in all runs. With all measures, IN,
+GN, LM and TR cost $1.00$--$1.01$ times the secant method with dual splitting and $1.04$--$1.05$
+with the coupled solver (where the secant method profits from the exact prediction of its states as
+well), SD and L-BFGS $1.09$ instead of $1.24$. The tangents per step drop from $1.75$ to $0.66$ (dual
+splitting), from $1.17$ to $0.16$ (coupled), and the tangents and adjoints of the gradient methods
+from $0.87$ to $0.12$--$0.14$. All runs converge in every step and deviate from the secant method by
+at most $2.2\cdot10^{-3}$, below the time error. On the limit cycle IN is now faster than the secant
+method with dual splitting and costs $1.08$ times as much with the coupled solver.
 
 \begin{table}[ht]\centering
 \caption{Derivative-based methods against the secant method, FSI2 to $t=15$~s, $2$ processes,
 direct pressure preconditioners. Wall time, wall time relative to the mesh motion (same work in all
-runs), and per step: states, tangents, model steps (tried / reaching the tolerance). Measures:
-M = model steps, T = tolerance factor $10^4$ of the difference quotient, P = state prediction.}
+runs), and per step: states, tangents (and adjoints), model steps (tried / reaching the tolerance).
+Measures: M = model steps, T = tolerance factor $10^4$ of the difference quotient, P = state
+prediction, H = history of $8$ instead of $16$ time steps. Several secant runs: repetitions in the
+sessions of the respective rows.}
 \label{tab:fast_model}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{lllcccccc}
 \toprule
-fluid solver & method & measures & wall & wall/mesh & rel.\ to secant & states & $S$ & model steps\\
+fluid solver & method & measures & wall & wall/mesh & rel.\ to secant & states & $S$ ($S^*$) & model steps\\
 \midrule
-coupled & secant & -- & 121.7~s & 14.8 & 1.00 & 1.85 & -- & --\\
+coupled & secant & -- & 121.7 / 122.0 / 122.2~s & 14.8 / 14.8 / 14.9 & 1.00 & 1.85 & -- & --\\
  & IN & -- & 132.1~s & 16.1 & 1.09 & 1.77 & 1.17 & --\\
  & IN & M & 127.2~s & 15.8 & 1.07 & 1.79 & 0.37 & 0.62 / 0.59\\
  & GN / LM / TR & M & 127.5 / 129.6 / 127.6~s & 15.8 / 15.9 / 15.8 & 1.07 / 1.08 / 1.07 & 1.79 & 0.35--0.38 & 0.62 / 0.59\\
+ & IN & M, H & 123.9~s & 15.3 & 1.04 & 1.80 & 0.16 & 0.71 / 0.68\\
+ & GN / LM / TR & M, H & 124.2 / 124.8 / 126.1~s & 15.4 / 15.5 / 15.5 & 1.04 / 1.04 / 1.05 & 1.80 & 0.16--0.17 & 0.71 / 0.68\\
+ & SD / L-BFGS & -- & 158.4 / 159.0~s & 18.4 / 18.3 & 1.24 & 1.86--1.87 & 0.86--0.87 (same) & --\\
+ & SD / L-BFGS & H & 155.6 / 154.6~s & 17.9 / 17.8 & 1.21 / 1.20 & 1.82--1.83 & 0.82--0.83 (same) & --\\
+ & SD / L-BFGS & M, H & 129.5 / 128.7~s & 16.2 / 16.1 & 1.09 / 1.09 & 1.83--1.84 & 0.12--0.14 (same) & 0.70 / 0.67\\
 \midrule
-dual splitting & secant & -- & 52.4 / 58.1~s & 6.67 / 6.71 & 1.00 & 2.35 & -- & --\\
+dual splitting & secant & -- & 52.4 / 58.1 / 51.2~s & 6.67 / 6.71 / 6.69 & 1.00 & 2.35 & -- & --\\
  & IN & -- & 76.1~s & 9.30 & 1.39 & 1.92 & 1.75 & --\\
  & IN & M & 70.6~s & 8.41 & 1.26 & 1.97 & 1.04 & 0.57 / 0.53\\
  & IN & M, T & 65.1~s & 7.98 & 1.20 & 1.96 & 1.04 & 0.56 / 0.52\\
  & IN & M, T, P & 94.2 / 69.8~s & 7.08 / 7.68 & 1.06 / 1.14 & 1.97 & 1.03 & 0.57 / 0.53\\
  & GN / LM / TR & M, T, P & 69.3 / 70.3 / 73.0~s & 7.73 / 7.71 / 7.84 & 1.15 / 1.15 / 1.17 & 1.97 & 1.01--1.06 & 0.56 / 0.52\\
+ & IN & M, T, P, H & 51.9 / 51.5~s & 6.73 / 6.71 & 1.01 / 1.00 & 1.95 & 0.66 & 0.62 / 0.58\\
+ & GN / LM / TR & M, T, P, H & 52.1 / 51.8 / 51.8~s & 6.70 / 6.72 / 6.74 & 1.00 / 1.00 / 1.01 & 1.94--1.95 & 0.65--0.66 & 0.62 / 0.58\\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -2976,10 +3008,12 @@ the step of the recycled inverse is the secant step on the same pairs. Derivativ
 therefore reach the cost of the secant method when they spend tangents only where the model fails:
 model steps verified by the next state (and added to the model as exact pairs), tangents on demand
 with an estimated success rate, difference quotients solved only to the accuracy a tangent needs,
-and initial guesses of all fluid sub-steps predicted from the tangent responses. On $[0,15]$ IN,
-GN, LM and TR cost $1.07$--$1.08$ (coupled) and about $1.1$ (dual splitting, previously $1.39$) times
-the secant method; the remaining difference lies on the limit cycle, where the model is too weak and
-every Newton iteration needs a tangent.
+and initial guesses of all fluid sub-steps predicted from the tangent responses. Since the tangent
+map changes quickly on the limit cycle, the recycled pairs must be recent ($8$ instead of $16$ time
+steps). On $[0,15]$ IN, GN, LM and TR then cost $1.00$--$1.01$ (dual splitting, previously $1.39$) and
+$1.04$--$1.05$ (coupled, previously $1.09$) times the secant method, SD and L-BFGS with the same model
+steps before their gradient $1.09$ (previously $1.24$), and on the limit cycle IN is faster than the
+secant method with dual splitting.
 \end{enumerate}
 Open points are the source of the energy that feeds the high-frequency mode of
 \cref{sec:instabilities}, which the dissipation of the structure integrator only suppresses, the
@@ -3105,7 +3139,9 @@ for the dual-splitting solver (with \code{TimeIntBDFDualSplitting::get_warm_star
 new defaults \code{ModelNewtonSteps = true}, \code{AffineStatePrediction = true} (dual splitting:
 only with the warm start) and \code{TangentDifferenceToleranceFactor = 1e4}; all earlier input files
 set the previous values explicitly. Inputs: \code{mn_*} ($[0,5]$ and limit cycle, \code{mn_lc_*}),
-\code{m15m_*}, \code{m15p_*} (\cref{tab:fast_model}).
+\code{m15m_*}, \code{m15p_*}, \code{m15h_*}, \code{m15g_*} (\cref{tab:fast_model}),
+\code{lc_*} (history length on the limit cycle); default \code{RecycleTimeSteps = 8} (earlier input
+files without it set the previous default $4$), \code{ModelNewtonSteps} also for SD and L-BFGS.
 The output directory in each file has to exist, and
 \code{doc/fsi_optimal_control/bench.py} summarises the runs (iterations, solves and fluid
 Krylov iterations per time step); \code{doc/fsi_optimal_control/deviation.py} computes the

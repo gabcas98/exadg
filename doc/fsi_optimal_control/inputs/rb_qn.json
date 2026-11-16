@@ -64,6 +64,7 @@
         "StagnationIterations": "10",
         "ModelNewtonSteps": "false",
         "AffineStatePrediction": "false",
-        "TangentDifferenceToleranceFactor": "1.0"
+        "TangentDifferenceToleranceFactor": "1.0",
+        "RecycleTimeSteps": "4"
     }
 }

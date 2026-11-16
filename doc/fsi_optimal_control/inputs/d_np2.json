@@ -65,6 +65,7 @@
         "ControlExtrapolationOrder": "2",
         "AffineStatePrediction": "false",
         "ModelNewtonSteps": "false",
-        "TangentDifferenceToleranceFactor": "1.0"
+        "TangentDifferenceToleranceFactor": "1.0",
+        "RecycleTimeSteps": "4"
     }
 }
