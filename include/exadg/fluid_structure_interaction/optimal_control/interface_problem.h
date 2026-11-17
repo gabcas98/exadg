@@ -802,6 +802,67 @@ public:
   }
 
   /*
+   * GeneralizedAlphaLoad::MidPoint (alpha_f != 0): the structure is loaded with
+   * (1 - alpha_f) j g + alpha_f (j g)_n. set_previous_load() sets the load of t_n (initial
+   * acceleration), finish_time_step() takes the load of the returned control as the new (j g)_n.
+   */
+  void
+  set_midpoint_load(double const alpha_f, Container const & load_n)
+  {
+    load_alpha_f = alpha_f;
+    if(alpha_f != 0.0)
+      structure_load_n = std::make_shared<Container>(load_n);
+  }
+
+  void
+  finish_time_step()
+  {
+    if(load_alpha_f != 0.0)
+    {
+      AssertThrow(structure_load_np.get(), dealii::ExcMessage("No load of the time step."));
+      *structure_load_n = *structure_load_np;
+    }
+  }
+
+  /*
+   * StoppingCriterion::DisplacementResidual: the change of the end-of-step displacement that the
+   * traction residual m would cause, || dd_{n+1}/dg m ||_2 (all structure dofs), i.e. to first
+   * order the residual d(T) - d(g) of a Dirichlet-Neumann iteration, compared with the criterion of
+   * the partitioned solvers of ExaDG: max(AbsTol sqrt(n_dofs), RelTol ||v_{n+1}|| dt).
+   */
+  void
+  set_displacement_criterion(double const abs_tol, double const rel_tol)
+  {
+    AssertThrow(formulation == Formulation::NativeTraction,
+                dealii::ExcMessage("StoppingCriterion = DisplacementResidual requires "
+                                   "Formulation = NativeTraction (the mismatch is a traction)."));
+    displacement_abs_tol = abs_tol;
+    displacement_rel_tol = rel_tol;
+  }
+
+  double
+  displacement_residual(VectorType const & m) const
+  {
+    VectorType load, y;
+    structure->pde_operator->initialize_dof_vector(load);
+    structure->pde_operator->initialize_dof_vector(y);
+    apply_L_s(load, m);
+    solve_structure(y, load);
+    // d_{n+1} = (d_{n+1-alpha_f} - alpha_f d_n) / (1 - alpha_f); load weight 1 - load_alpha_f
+    auto const & ti = *structure->time_integrator;
+    return y.l2_norm() * (1.0 - load_alpha_f) / (1.0 - ti.get_alpha_f());
+  }
+
+  double
+  displacement_tolerance() const
+  {
+    auto &       ti      = *structure->time_integrator;
+    double const ref_abs = std::sqrt(double(structure->pde_operator->get_number_of_dofs()));
+    double const ref_rel = ti.get_velocity_np().l2_norm() * ti.get_time_step_size();
+    return std::max(displacement_abs_tol * ref_abs, displacement_rel_tol * ref_rel);
+  }
+
+  /*
    * Control of the state solves (used by InterfaceQuasiNewton)
    */
   void
@@ -889,7 +950,8 @@ public:
     if(y.l2_norm() > 0.0)
     {
       structure_to_fluid->update_data(y);
-      BlockVectorType rhs_fluid, sol_fluid;
+      std::shared_ptr<Container> const dg = perturbation_data();
+      BlockVectorType                  rhs_fluid, sol_fluid;
       operator_coupled->initialize_block_vector_velocity_pressure(rhs_fluid);
       operator_coupled->initialize_block_vector_velocity_pressure(sol_fluid);
       native_boundary_terms(rhs_fluid, *fluid_neumann);
@@ -910,7 +972,7 @@ public:
         sol_fluid *= factor;
         VectorType traction;
         initialize_vector(traction);
-        native_traction_of(traction, sol_fluid.block(0), sol_fluid.block(1));
+        native_traction_of(traction, sol_fluid.block(0), sol_fluid.block(1), dg.get());
         dst.add(-1.0, traction);
       }
     }
@@ -1187,8 +1249,8 @@ public:
 
     // directions in w with their solution increments: other states of the step relative to the
     // base k, then the tangent pairs (newest first)
-    std::vector<VectorType>               E;
-    std::vector<SplittingVectors>         D;
+    std::vector<VectorType>       E;
+    std::vector<SplittingVectors> D;
     for(unsigned int i = k; i-- > 0;)
     {
       E.emplace_back(splitting_state_w[i]);
@@ -1633,9 +1695,15 @@ public:
       fill_random(r);
       fill_weighted_trace(structure_space, *fluid_at_structure, r, false);
       fluid_to_structure->add_transpose(w);
+      // flux traction: the forward map also depends on the Dirichlet data (random data dc)
+      if(traction_flux())
+        *fluid_neumann = dc;
       fluid->pde_operator->interpolate_stress_bc(stress, up.block(0), up.block(1));
-      stress_interpolation_transpose(ITw, w);
-      double const a = stress * w, b = up * ITw;
+      *fluid_neumann   = native_base_data;
+      Container g_dual = native_base_data;
+      stress_interpolation_transpose(ITw, w, &g_dual);
+      double const a = stress * w;
+      double const b = up * ITw + (traction_flux() ? container_dot(dc, g_dual) : 0.0);
       pcout << "  transpose test stress interp.: " << a << ", " << b
             << ", rel. diff = " << std::abs(a - b) / std::abs(a) << std::endl;
     }
@@ -1658,10 +1726,14 @@ private:
     return control_space == ControlSpace::Structure ? structure_space : fluid_space;
   }
 
+  // d v_{n+1} / d g = velocity_factor() K^{-1} L_s: c_v = d v_{n+1} / d d_{n+1-alpha_f}, times the
+  // weight 1 - alpha_f of the load of t_{n+1} in the mid-point load
+  // (GeneralizedAlphaLoad::MidPoint)
   double
   velocity_factor() const
   {
-    return structure->time_integrator->get_velocity_derivative_wrt_mid_displacement();
+    return structure->time_integrator->get_velocity_derivative_wrt_mid_displacement() *
+           (1.0 - load_alpha_f);
   }
 
   /*
@@ -2163,6 +2235,8 @@ private:
       // dT = Pi_s P_f (-I_sigma(A^{-1} D E_f y))
       dealii::Timer timer_sub;
       structure_to_fluid->update_data(y);
+      // Dirichlet data of the perturbation (enter the flux traction directly)
+      std::shared_ptr<Container> const dg = perturbation_data();
       time_tangent_parts[0] += timer_sub.wall_time();
       timer_sub.restart();
       BlockVectorType rhs_fluid, sol_fluid;
@@ -2204,7 +2278,7 @@ private:
 
       VectorType traction;
       initialize_vector(traction);
-      native_traction_of(traction, sol_fluid.block(0), sol_fluid.block(1));
+      native_traction_of(traction, sol_fluid.block(0), sol_fluid.block(1), dg.get());
       time_tangent_parts[3] += timer_sub.wall_time();
       record_fluid_tangent(y, traction);
       dst.add(-1.0, traction);
@@ -2295,7 +2369,10 @@ private:
     BlockVectorType rhs_fluid, z;
     operator_coupled->initialize_block_vector_velocity_pressure(rhs_fluid);
     operator_coupled->initialize_block_vector_velocity_pressure(z);
-    stress_interpolation_transpose(rhs_fluid, stress_dual);
+    // flux traction: dual of the Dirichlet data entering the traction directly
+    std::shared_ptr<Container> const g_dual =
+      traction_flux() ? std::make_shared<Container>(native_base_data) : nullptr;
+    stress_interpolation_transpose(rhs_fluid, stress_dual, g_dual.get());
 
     // A is symmetric
     if(adjoint_pool.max_size > 0)
@@ -2303,8 +2380,11 @@ private:
     else
       solve_fluid(z, rhs_fluid);
 
-    // D^T z at the fluid quadrature points, then E_f^T
+    // D^T z at the fluid quadrature points (plus the direct dependence of the flux traction on the
+    // Dirichlet data), then E_f^T
     native_boundary_terms_transpose(*fluid_neumann, z);
+    if(g_dual)
+      fluid_neumann->sadd(1.0, 1.0, *g_dual);
     VectorType load, y, tmp;
     structure->pde_operator->initialize_dof_vector(load);
     structure->pde_operator->initialize_dof_vector(y);
@@ -2325,13 +2405,39 @@ private:
     dst.scale(structure_space.mask);
   }
 
-  // dst = Pi_s P_f (-I_sigma(u, p)) for a fluid (perturbation) state
-  void
-  native_traction_of(VectorType & dst, VectorType const & u, VectorType const & p) const
+  // TractionEvaluation::Flux: the traction depends directly on the Dirichlet data
+  bool
+  traction_flux() const
   {
+    return fluid->pde_operator->get_interface_traction_flux();
+  }
+
+  // copy of the Dirichlet data just written to the fluid container (perturbation of a tangent),
+  // needed by the flux traction of the perturbation; nullptr for the nodal traction
+  std::shared_ptr<Container>
+  perturbation_data() const
+  {
+    return traction_flux() ? std::make_shared<Container>(*fluid_neumann) : nullptr;
+  }
+
+  // dst = Pi_s P_f (-I_sigma(u, p, dg)) for a fluid perturbation (u, p) with the Dirichlet data dg
+  // (flux traction only; the container holds the data of the state otherwise)
+  void
+  native_traction_of(VectorType &       dst,
+                     VectorType const & u,
+                     VectorType const & p,
+                     Container const *  dg) const
+  {
+    AssertThrow(not traction_flux() or dg != nullptr,
+                dealii::ExcMessage(
+                  "The flux traction of a perturbation needs its Dirichlet data."));
     VectorType stress;
     fluid->pde_operator->initialize_vector_velocity(stress);
+    if(dg)
+      *fluid_neumann = *dg;
     fluid->pde_operator->interpolate_stress_bc(stress, u, p);
+    if(dg)
+      *fluid_neumann = native_base_data;
     stress *= -1.0;
     fluid_to_structure->update_data(stress);
     VectorType rhs;
@@ -2602,10 +2708,23 @@ private:
    * Transpose of the nodal stress interpolation (interpolate_stress_bc): the forward map writes
    * rho (nu F(u) n - p n) at the face nodes (later faces overwrite shared nodes). The transpose
    * visits the faces in reverse order and consumes each dual nodal value once (the last writer).
+   * Flux traction: the forward map adds rho f(u_m, g) (penalty terms, linear in the interior value
+   * u_m and the Dirichlet data g at the node); its transpose adds to the velocity block and writes
+   * the dual of g at the nodal quadrature points into g_dual (all other entries zero).
    */
   void
-  stress_interpolation_transpose(BlockVectorType & dst, VectorType const & w) const
+  stress_interpolation_transpose(BlockVectorType &  dst,
+                                 VectorType const & w,
+                                 Container *        g_dual = nullptr) const
   {
+    bool const flux = traction_flux();
+    AssertThrow(not flux or g_dual != nullptr,
+                dealii::ExcMessage("The transpose of the flux traction needs a container for the "
+                                   "dual of the Dirichlet data."));
+    bool const continuity_penalty =
+      flux and fluid->pde_operator->use_continuity_penalty_in_traction();
+    if(g_dual)
+      g_dual->set_zero();
     auto const & matrix_free = *fluid_space.matrix_free;
     auto const & param       = fluid->pde_operator->get_parameters();
 
@@ -2642,6 +2761,16 @@ private:
 
       phi_u.reinit(face);
       phi_p.reinit(face);
+      // the interface faces carry the DirichletCached condition (Formulation::NativeTraction)
+      bool const face_flux = flux and formulation == Formulation::NativeTraction;
+      if(face_flux)
+      {
+        fluid->pde_operator->get_viscous_kernel()->reinit_boundary_face(phi_u,
+                                                                        fluid_space.dof_index);
+        if(continuity_penalty)
+          fluid->pde_operator->get_continuity_penalty_kernel()->reinit_boundary_face(phi_u);
+      }
+      unsigned int const n_lanes = matrix_free.n_active_entries_per_face_batch(face);
       for(unsigned int q = 0; q < phi_u.n_q_points; ++q)
       {
         vector const n       = phi_u.normal_vector(q);
@@ -2653,8 +2782,34 @@ private:
                                 (outer_product(s[q], n) + outer_product(n, s[q])),
                               q);
         phi_p.submit_value(-param.density * inv_JxW * (s[q] * n), q);
+        if(face_flux)
+        {
+          // transposes of the linear maps u_m -> f(u_m, 0) and g -> f(0, g), applied to s
+          vector u_dual, g_value;
+          for(unsigned int d = 0; d < dim; ++d)
+          {
+            vector e, zero;
+            e[d]      = scalar(1.0);
+            u_dual[d] = s[q] * fluid->pde_operator->interface_penalty_flux(
+                                 e, zero, n, viscosity, continuity_penalty);
+            g_value[d] = s[q] * fluid->pde_operator->interface_penalty_flux(
+                                  zero, e, n, viscosity, continuity_penalty);
+          }
+          phi_u.submit_value(param.density * inv_JxW * u_dual, q);
+          g_value *= param.density;
+          for(unsigned int v = 0; v < n_lanes; ++v)
+          {
+            dealii::Tensor<1, dim, double> t;
+            for(unsigned int d = 0; d < dim; ++d)
+              t[d] = g_value[d][v];
+            g_dual->set_data(quad_nodal, face, q, v, t);
+          }
+        }
       }
-      phi_u.integrate_scatter(dealii::EvaluationFlags::gradients, dst.block(0));
+      phi_u.integrate_scatter(face_flux ? (dealii::EvaluationFlags::values |
+                                           dealii::EvaluationFlags::gradients) :
+                                          dealii::EvaluationFlags::gradients,
+                              dst.block(0));
       phi_p.integrate_scatter(dealii::EvaluationFlags::values, dst.block(1));
     }
     dst.compress(dealii::VectorOperation::add);
@@ -2725,6 +2880,18 @@ private:
 
     g.zero_out_ghost_values();
     geometry_displacement.zero_out_ghost_values();
+
+    // mid-point load (1 - alpha_f) j g + alpha_f (j g)_n of a generalized-alpha structure
+    if(load_alpha_f != 0.0)
+    {
+      AssertThrow(structure_load_n.get(),
+                  dealii::ExcMessage("The interface load of the previous time step is missing."));
+      if(not structure_load_np)
+        structure_load_np = std::make_shared<Container>(*structure_load);
+      else
+        *structure_load_np = *structure_load;
+      structure_load->sadd(1.0 - load_alpha_f, load_alpha_f, *structure_load_n);
+    }
   }
 
   // fluid Neumann container = factor * g at the fluid quadrature points
@@ -3672,6 +3839,15 @@ private:
   VectorType geometry_displacement;
   VectorType linearization;
 
+  // GeneralizedAlphaLoad::MidPoint: alpha_f (0: end-of-step load), unblended loads of t_n and of
+  // the last evaluation
+  double                             load_alpha_f = 0.0;
+  std::shared_ptr<Container>         structure_load_n;
+  mutable std::shared_ptr<Container> structure_load_np;
+
+  // StoppingCriterion::DisplacementResidual
+  double displacement_abs_tol = 0.0, displacement_rel_tol = 0.0;
+
   // preconditioner
   Preconditioner preconditioner           = Preconditioner::None;
   double         preconditioner_tolerance = 1.e-8;
@@ -3703,18 +3879,18 @@ private:
   VectorType prediction_g, prediction_d, last_evaluated_control;
 
   // AffineStatePrediction: pairs of the current time step (frozen geometry)
-  bool                                 affine_state_prediction = false;
-  bool splitting_state_prediction = false;
+  bool                                                         affine_state_prediction    = false;
+  bool                                                         splitting_state_prediction = false;
   std::shared_ptr<IncNS::TimeIntBDFDualSplitting<dim, Number>> time_integrator_splitting;
   std::vector<VectorType>                                      splitting_state_w;
   std::vector<std::array<VectorType, 3>>                       splitting_state_x;
   mutable std::vector<VectorType>                              splitting_tangent_w;
   mutable std::vector<std::array<VectorType, 3>>               splitting_tangent_x;
-  unsigned int                         affine_max_pairs        = 64;
-  std::vector<VectorType>              affine_state_w;
-  std::vector<BlockVectorType>         affine_state_u;
-  mutable std::vector<VectorType>      affine_tangent_w;
-  mutable std::vector<BlockVectorType> affine_tangent_u;
+  unsigned int                                                 affine_max_pairs = 64;
+  std::vector<VectorType>                                      affine_state_w;
+  std::vector<BlockVectorType>                                 affine_state_u;
+  mutable std::vector<VectorType>                              affine_tangent_w;
+  mutable std::vector<BlockVectorType>                         affine_tangent_u;
 
 public:
   mutable unsigned int linearized_solves = 0, linearized_solves_skipped = 0,

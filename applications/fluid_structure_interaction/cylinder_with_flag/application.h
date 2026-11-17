@@ -26,37 +26,16 @@
 
 namespace ExaDG
 {
-// set problem specific parameters
-#define TESTCASE 2
-
-#if TESTCASE == 1
-// FSI 1
-double const U_MEAN          = 0.2;
-double const FLUID_VISCOSITY = 1.0e-3;
-double const FLUID_DENSITY   = 1.0e3;
-
-double const DENSITY_STRUCTURE        = 1.0e3;
-double const POISSONS_RATIO_STRUCTURE = 0.4;
-double const YOUNGS_MODULUS_STRUCTURE = 0.5e6 * 2.0 * (1.0 + POISSONS_RATIO_STRUCTURE);
-#elif TESTCASE == 2
-// FSI 2
-double const U_MEAN          = 1.0;
-double const FLUID_VISCOSITY = 1.0e-3;
-double const FLUID_DENSITY   = 1.0e3;
-
-double const DENSITY_STRUCTURE        = 1.0e4;
-double const POISSONS_RATIO_STRUCTURE = 0.4;
-double const YOUNGS_MODULUS_STRUCTURE = 0.5e6 * 2.0 * (1.0 + POISSONS_RATIO_STRUCTURE);
-#elif TESTCASE == 3
-// FSI 3
-double const U_MEAN          = 2.0;
-double const FLUID_VISCOSITY = 1.0e-3;
-double const FLUID_DENSITY   = 1.0e3;
-
-double const DENSITY_STRUCTURE        = 1.0e3;
-double const POISSONS_RATIO_STRUCTURE = 0.4;
-double const YOUNGS_MODULUS_STRUCTURE = 2.0e6 * 2.0 * (1.0 + POISSONS_RATIO_STRUCTURE);
-#endif
+// Test cases FSI1, FSI2, FSI3 of Turek and Hron (2006), selected at run time by the parameter
+// Application/TestCase (default: FSI2). The dependent constants (U_X_MAX, END_TIME, output
+// interval) are set by set_test_case(); EndTime should be given explicitly for FSI1 and FSI3.
+inline unsigned int TEST_CASE                = 2;
+inline double       U_MEAN                   = 1.0;
+inline double       FLUID_VISCOSITY          = 1.0e-3;
+inline double       FLUID_DENSITY            = 1.0e3;
+inline double       DENSITY_STRUCTURE        = 1.0e4;
+inline double       POISSONS_RATIO_STRUCTURE = 0.4;
+inline double       YOUNGS_MODULUS_STRUCTURE = 0.5e6 * 2.0 * (1.0 + 0.4);
 
 // physical dimensions (diameter D and center coordinate Y_C can be varied)
 double const X_0    = 0.0;  // origin (x-coordinate)
@@ -84,11 +63,54 @@ bool STRUCTURE_COVERS_FLAG_ONLY = true;
 
 unsigned int N_CELLS_FLAG_X = 16;
 
-double const U_X_MAX  = 1.5 * U_MEAN;
-double const END_TIME = 4.0 * L / U_MEAN;
+inline double U_X_MAX  = 1.5 * U_MEAN;
+inline double END_TIME = 4.0 * L / U_MEAN;
 
-double const       OUTPUT_INTERVAL_TIME                = END_TIME / 600;
+inline double      OUTPUT_INTERVAL_TIME                = END_TIME / 600;
 unsigned int const OUTPUT_SOLVER_INFO_EVERY_TIME_STEPS = 1e2;
+
+inline void
+set_test_case(unsigned int const test_case)
+{
+  AssertThrow(test_case >= 1 and test_case <= 3,
+              dealii::ExcMessage("Application/TestCase has to be 1, 2 or 3."));
+  TEST_CASE                = test_case;
+  FLUID_VISCOSITY          = 1.0e-3;
+  FLUID_DENSITY            = 1.0e3;
+  POISSONS_RATIO_STRUCTURE = 0.4;
+  if(test_case == 1)
+  {
+    U_MEAN                   = 0.2;
+    DENSITY_STRUCTURE        = 1.0e3;
+    YOUNGS_MODULUS_STRUCTURE = 0.5e6 * 2.0 * (1.0 + POISSONS_RATIO_STRUCTURE);
+  }
+  else if(test_case == 2)
+  {
+    U_MEAN                   = 1.0;
+    DENSITY_STRUCTURE        = 1.0e4;
+    YOUNGS_MODULUS_STRUCTURE = 0.5e6 * 2.0 * (1.0 + POISSONS_RATIO_STRUCTURE);
+  }
+  else
+  {
+    U_MEAN                   = 2.0;
+    DENSITY_STRUCTURE        = 1.0e3;
+    YOUNGS_MODULUS_STRUCTURE = 2.0e6 * 2.0 * (1.0 + POISSONS_RATIO_STRUCTURE);
+  }
+  U_X_MAX              = 1.5 * U_MEAN;
+  END_TIME             = 4.0 * L / U_MEAN;
+  OUTPUT_INTERVAL_TIME = END_TIME / 600;
+}
+
+// registers Application/TestCase in the parameter handler of a sub-application
+inline void
+add_test_case_parameter(dealii::ParameterHandler & prm)
+{
+  prm.add_parameter("TestCase",
+                    TEST_CASE,
+                    "Turek-Hron benchmark: 1 (FSI1), 2 (FSI2) or 3 (FSI3).",
+                    dealii::Patterns::Integer(1, 3));
+  prm.add_action("TestCase", [](std::string const & value) { set_test_case(std::stoi(value)); });
+}
 
 double const REL_TOL = 1.e-6;
 double const ABS_TOL = 1.e-8;
@@ -184,6 +206,7 @@ private:
 
     prm.enter_subsection("Application");
     {
+      add_test_case_parameter(prm);
       prm.add_parameter("EndTime",
                         end_time,
                         "End time of the simulation.",
@@ -203,6 +226,12 @@ private:
                         cfl,
                         "CFL number of the adaptive time step.",
                         dealii::Patterns::Double(0.0));
+      prm.add_parameter("ViscousFormulation",
+                        viscous_formulation,
+                        "Formulation of the viscous term of the fluid: Auto (Laplace for the "
+                        "projection methods, Divergence for the coupled solver and traction "
+                        "coupling), Laplace or Divergence.",
+                        dealii::Patterns::Selection("Auto|Laplace|Divergence"));
       prm.add_parameter("CoupledFluidSolver",
                         coupled_fluid_solver,
                         "Use the fluid discretization of the traction coupling (coupled solver, "
@@ -345,29 +374,30 @@ private:
     prm.leave_subsection();
   }
 
-  double                        end_time               = END_TIME;
-  bool                          traction_coupling      = false;
-  bool                          coupled_fluid_solver   = false;
-  double                        cfl                    = 0.5;
-  bool                          pull_back_traction     = true;
-  double                        fluid_abs_tol          = ABS_TOL;
-  double                        fluid_rel_tol          = REL_TOL;
-  double                        coupled_abs_tol        = 1.e-14;
-  double                        coupled_rel_tol        = 1.e-10;
-  bool                          penalty_terms          = true;
-  bool                          adaptive_time_stepping = true;
+  double                               end_time               = END_TIME;
+  bool                                 traction_coupling      = false;
+  bool                                 coupled_fluid_solver   = false;
+  std::string                          viscous_formulation    = "Auto";
+  double                               cfl                    = 0.5;
+  bool                                 pull_back_traction     = true;
+  double                               fluid_abs_tol          = ABS_TOL;
+  double                               fluid_rel_tol          = REL_TOL;
+  double                               coupled_abs_tol        = 1.e-14;
+  double                               coupled_rel_tol        = 1.e-10;
+  bool                                 penalty_terms          = true;
+  bool                                 adaptive_time_stepping = true;
   IncNS::PreconditionerPressurePoisson pressure_poisson_preconditioner =
     IncNS::PreconditionerPressurePoisson::Direct;
   IncNS::MomentumPreconditioner viscous_preconditioner =
     IncNS::MomentumPreconditioner::InverseMassMatrix;
   IncNS::PreconditionerProjection projection_preconditioner =
     IncNS::PreconditionerProjection::InverseMassMatrix;
-  unsigned int                  fluid_preconditioner_update = 0;
-  bool                          coupled_schur_direct        = true;
+  unsigned int                  fluid_preconditioner_update     = 0;
+  bool                          coupled_schur_direct            = true;
   MultigridType                 coupled_velocity_multigrid_type = MultigridType::cphMG;
-  bool                          coupled_convective_implicit = false;
-  double                        coupled_newton_abs_tol      = 1.e-12;
-  double                        coupled_newton_rel_tol      = 1.e-8;
+  bool                          coupled_convective_implicit     = false;
+  double                        coupled_newton_abs_tol          = 1.e-12;
+  double                        coupled_newton_rel_tol          = 1.e-8;
   IncNS::MomentumPreconditioner coupled_velocity_preconditioner =
     IncNS::MomentumPreconditioner::InverseMassMatrix;
   IncNS::SchurComplementPreconditioner coupled_schur_preconditioner =
@@ -473,14 +503,14 @@ private:
     // pressure Poisson equation
     param.solver_data_pressure_poisson =
       SolverData(1000, fluid_abs_tol, fluid_rel_tol, LinearSolver::CG, 100);
-    param.preconditioner_pressure_poisson      = pressure_poisson_preconditioner;
+    param.preconditioner_pressure_poisson = pressure_poisson_preconditioner;
     if(pressure_poisson_preconditioner == PreconditionerPressurePoisson::Direct and
        fluid_preconditioner_update > 0)
     {
       param.update_preconditioner_pressure_poisson                  = true;
       param.update_preconditioner_pressure_poisson_every_time_steps = fluid_preconditioner_update;
     }
-    param.multigrid_data_pressure_poisson.type = MultigridType::cphMG;
+    param.multigrid_data_pressure_poisson.type                   = MultigridType::cphMG;
     param.multigrid_data_pressure_poisson.smoother_data.smoother = MultigridSmoother::Chebyshev;
     param.multigrid_data_pressure_poisson.smoother_data.preconditioner =
       PreconditionerSmoother::PointJacobi;
@@ -565,8 +595,8 @@ private:
        (coupled_velocity_preconditioner == MomentumPreconditioner::Direct or coupled_schur_direct))
     {
       // the time step size changes the mass coefficient, the mesh moves (ALE)
-      param.update_preconditioner_coupled                  = true;
-      param.update_preconditioner_coupled_every_time_steps = fluid_preconditioner_update;
+      param.update_preconditioner_coupled                   = true;
+      param.update_preconditioner_coupled_every_time_steps  = fluid_preconditioner_update;
       param.update_preconditioner_coupled_every_newton_iter = 1000;
     }
 
@@ -614,6 +644,13 @@ private:
           param.update_preconditioner_coupled_every_newton_iter = 1;
       }
     }
+
+    // explicit choice of the viscous formulation (e.g. to compare the fluid solvers on the same
+    // spatial discretization)
+    if(viscous_formulation == "Laplace")
+      param.formulation_viscous_term = FormulationViscousTerm::LaplaceFormulation;
+    else if(viscous_formulation == "Divergence")
+      param.formulation_viscous_term = FormulationViscousTerm::DivergenceFormulation;
   }
 
   void
@@ -1099,6 +1136,7 @@ private:
 
     prm.enter_subsection("Application");
     {
+      add_test_case_parameter(prm);
       prm.add_parameter("EndTime",
                         end_time,
                         "End time of the simulation.",

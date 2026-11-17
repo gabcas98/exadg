@@ -163,6 +163,14 @@ private:
   mutable unsigned int               oc_not_converged       = 0;
   mutable VectorType                 oc_last_control;
 
+  // GeneralizedAlphaLoad::MidPoint: alpha_f of the structure (0 if not applicable) and the
+  // (unblended) interface loads at t_n and t_{n+1} (Dirichlet-Neumann schemes)
+  double
+  midpoint_alpha_f() const;
+
+  mutable std::shared_ptr<ContainerInterfaceData<1, dim, double>> structure_load_n,
+    structure_load_np;
+
   // method schedule in time (OptimalControl/MethodSchedule) and statistics per window
   std::vector<std::pair<double, OptimalControl::Method>> oc_schedule;
   struct OCWindow

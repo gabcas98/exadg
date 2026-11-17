@@ -85,6 +85,10 @@ Driver<dim, Number>::setup()
 
   setup_interface_coupling();
 
+  // traction of the fluid on the interface (Nodal or Flux, see acceleration_schemes/parameters.h)
+  fluid->pde_operator->set_interface_traction_flux(parameters.traction_evaluation ==
+                                                   TractionEvaluation::Flux);
+
   partitioned_solver->setup(fluid, structure);
 
   // partitioned iterations: penalty parameters from the extrapolated velocity (as in the first
@@ -275,7 +279,38 @@ Driver<dim, Number>::coupling_fluid_to_structure(bool const end_of_time_step) co
   stress_fluid *= -1.0;
   fluid_to_structure->update_data(stress_fluid);
 
+  // generalized-alpha structure with alpha_f != 0: load (1 - alpha_f) t_{n+1} + alpha_f t_n at the
+  // mid point of the time step
+  if(midpoint_alpha_f() != 0.0)
+  {
+    auto const container = structure->pde_operator->get_container_interface_data_neumann();
+    if(end_of_time_step)
+    {
+      AssertThrow(structure_load_n.get(),
+                  dealii::ExcMessage("The interface load of the previous time step is missing."));
+      if(not structure_load_np)
+        structure_load_np = std::make_shared<ContainerInterfaceData<1, dim, double>>(*container);
+      else
+        *structure_load_np = *container;
+      container->sadd(1.0 - midpoint_alpha_f(), midpoint_alpha_f(), *structure_load_n);
+    }
+    else
+    {
+      // load at t_n (initial acceleration)
+      structure_load_n = std::make_shared<ContainerInterfaceData<1, dim, double>>(*container);
+    }
+  }
+
   timer_tree.insert({"FSI", "Coupling fluid -> structure"}, sub_timer.wall_time());
+}
+
+template<int dim, typename Number>
+double
+Driver<dim, Number>::midpoint_alpha_f() const
+{
+  if(parameters.generalized_alpha_load != GeneralizedAlphaLoad::MidPoint)
+    return 0.0;
+  return structure->time_integrator->get_alpha_f();
 }
 
 template<int dim, typename Number>
@@ -371,6 +406,10 @@ Driver<dim, Number>::solve() const
       };
     partitioned_solver->solve(lambda_dirichlet_neumann);
 
+    // converged interface load of the time step (mid-point load of generalized-alpha schemes)
+    if(midpoint_alpha_f() != 0.0)
+      *structure_load_n = *structure_load_np;
+
     if(not parameters.monitor_point.empty())
       print_interface_forces();
 
@@ -460,17 +499,35 @@ Driver<dim, Number>::print_interface_forces() const
                                        fluid->pde_operator->get_dof_index_pressure(),
                                        fluid->pde_operator->get_quad_index_velocity_standard());
 
-  dealii::Tensor<1, dim, double> force_p, force_v;
+  // penalty part of the numerical fluxes on DirichletCached faces (TractionEvaluation::Flux adds it
+  // to the transferred traction)
+  auto const &       pde_operator       = *fluid->pde_operator;
+  auto const         dirichlet_data     = fluid->pde_operator->get_container_interface_data();
+  bool const         continuity_penalty = pde_operator.use_continuity_penalty_in_traction();
+  unsigned int const quad_std           = pde_operator.get_quad_index_velocity_standard();
+
+  dealii::Tensor<1, dim, double> force_p, force_v, force_penalty;
   for(unsigned int face = matrix_free.n_inner_face_batches();
       face < matrix_free.n_inner_face_batches() + matrix_free.n_boundary_face_batches();
       ++face)
   {
     if(ids.find(matrix_free.get_boundary_id(face)) == ids.end())
       continue;
+    bool const penalty =
+      dirichlet_data.get() and bd->get_boundary_type(matrix_free.get_boundary_id(face)) ==
+                                 IncNS::BoundaryTypeU::DirichletCached;
     phi_u.reinit(face);
     phi_p.reinit(face);
-    phi_u.gather_evaluate(velocity, dealii::EvaluationFlags::gradients);
+    phi_u.gather_evaluate(velocity,
+                          dealii::EvaluationFlags::values | dealii::EvaluationFlags::gradients);
     phi_p.gather_evaluate(pressure, dealii::EvaluationFlags::values);
+    if(penalty)
+    {
+      pde_operator.get_viscous_kernel()->reinit_boundary_face(
+        phi_u, pde_operator.get_dof_index_velocity());
+      if(continuity_penalty)
+        pde_operator.get_continuity_penalty_kernel()->reinit_boundary_face(phi_u);
+    }
     unsigned int const n_lanes = matrix_free.n_active_entries_per_face_batch(face);
     for(unsigned int q = 0; q < phi_u.n_q_points; ++q)
     {
@@ -478,23 +535,34 @@ Driver<dim, Number>::print_interface_forces() const
       auto const G  = phi_u.get_gradient(q);
       auto const fv = param.density * param.viscosity * ((G + transpose(G)) * n) * phi_u.JxW(q);
       auto const fp = -param.density * phi_p.get_value(q) * n * phi_u.JxW(q);
+      dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> fpen;
+      if(penalty)
+        fpen = param.density * phi_u.JxW(q) *
+               pde_operator.interface_penalty_flux(
+                 phi_u.get_value(q),
+                 FunctionEvaluator<1, dim, Number>::value(*dirichlet_data, face, q, quad_std),
+                 n,
+                 dealii::make_vectorized_array<Number>(param.viscosity),
+                 continuity_penalty);
       for(unsigned int v = 0; v < n_lanes; ++v)
         for(unsigned int d = 0; d < dim; ++d)
         {
           force_v[d] += fv[d][v];
           force_p[d] += fp[d][v];
+          force_penalty[d] += fpen[d][v];
         }
     }
   }
   velocity.zero_out_ghost_values();
   pressure.zero_out_ghost_values();
-  force_p = dealii::Utilities::MPI::sum(force_p, mpi_comm);
-  force_v = dealii::Utilities::MPI::sum(force_v, mpi_comm);
+  force_p       = dealii::Utilities::MPI::sum(force_p, mpi_comm);
+  force_v       = dealii::Utilities::MPI::sum(force_v, mpi_comm);
+  force_penalty = dealii::Utilities::MPI::sum(force_penalty, mpi_comm);
 
   // forces of the fluid on the fluid boundary; the force on the structure is the negative
   pcout << "FSI interface forces: t = " << std::scientific << std::setprecision(8)
         << fluid->time_integrator->get_time() << ", F_pressure = " << force_p
-        << ", F_viscous = " << force_v;
+        << ", F_viscous = " << force_v << ", F_penalty = " << force_penalty;
   if(use_optimal_control() and oc_last_control.size() > 0)
     pcout << ", F_control = " << oc_problem->integrate_on_interface(oc_last_control);
   pcout << std::defaultfloat << std::endl;
@@ -613,6 +681,17 @@ Driver<dim, Number>::check_optimal_control_requirements() const
     }
   }
 
+  // the native formulation is the interface equation of the Dirichlet-Neumann fixed point (J* = 0):
+  // a Tikhonov term would move its solution away from the coupled solution
+  check(oc_parameters.formulation != OptimalControl::Formulation::NativeTraction or
+          oc_parameters.regularization == 0.0,
+        "Formulation::NativeTraction requires Regularization = 0 (the regularized minimizer is not "
+        "a solution of the coupled problem).");
+  check(oc_parameters.stopping_criterion !=
+            OptimalControl::StoppingCriterion::DisplacementResidual or
+          oc_parameters.formulation == OptimalControl::Formulation::NativeTraction,
+        "StoppingCriterion::DisplacementResidual requires Formulation::NativeTraction.");
+
   // structure: dead load with symmetric tangent stiffness
   check(not oc_parameters.geometry_in_state or oc_parameters.geometry_iterations == 1,
         "GeometryInState replaces the outer geometry loop: set GeometryIterations = 1.");
@@ -655,6 +734,8 @@ Driver<dim, Number>::setup_optimal_control()
     mpi_comm);
 
   oc_problem->configure(oc_parameters);
+  if(oc_parameters.stopping_criterion == OptimalControl::StoppingCriterion::DisplacementResidual)
+    oc_problem->set_displacement_criterion(parameters.abs_tol, parameters.rel_tol);
   oc_problem->set_mesh_update(
     [this](VectorType const & displacement) { solve_subproblem_ale(displacement); });
 
@@ -701,6 +782,20 @@ Driver<dim, Number>::setup_optimal_control()
     pcout << std::endl;
   }
 
+  // with InterfaceEquation, Gauss-Newton is the Newton-Krylov method on S d = -m (S square):
+  // identical to InterfaceNewton; LevenbergMarquardt and TrustRegion differ only in the step
+  // acceptance within the same GMRES subspace
+  if(oc_parameters.interface_equation and oc_parameters.regularization == 0.0)
+    pcout << "  note: InterfaceEquation = true: GaussNewton is identical to InterfaceNewton, "
+             "LevenbergMarquardt and TrustRegion are InterfaceNewton with a different "
+             "globalization in the GMRES subspace."
+          << std::endl;
+  if(oc_parameters.model_newton_steps)
+    pcout << "  note: ModelNewtonSteps = true: every solve first tries the multi-secant step "
+             "d = -H m, common to all derivative-based methods (column 'model' of the window "
+             "statistics)."
+          << std::endl;
+
   pcout << "  method:            " << OptimalControl::method_to_string(oc_parameters.method)
         << std::endl
         << "  regularization:    " << oc_parameters.regularization << std::endl
@@ -740,6 +835,10 @@ Driver<dim, Number>::solve_optimal_control() const
     structure->time_integrator->compute_initial_acceleration(
       application->structure->get_parameters().restarted_simulation);
   }
+
+  // mid-point load of generalized-alpha structures: load of t_0
+  oc_problem->set_midpoint_load(midpoint_alpha_f(),
+                                *structure->pde_operator->get_container_interface_data_neumann());
 
   // initial control: traction of the fluid at t_0
   VectorType control, control_old, displacement_geometry, displacement_previous;
@@ -918,6 +1017,9 @@ Driver<dim, Number>::solve_optimal_control() const
       print_interface_forces();
     }
 
+    // the load of the returned control becomes the load of t_n (mid-point load)
+    oc_problem->finish_time_step();
+
     ++oc_time_steps;
     timer_tree.insert({"FSI", "Optimal control"}, timer.wall_time());
 
@@ -1030,8 +1132,8 @@ Driver<dim, Number>::print_performance_results(double const total_time) const
           << std::endl
           << std::setw(22) << "method" << std::setw(18) << "time window" << std::setw(7) << "steps"
           << std::setw(8) << "it" << std::setw(8) << "states" << std::setw(8) << "S" << std::setw(8)
-          << "S*" << std::setw(9) << "Krylov" << std::setw(8) << "failed" << std::setw(12)
-          << "wall/step" << std::setw(10) << "fK/step" << std::endl;
+          << "S*" << std::setw(9) << "Krylov" << std::setw(8) << "model" << std::setw(8) << "failed"
+          << std::setw(12) << "wall/step" << std::setw(10) << "fK/step" << std::endl;
     for(auto const & w : oc_windows)
     {
       double const n = std::max(1.0, double(w.steps));
@@ -1041,10 +1143,10 @@ Driver<dim, Number>::print_performance_results(double const total_time) const
             << w.stats.iterations / n << std::setw(8) << w.stats.state_evaluations / n
             << std::setw(8) << w.stats.tangent_solves / n << std::setw(8)
             << w.stats.adjoint_solves / n << std::setw(9) << w.stats.krylov_iterations / n
-            << std::setw(8) << w.not_converged << std::scientific << std::setprecision(3)
-            << std::setw(12) << w.wall_time / n << std::defaultfloat << std::fixed
-            << std::setprecision(1) << std::setw(10) << double(w.fluid_krylov) / n
-            << std::defaultfloat << std::endl;
+            << std::setw(8) << w.stats.model_steps_accepted / n << std::setw(8) << w.not_converged
+            << std::scientific << std::setprecision(3) << std::setw(12) << w.wall_time / n
+            << std::defaultfloat << std::fixed << std::setprecision(1) << std::setw(10)
+            << double(w.fluid_krylov) / n << std::defaultfloat << std::endl;
     }
   }
 

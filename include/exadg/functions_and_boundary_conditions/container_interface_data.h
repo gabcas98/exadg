@@ -181,6 +181,20 @@ public:
         value *= factor;
   }
 
+  // this = a * this + b * other, other a copy of this container (same layout)
+  void
+  sadd(number_type const a, number_type const b, ContainerInterfaceData const & other)
+  {
+    for(auto & it : map_solution)
+    {
+      auto const & src = other.map_solution.find(it.first)->second;
+      AssertThrow(src.size() == it.second.size(),
+                  dealii::ExcMessage("Containers with different layouts."));
+      for(unsigned int i = 0; i < it.second.size(); ++i)
+        it.second[i] = a * it.second[i] + b * src[i];
+    }
+  }
+
 private:
   dealii::types::global_dof_index
   get_vector_index(unsigned int const q_index,

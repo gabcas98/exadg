@@ -2092,11 +2092,26 @@ SpatialOperatorBase<dim, Number>::local_interpolate_stress_bc_boundary_face(
     if(boundary_type == BoundaryTypeU::DirichletCached or
        this->boundary_descriptor->velocity->is_neumann_cached(boundary_id))
     {
+      // Flux: penalty terms of the numerical fluxes through which the weakly imposed interface
+      // velocity g acts on the fluid momentum (DirichletCached boundaries only)
+      bool const flux = interface_traction_flux and boundary_type == BoundaryTypeU::DirichletCached;
+
       integrator_u.reinit(face);
-      integrator_u.gather_evaluate(*velocity_ptr, dealii::EvaluationFlags::gradients);
+      integrator_u.gather_evaluate(*velocity_ptr,
+                                   flux ? (dealii::EvaluationFlags::values |
+                                           dealii::EvaluationFlags::gradients) :
+                                          dealii::EvaluationFlags::gradients);
 
       integrator_p.reinit(face);
       integrator_p.gather_evaluate(*pressure_ptr, dealii::EvaluationFlags::values);
+
+      bool const continuity_penalty = flux and use_continuity_penalty_in_traction();
+      if(flux)
+      {
+        viscous_kernel->reinit_boundary_face(integrator_u, dof_index_u);
+        if(continuity_penalty)
+          conti_penalty_kernel->reinit_boundary_face(integrator_u);
+      }
 
       for(unsigned int q = 0; q < integrator_u.n_q_points; ++q)
       {
@@ -2118,6 +2133,17 @@ SpatialOperatorBase<dim, Number>::local_interpolate_stress_bc_boundary_face(
         // -> multiply by density to get true traction in N/m^2.
         vector traction =
           param.density * (viscosity * (grad_u + transpose(grad_u)) * normal - p * normal);
+
+        if(flux)
+          traction +=
+            param.density *
+            interface_penalty_flux(
+              integrator_u.get_value(q),
+              FunctionEvaluator<1, dim, Number>::value(
+                *boundary_descriptor->velocity->get_dirichlet_cached_data(), face, q, quad_index),
+              normal,
+              viscosity,
+              continuity_penalty);
 
         integrator_u.submit_dof_value(traction, index);
       }

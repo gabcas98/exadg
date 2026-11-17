@@ -141,6 +141,24 @@ enum class Formulation
   NativeTraction
 };
 
+/*
+ * Convergence test of the coupling iteration.
+ *   Mismatch: ||m||_M <= max(MismatchTolerance, MismatchToleranceRelative ||g||_M,
+ *     MismatchReduction ||m_0||_M). Note that ||g||_M is dominated by the mean pressure on the
+ *     interface (whose level is set by the outflow condition) and that the L2 norm of the traction
+ *     residual weights its mesh-scale components.
+ *   DisplacementResidual (NativeTraction): the end-of-step displacement change that the traction
+ *     residual would cause, ||dd/dg m||_2 (one linearized structure solve), against the criterion
+ * of the partitioned solvers of ExaDG, max(FSI/AbsTol sqrt(n_dofs), FSI/RelTol ||v_{n+1}|| dt): to
+ *     first order the residual of a Dirichlet-Neumann iteration, so that the optimal-control
+ * methods and IQN-ILS stop at the same accuracy with the same tolerances.
+ */
+enum class StoppingCriterion
+{
+  Mismatch,
+  DisplacementResidual
+};
+
 struct Parameters
 {
   Parameters()
@@ -199,6 +217,7 @@ struct Parameters
       control_extrapolation_order(1),
       verify_derivatives(false),
       formulation(Formulation::VelocityMismatch),
+      stopping_criterion(StoppingCriterion::Mismatch),
       tangent_difference(TangentDifference::Analytic),
       geometry_in_state(false),
       qn_reuse(8),
@@ -348,13 +367,14 @@ struct Parameters
                         "Hessian H H^*) and SteepestDescent (direction -H H^* r).",
                         dealii::Patterns::Bool(),
                         false);
-      prm.add_parameter("RecycleTimeSteps",
-                        recycle_time_steps,
-                        "RecycledPreconditioner: number of previous solves whose pairs are kept. The tangent map "
-                        "changes from step to step; on the limit cycle of FSI2 pairs older than "
-                        "about 8 steps make the recycled inverse worse.",
-                        dealii::Patterns::Integer(0),
-                        false);
+      prm.add_parameter(
+        "RecycleTimeSteps",
+        recycle_time_steps,
+        "RecycledPreconditioner: number of previous solves whose pairs are kept. The tangent map "
+        "changes from step to step; on the limit cycle of FSI2 pairs older than "
+        "about 8 steps make the recycled inverse worse.",
+        dealii::Patterns::Integer(0),
+        false);
       prm.add_parameter("RecycleMaxPairs",
                         recycle_max_pairs,
                         "RecycledPreconditioner: maximum number of pairs (newest first).",
@@ -577,6 +597,14 @@ struct Parameters
                         "in the first time step.",
                         dealii::Patterns::Bool(),
                         false);
+      prm.add_parameter("StoppingCriterion",
+                        stopping_criterion,
+                        "Convergence test: Mismatch (||m||_M with MismatchTolerance, "
+                        "MismatchToleranceRelative, MismatchReduction) or DisplacementResidual "
+                        "(displacement change caused by m, against FSI/AbsTol and FSI/RelTol as "
+                        "the partitioned solvers of ExaDG).",
+                        Patterns::Enum<StoppingCriterion>(),
+                        false);
       prm.add_parameter("Formulation",
                         formulation,
                         "Interface conditions of the state (VelocityMismatch or NativeTraction).",
@@ -771,6 +799,7 @@ struct Parameters
   bool         verify_derivatives;
 
   Formulation       formulation;
+  StoppingCriterion stopping_criterion;
   TangentDifference tangent_difference;
   bool              geometry_in_state;
   unsigned int      qn_reuse;

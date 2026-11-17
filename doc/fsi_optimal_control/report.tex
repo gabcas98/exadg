@@ -75,7 +75,14 @@ seven methods integrate the start-up and growth phase to $t=15$~s within $20\%$ 
 $18$ to $52$ times faster than at the beginning of the study; with the coupled fluid solver they
 are about twice as fast as Dirichlet--Neumann with IQN-ILS at equal accuracy, and with the
 dual-splitting fluid solver the secant method is as fast as IQN-ILS. At the finest resolution the
-secant method reproduces the benchmark amplitudes and mean values within $1\%$.
+secant method reproduces the benchmark amplitudes and mean values within $1\%$. A review of the
+coupling shows that the nodal traction of ExaDG misses the penalty part of the numerical fluxes,
+which on the benchmark resolution carries most of the friction on the flag and makes the coupled
+solution depend on the fluid solver ($8.5\%$ in amplitude); with the flux traction the coupled and
+the dual-splitting solver agree to $0.05\%$. With a displacement criterion shared with IQN-ILS the
+secant method is $1.4$ (FSI2, dual splitting) to $2.4$ (FSI3, coupled solver) times faster than
+IQN-ILS, and on FSI3 the Newton-type methods need exactly one iteration per step, while the
+normal-equation methods cost $4.5$ to $16$ times more.
 \end{abstract}
 
 \noindent\textbf{Keywords:} fluid--structure interaction; partitioned coupling; optimisation-based
@@ -141,6 +148,10 @@ quasi-Newton-accelerated Dirichlet--Neumann coupling?
   \item Long simulations of the Turek--Hron FSI2 benchmark (\cref{sec:results}) into the periodic
   regime, a resolution study, two instabilities at fine resolution and their remedies, and a
   comparison of all methods with Dirichlet--Neumann IQN-ILS at equal accuracy.
+  \item Consistency of the coupling (\cref{sec:consistency}): the traction of the numerical fluxes,
+  which makes the coupled solution independent of the fluid solver; the consistent mid-point load of
+  generalized-$\alpha$ structures; a displacement-based stopping criterion shared with IQN-ILS; and
+  a comparison of the methods on FSI3 that separates the methods from their shared ingredients.
 \end{enumerate}
 Negative results (Sobolev interface metrics, Tikhonov regularisation, a constraint-only
 stabilisation of the multiplier, a Robin penalty, several acceleration ideas) are reported as well,
@@ -283,7 +294,11 @@ on). The unknown of a step is $d_{n+1-\alpha_f}$, and the end-of-step velocity i
 \begin{equation}\label{eq:cv}
   v_{n+1}=c_v\,d_{n+1-\alpha_f}+\text{const},\qquad c_v=\frac{\gamma}{\beta\Delta t(1-\alpha_f)} .
 \end{equation}
-The nonlinear system is solved by Newton's method with FGMRES and a matrix-free tangent operator.
+The interface load at $t_{n+1-\alpha_f}$ is $(1-\alpha_f)t_{n+1}+\alpha_ft_n$ (for $\alpha_f\neq0$,
+the generalized-$\alpha$ and HHT schemes; originally ExaDG applied $t_{n+1}$ at the mid point, see
+\cref{sec:consistency}); the derivative of $v_{n+1}$ with respect to the traction of the step then
+carries the factor $1-\alpha_f$ in addition to $c_v$. The nonlinear system is solved by Newton's
+method with FGMRES and a matrix-free tangent operator.
 
 \paragraph{Mesh motion.} The fluid mesh follows the interface displacement by a linear elasticity
 extension on the reference fluid domain,
@@ -307,7 +322,10 @@ In the native partitioned scheme of ExaDG one iteration on the interface displac
 of an ALE update with $d$, a fluid step with the Dirichlet data $v_s$ (\code{DirichletCached}
 condition), the traction $T_f = -\rho_f(\nu F(u)-pI)n_f$ computed by nodal interpolation of the
 fluid stress (\code{interpolate_stress_bc}) and evaluated at the structure quadrature points, and
-a structure step with this traction. The fixed point is accelerated by Aitken relaxation or IQN-ILS
+a structure step with this traction. The nodal traction omits the penalty terms through which the
+weakly imposed interface velocity acts on the discrete fluid momentum; the option
+\code{FSI/TractionEvaluation = Flux}, the default since \cref{sec:consistency}, adds them. All
+runs before \cref{sec:consistency} use the nodal traction. The fixed point is accelerated by Aitken relaxation or IQN-ILS
 \cite{Degroote2009}. As reference we use IQN-ILS with tolerance $10^{-10}$; with the default
 tolerance ($10^{-3}$ relative) the scheme is visibly inaccurate during start-up, see
 \cref{sec:diagnosis}.
@@ -704,7 +722,10 @@ $y_{\mathrm{LM}}=(\bar H^{\top}\bar H+\lambda G_Z)^{-1}\beta\bar H^{\top}e_1$ wi
 $G_Z=Z^{\top}GZ$, and for TR the same with $\lambda\ge0$ such that $\|Zy\|_G=\Delta$ (bisection) if
 the Gauss--Newton step lies outside the trust region. Gain ratio and update of $\lambda$ or $\Delta$
 are those of \cref{sec:methods} with the predicted reduction of \eqref{eq:subspace}; a rejected
-trial costs a state but no tangent solve.
+trial costs a state but no tangent solve. Note that GN in this form \emph{is} IN (identical runs,
+\cref{sec:consistency}), and LM and TR differ from IN only when the full step is rejected. For the
+native formulation $J$ has the minimum value $0$ (the root of the interface equation); a Tikhonov
+term would move the minimiser away from the coupled solution and is rejected by the driver.
 
 \paragraph{Preconditioned gradient methods.} SD uses $d=-HH_Ar$ and the step length of the exact
 quadratic model along $d$, $\alpha=-(r,d)_G/\|Sd\|_A^2$ (one tangent solve, which also adds a pair
@@ -1921,7 +1942,10 @@ order, its dissipation at the frequency of the flag ($\omega\Delta t\approx0.004
 and the periodic regime of the base run is unchanged ($d_y=1.33\pm79.13$ against $1.33\pm79.04$,
 same frequency), whereas the first-order Newmark scheme reduces the amplitude by $0.5\%$. Some
 part of the coupled time discretisation still feeds energy into this mode; we have not identified
-it, and the structural dissipation only suppresses its effect.
+it, and the structural dissipation only suppresses its effect. For the generalized-$\alpha$ and HHT
+schemes part of the instability was caused by the end-of-step load applied at the mid point; with
+the consistent mid-point load their onsets move to $1.45$ and $1.98$~s (\cref{sec:consistency}),
+close to Bossak.
 
 \begin{table}[ht]\centering
 \caption{Small-time-step instability on the reproducer (fluid $Q_3$, structure $Q_2$, no
@@ -2893,6 +2917,220 @@ dual splitting & IQN-ILS, $\mathrm{RelTol}=10^{-4}$ & 85~s & 2.67 & $1.6\cdot10^
 \end{tabular}}
 \end{table}
 
+\subsection{Consistency of the coupling and a fair comparison of the methods}\label{sec:consistency}
+
+A review of the formulation and of the experiments identified four points that concern the problem
+rather than the solvers: the traction transferred to the structure is not the force of the discrete
+fluid momentum equation; generalized-$\alpha$ structures with $\alpha_f\neq0$ receive the
+end-of-step load at the mid point; the stopping criterion of the optimisation methods differs from
+that of IQN-ILS and is not invariant; and the comparison of the methods is dominated by ingredients
+they share, on a per-step problem that is nearly linear. All runs in this subsection use fluid $Q_3$
+refined once, structure $Q_4$, the secant method on the native formulation unless stated otherwise,
+and Bossak with $\rho_\infty=0$ except for the integrator study.
+
+\paragraph{Traction from the numerical fluxes.} With the mirror principle $u^+=-u^-+2g$ on the
+interface, the discrete momentum equation exchanges with the interface the force density (per unit
+area, kinematic quantities times $\rho_f$)
+\begin{equation}\label{eq:flux_traction}
+  f_h=\rho_f\Big(\nu F(u^-)n-p^-n-\nu\tau\big(J+(J\cdot n)n\big)-\tau_c(J\cdot n)n\Big),\qquad
+  J=u^--u^+=2(u^--g),
+\end{equation}
+with the interior penalty parameter $\tau$ of the viscous flux (divergence formulation, symmetrised
+penalty) and the parameter $\tau_c$ of the continuity penalty with boundary data: testing the DG
+momentum equation with a constant vector leaves exactly these boundary terms. The nodal traction of
+\code{interpolate_stress_bc} keeps only $\rho_f(\nu F(u^-)n-p^-n)$. Both converge to the same limit
+since $u^-\to g$, but the penalty part is the friction that the weakly imposed no-slip condition
+exerts on an unresolved boundary layer. The option \code{FSI/TractionEvaluation = Flux} (now the
+default) evaluates
+\eqref{eq:flux_traction} at the nodes of the interface faces, for Dirichlet--Neumann schemes and for
+the native formulation alike. With the penalty parameters frozen (\cref{sec:time}) the map
+$(u,p,g)\mapsto f_h$ is linear; the tangent passes the Dirichlet data of the perturbation, and the
+adjoint adds the transpose of $g\mapsto f_h$ to the dual of the interface data
+(\cref{sec:native_adjoint}). Transpose test $1.7\cdot10^{-16}$, adjoint test
+$1.2\cdot10^{-14}$, Taylor ratios $4.000$.
+
+\Cref{tab:traction} shows the effect on the limit cycle of FSI2. On the flag the nodal viscous force
+is small and even has the wrong sign in $x$ ($+0.46$ and $+1.12$~N/m on the fluid, averaged over
+the cycle), whereas the penalty part is $-7.7$ and $-6.8$~N/m: at this resolution the one-sided
+gradient misses almost the whole friction. As a consequence, with the nodal traction the coupled
+solution depends on the fluid solver: the amplitudes of the coupled and of the dual-splitting
+solver differ by $8.5\%$ at CFL $0.5$ and by $6\%$ at CFL $0.25$; this is the difference between
+the limit cycles noted in \cref{sec:fast_periodic}. With the flux traction the two solvers agree to
+$1\%$ at CFL $0.5$ and to $0.05\%$ at CFL $0.25$, and the amplitude moves towards the reference
+($75.7$ against $70.7$ for the time-converged coupled solver; reference $80.6$). Neither the
+formulation of the viscous term (Laplace or divergence, at most $0.7\%$) nor the time step of the
+coupled solver ($0.06\%$) explains the difference; the dual-splitting solver has a time error of
+$1\%$ (flux) or $2.7\%$ (nodal) between CFL $0.5$ and $0.25$. With one more refinement of the fluid (lower part of
+\cref{tab:traction}, mesh motion stiffened near the flag as in \cref{sec:instabilities}) the
+difference between the traction types decreases from $1\%$ to $0.08\%$ for the dual-splitting
+solver and from $7\%$ to $3\%$ for the coupled solver; with the flux traction the two solvers agree
+to $0.8\%$ (the time error of dual splitting), with the nodal traction the coupled solver remains
+$4\%$ below the others. The penalty part of the friction on the flag is still about $-5$~N/m at
+this resolution, whereas the nodal part changes from about $+1$ to $-2.5$~N/m between the two
+meshes: their sum converges much faster than either part ($-5.7$ to $-7.3$~N/m on the first,
+$-7.2$ to $-8.1$~N/m on the second mesh). At this polynomial degree the amplitude is not yet
+converged in the mesh size (as in \cref{sec:resolution}). The stiffened mesh motion alone changes
+the amplitude on the first mesh by $1.4\%$ with the nodal and by $0.03\%$ with the flux traction.
+In the start-up phase ($t\in[2,3]$~s, recirculating flow behind the cylinder) the penalty part of the
+$x$-force on the flag decreases under refinement as it must ($10.4$, $1.8$, $1.4$, $0.28$~N/m for
+fluid refinements $0$--$3$).
+
+Both variants interpolate the traction at the nodes, so that the force received by the structure
+differs from the integral of $f_h$ by about $0.3$--$0.7$~N/m in $x$ and $1.2$--$1.4$~N/m in $y$
+(root mean square over the cycle, total force about $150$~N/m); a face-wise $L^2$ projection of
+\eqref{eq:flux_traction} would make the transfer exactly conservative.
+
+\begin{table}[ht]\centering
+\caption{FSI2, periodic regime $t\in[17,20]$~s, fluid $Q_3$ refined once: tip displacement
+($10^{-3}$, mean $\pm$ amplitude) and viscous $x$-force on the fluid at the flag (N/m, average over
+the window): nodal part $F_v$ and penalty part $F_{\mathrm{pen}}$ of \eqref{eq:flux_traction}.
+Reference \cite{TurekHron2006}: $d_x=-14.58\pm12.44$, $d_y=1.23\pm80.60$.}\label{tab:traction}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llccccc}
+\toprule
+fluid solver & traction & CFL & $d_x$ & $d_y$ & $F_v$ & $F_{\mathrm{pen}}$\\
+\midrule
+dual splitting & nodal & 0.5 & $-13.82\pm11.99$ & $0.88\pm77.25$ & $+0.46$ & $-7.74$\\
+ & nodal & 0.25 & $-13.14\pm11.44$ & $0.88\pm75.15$ & $+0.73$ & $-7.37$\\
+ & flux & 0.5 & $-13.56\pm11.99$ & $0.90\pm76.47$ & $+0.63$ & $-7.28$\\
+ & flux & 0.25 & $-13.29\pm11.75$ & $0.90\pm75.68$ & $+0.66$ & $-7.24$\\
+ & nodal, divergence form. & 0.5 & $-13.73\pm11.91$ & $0.87\pm76.98$ & $+0.53$ & $-7.65$\\
+\midrule
+coupled & nodal & 0.5 & $-11.76\pm10.38$ & $0.92\pm70.69$ & $+1.12$ & $-6.80$\\
+ & nodal & 0.25 & $-11.74\pm10.35$ & $0.92\pm70.65$ & $+1.13$ & $-6.79$\\
+ & flux & 0.5 & $-13.27\pm11.73$ & $0.97\pm75.75$ & $+0.26$ & $-7.38$\\
+ & flux & 0.25 & $-13.25\pm11.69$ & $0.96\pm75.72$ & $+0.27$ & $-7.36$\\
+ & nodal, Laplace form. & 0.5 & $-11.91\pm10.50$ & $0.93\pm71.18$ & $+0.98$ & $-6.95$\\
+\midrule
+\multicolumn{7}{l}{stiffened mesh motion}\\
+coupled & nodal & 0.5 & $-12.10\pm10.63$ & $1.00\pm71.67$ & & \\
+ & flux & 0.5 & $-13.29\pm11.76$ & $1.05\pm75.73$ & & \\
+\multicolumn{7}{l}{fluid $Q_3$ refined twice, stiffened mesh motion}\\
+dual splitting & nodal & 0.5 & $-12.58\pm10.91$ & $1.04\pm74.15$ & $-2.79$ & $-5.11$\\
+ & flux & 0.5 & $-12.55\pm11.04$ & $1.06\pm74.21$ & $-2.87$ & $-5.20$\\
+coupled & nodal & 0.5 & $-11.72\pm10.22$ & $0.98\pm71.30$ & $-2.49$ & $-4.67$\\
+ & flux & 0.5 & $-12.38\pm10.89$ & $1.02\pm73.63$ & $-2.99$ & $-4.99$\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\paragraph{Load of generalized-$\alpha$ structures.} The structure equation \eqref{eq:genalpha} is
+evaluated at $t_{n+1-\alpha_f}$, so its interface load has to be
+$(1-\alpha_f)t_{n+1}+\alpha_ft_n$. The \code{NeumannCached} data of ExaDG carry the end-of-step
+traction $t_{n+1}$, which was applied at the mid point; this is irrelevant for Bossak and Newmark
+($\alpha_f=0$) but not for the generalized-$\alpha$ and HHT schemes. A single-degree-of-freedom
+model of the converged coupled step (structure integrator, added mass $\mu=m_a/m_s$ with the BDF2
+derivative of the interface velocity) has a spectral radius up to $1.05$ ($\mu=0.5$) and $1.08$
+($\mu=2$) per step for the generalized-$\alpha$ scheme with $\rho_\infty=0.8$ and the end-of-step
+load, up to $1.004$ for HHT, and below one for both with the mid-point load. The option
+\code{FSI/GeneralizedAlphaLoad = MidPoint} (now the default) uses the mid-point load in the
+Dirichlet--Neumann scheme and in the native formulation, whose derivatives carry the factor
+$1-\alpha_f$ in $c_v$ of \eqref{eq:cv}. On the reproducer of \cref{sec:instabilities} the onset of
+the instability (tip velocity above $0.05$) moves from $0.60$ to $1.45$~s for the
+generalized-$\alpha$ scheme ($1.53$~s with IQN-ILS) and from $1.68$ to $1.98$~s for HHT, against
+$2.08$~s for Bossak, all with $\rho_\infty=0.8$. The mid-point load thus removes the part of the
+instability that is due to the inconsistent load; the remaining instability is common to all
+integrators with $\rho_\infty=0.8$. The same model is stable for Bossak at all $\omega\Delta t$ and
+$\mu$, which excludes an imbalance of the interface energy between the BDF2 fluid and the
+Newmark-type structure as its source.
+
+\paragraph{Stopping criterion.} The criterion $\|m\|_{\M}\le\tau_{\mathrm{rel}}\|g\|_{\M}$ of
+\cref{sec:stopping} is not invariant: $\|g\|_{\M}$ is dominated by the mean pressure on the flag,
+whose level is set by the outflow condition, and the $L^2$ norm of the traction residual weights its
+mesh-scale components. The option \code{OptimalControl/StoppingCriterion = DisplacementResidual}
+measures the residual by the change of the end-of-step displacement it causes,
+$\|\partial d_{n+1}/\partial g\,m\|_2$ (one linearised structure solve), which is to first order the
+residual of a Dirichlet--Neumann iteration, and compares it with the criterion of the partitioned
+solvers of ExaDG, $\max(\mathrm{AbsTol}\sqrt{n},\ \mathrm{RelTol}\,\|v_{n+1}\|\Delta t)$, with the
+same parameters. \Cref{tab:criterion} compares the secant method with IQN-ILS on equal terms. With
+the same criterion and the same (implicit) geometry, the secant method needs $1.79$ states per step
+against $3.11$ IQN-ILS iterations for $\mathrm{RelTol}=10^{-5}$ and is $1.38$ times faster with the
+dual-splitting solver; its deviation of about $3\cdot10^{-4}$ from IQN-ILS does not depend on the
+tolerance (it is the difference between the area ratio of the time step and the pull-back of the
+traction, \cref{sec:geometry}) and lies $30$ times below the time error. The mismatch criterion
+used so far ($2.34$ states per step) lies between $\mathrm{RelTol}=10^{-7}$ and $10^{-5}$ on FSI2,
+but is looser than $\mathrm{RelTol}=10^{-5}$ on FSI3 (deviation $8\cdot10^{-3}$ against
+$2\cdot10^{-3}$ for the same scheme): its strictness relative to IQN-ILS depends on the problem.
+
+\begin{table}[ht]\centering
+\caption{FSI2 from rest to $t=15$~s, dual-splitting fluid solver, $3$ runs in parallel: IQN-ILS
+against the secant method with the same displacement criterion. Deviation: maximal deviation of the
+tip displacement from IQN-ILS with $\mathrm{RelTol}=10^{-7}$, relative to its maximum; wall times
+of one batch.}\label{tab:criterion}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llccc}
+\toprule
+coupling & criterion & iterations / states & wall time & deviation\\
+\midrule
+IQN-ILS & $\mathrm{RelTol}=10^{-7}$ & 4.24 & -- & --\\
+ & $\mathrm{RelTol}=10^{-5}$ & 3.11 & 158~s & $3.3\cdot10^{-5}$\\
+ & $\mathrm{RelTol}=10^{-4}$ & 2.68 & -- & $1.9\cdot10^{-4}$\\
+\midrule
+secant, implicit geometry & $\mathrm{RelTol}=10^{-7}$ & 2.55 & 215~s & $3.1\cdot10^{-4}$\\
+ & $\mathrm{RelTol}=10^{-5}$ & 1.79 & 115~s & $2.7\cdot10^{-4}$\\
+ & $\mathrm{RelTol}=10^{-4}$ & 1.73 & 126~s & $1.1\cdot10^{-3}$\\
+ & mismatch, $\tau_{\mathrm{rel}}=10^{-5}$ & 2.34 & 173~s & $2.8\cdot10^{-4}$\\
+\midrule
+secant, explicit geometry & $\mathrm{RelTol}=10^{-7}$ & 2.55 & & $3.4\cdot10^{-3}$\\
+ & $\mathrm{RelTol}=10^{-5}$ & 1.79 & & $3.2\cdot10^{-3}$\\
+ & mismatch, $\tau_{\mathrm{rel}}=10^{-5}$ & 2.35 & & $3.4\cdot10^{-3}$\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\paragraph{What the method comparison measures.} The native formulation is the interface equation
+$m(g)=g-T(g)=0$ of the Dirichlet--Neumann fixed point; $J=\tfrac12\|m\|^2$ has the minimum value
+$0$, so that minimising $J$ is a detour around a root-finding problem. A Tikhonov term would move
+the minimiser away from the coupled solution and is now rejected for the native formulation. With
+\code{InterfaceEquation} the Gauss--Newton step solves $Sd=-m$ by the GMRES solve of IN, so GN
+\emph{is} IN: the runs of \cref{sec:fast_model} with IN and with GN are identical to the last digit
+of the output (coupled and dual-splitting solver, over $6543$ and $6657$ time steps), and LM and TR
+differ from IN only when the full step is rejected. With \code{ModelNewtonSteps} every
+derivative-based method first takes the common multi-secant step, which closed $53$--$60\%$ of the
+time steps of FSI2 in \cref{tab:fast_model}; the equal costs reported there are therefore partly a
+property of the shared step. The window statistics now report this fraction (column ``model'').
+
+To test the methods on a problem with a stronger added mass, we ran FSI3 ($\rho_s/\rho_f=1$, $U=2$;
+\code{Application/TestCase = 3}) with the coupled solver: the oscillation saturates at
+$t\approx5.5$~s with $d_y=0.95\pm25.88\cdot10^{-3}$ at this resolution (reference
+$1.48\pm34.38$), and every method was run in windows of $0.5$~s on the same limit cycle
+(\cref{tab:fsi3}). Even here the per-step problem is nearly linear with explicit geometry: IN, GN,
+LM and TR converge in exactly one Newton iteration in every step and cost $9\%$ less than the
+secant method; the model step, helpful on FSI2, costs $5$--$7\%$ on FSI3. Gauss--Newton,
+Levenberg--Marquardt and trust region on the normal equations cost $4.5$, $8$ and $16$ times the
+secant method, the squared condition number of $S^*S$; steepest descent and L-BFGS are within
+$15\%$ only because the preconditioner $HH_A\approx(S^*S)^{-1}$ of exact derivative pairs turns them
+into quasi-Newton methods. With implicit geometry the tangent misses the shape derivative and IN
+costs as much as the secant method. Against IQN-ILS with the same criterion
+($\mathrm{RelTol}=10^{-5}$), the secant method needs $2.31$ states per step against $5.16$
+iterations ($100$ restarts of IQN-ILS) and is $2.4$ times faster with the same implicit geometry
+($511$ against $1225$~s), with a deviation of $4.7\cdot10^{-4}$; all variants reach the same limit
+cycle to four digits.
+
+\begin{table}[ht]\centering
+\caption{FSI3, coupled fluid solver, windows of $0.5$~s ($463$ steps) on the limit cycle
+($t\ge5.5$~s), per time step: Newton/secant iterations, states, tangent and adjoint solves, fluid
+Krylov iterations (fK). Explicit geometry unless stated otherwise.}\label{tab:fsi3}
+\begin{tabular}{llccccc}
+\toprule
+variant & method & it & states & $S$ & $S^*$ & fK\\
+\midrule
+interface equation & IN / GN & 1.00 & 2.00 & 1.89 / 1.90 & 0 & 85.5 / 85.6\\
+ & LM / TR & 1.00 & 2.00 & 1.90 & 0 & 85.8 / 85.7\\
+ & secant & 1.64 & 2.64 & 0 & 0 & 94.4\\
+with model steps & IN / GN & 1.17 / 1.10 & 2.17 / 2.10 & 1.22 / 1.68 & 0 & 91.3 / 89.2\\
+ & LM / TR & 1.15 / 1.14 & 2.15 / 2.14 & 1.57 / 1.58 & 0 & 90.9 / 90.6\\
+normal equations & GN & 1.49 & 2.49 & 6.73 & 8.23 & 427\\
+ & LM & 1.54 & 2.54 & 13.50 & 13.50 & 755\\
+ & TR & 1.70 & 2.70 & 33.24 & 34.94 & 1503\\
+ & SD / L-BFGS & 1.30 / 1.27 & 2.30 / 2.27 & 1.30 / 1.27 & 1.30 / 1.27 & 109 / 108\\
+implicit geometry & IN & 1.05 & 2.05 & 2.03 & 0 & 96.7\\
+ & LM / TR & 1.07 / 1.08 & 2.07 / 2.08 & 2.41 / 2.36 & 0 & 99.7 / 99.6\\
+ & secant & 1.66 & 2.66 & 0 & 0 & 94.8\\
+\bottomrule
+\end{tabular}
+\end{table}
+
 %=================================================================================================
 \section{Conclusions and outlook}\label{sec:conclusions}
 %=================================================================================================
@@ -3014,13 +3252,29 @@ steps). On $[0,15]$ IN, GN, LM and TR then cost $1.00$--$1.01$ (dual splitting, 
 $1.04$--$1.05$ (coupled, previously $1.09$) times the secant method, SD and L-BFGS with the same model
 steps before their gradient $1.09$ (previously $1.24$), and on the limit cycle IN is faster than the
 secant method with dual splitting.
+\item The coupling itself has to be consistent before methods can be compared
+(\cref{sec:consistency}). The nodal traction misses the penalty part of the numerical fluxes, which
+at the benchmark resolution carries most of the friction on the flag; the coupled solution then
+depends on the fluid solver ($70.7$ against $75.2\cdot10^{-3}$ in amplitude at small time steps).
+The flux traction removes this dependence ($75.72$ against $75.68$), is insensitive to the mesh
+motion, and is now the default.
+Generalized-$\alpha$ structures need the mid-point load; with it the instability of these schemes
+is reduced to the one common to all integrators with $\rho_\infty=0.8$. With a stopping criterion
+shared with IQN-ILS (the displacement change caused by the traction residual) the secant method
+needs $40$--$55\%$ fewer evaluations than IQN-ILS. On FSI3 the per-step problem is still nearly
+linear: all Newton-type methods take exactly one iteration, are $9\%$ cheaper than the secant
+method, and are identical (GN in the Krylov subspace is IN); the multi-secant model step, a shared
+ingredient, helps on FSI2 and costs $5$--$7\%$ on FSI3. The optimisation methods proper (GN, LM,
+TR on the normal equations) cost $4.5$ to $16$ times the secant method, as predicted by the squared
+condition number.
 \end{enumerate}
 Open points are the source of the energy that feeds the high-frequency mode of
 \cref{sec:instabilities}, which the dissipation of the structure integrator only suppresses, the
 periodic regime as a test case for the initial Jacobians of
-\cref{sec:initial_jacobian}, the second Newton iteration on the limit cycle and the difference
-between the limit cycles of the coupled and the dual-splitting fluid solver
-(\cref{sec:fast_periodic}), fewer tangent solves for the derivative-based methods, a cheap
+\cref{sec:initial_jacobian}, the second Newton iteration on the limit cycle
+(\cref{sec:fast_periodic}), a face-wise $L^2$ projection of the flux traction that makes the force
+transfer exactly conservative, a test case on which the per-step problem is strongly nonlinear
+(implicit geometry with shape derivatives, implicit convection, larger time steps), fewer tangent solves for the derivative-based methods, a cheap
 preconditioner of the convective velocity block that would allow larger time steps
 (\cref{sec:fast_fluid}), the sensitivity
 of the secant method to the fluid tolerance on the limit cycle (\cref{sec:fast_tolerances}), the
@@ -3067,7 +3321,21 @@ single-file output with a time-series record (\code{Output/NumberOfVtuFiles},
 \code{ALEStiffeningRadius} (fluid mesh), \code{CoupledSolverAbsTol}, \code{CoupledSolverRelTol},
 \code{PenaltyTerms} and \code{ContinuityPenaltyUseBoundaryData} (diagnostics); all defaults keep
 the original behaviour. The configuration of \cref{tab:final} uses \code{GenAlphaType =
-BossakAlpha}, \code{SpectralRadius = 0}, \code{MappingDegree = 4} and \code{ALEStiffening = 1}. For \cref{sec:fast}: parameters \code{RecycledPreconditioner}, \code{RecycleTimeSteps},
+BossakAlpha}, \code{SpectralRadius = 0}, \code{MappingDegree = 4} and \code{ALEStiffening = 1}.
+For \cref{sec:consistency}: \code{FSI/TractionEvaluation} (\code{Flux}, default, or \code{Nodal},
+the original behaviour used by all earlier runs, whose inputs do not set it;
+\code{SpatialOperatorBase::set_interface_traction_flux}, \code{interface_penalty_flux}),
+\code{FSI/GeneralizedAlphaLoad} (\code{MidPoint}, default, or \code{EndOfStep}),
+\code{OptimalControl/StoppingCriterion} (\code{Mismatch}, default, or
+\code{DisplacementResidual} with \code{FSI/AbsTol} and \code{FSI/RelTol}), the application
+parameters \code{TestCase} (1, 2, 3) and \code{ViscousFormulation} (\code{Auto}, \code{Laplace},
+\code{Divergence}), \code{ContainerInterfaceData::sadd}, the interface force output now also
+reports the penalty part \code{F_penalty}, and the window statistics the model steps that reached
+the tolerance. Runs \code{output/p1*}, inputs in \code{doc/fsi_optimal_control/inputs/p1*.json}
+(with \code{TractionEvaluation} set explicitly; the inputs of the earlier sections rely on the former
+default and need \code{FSI/TractionEvaluation = Nodal} to be reproduced); the single-degree-of-freedom model of the coupled step is
+\code{doc/fsi_optimal_control/added_mass_model.py}, the force analysis
+\code{doc/fsi_optimal_control/interface_forces.py}. For \cref{sec:fast}: parameters \code{RecycledPreconditioner}, \code{RecycleTimeSteps},
 \code{RecycleMaxPairs}, \code{ForcingTermTarget}, \code{LinearizedToleranceFactor},
 \code{LinearizedToleranceTarget}, \code{TangentStatePrediction}, \code{InterfaceEquation},
 \code{WarmStartAbsoluteTolerance} and \code{MethodSchedule} (one method per time window, with

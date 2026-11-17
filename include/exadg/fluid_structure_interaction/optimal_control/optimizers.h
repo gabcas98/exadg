@@ -77,6 +77,8 @@ struct Statistics
   unsigned int krylov_iterations           = 0;
   unsigned int preconditioner_applications = 0;
   unsigned int restarts                    = 0;
+  unsigned int model_steps_tried           = 0; // ModelNewtonSteps: model steps evaluated
+  unsigned int model_steps_accepted        = 0; // ... that reached the tolerance
   bool         converged                   = false;
   std::string  reason                      = "max iterations";
   double       cost                        = 0.0;
@@ -92,6 +94,8 @@ struct Statistics
     adjoint_solves += other.adjoint_solves;
     krylov_iterations += other.krylov_iterations;
     preconditioner_applications += other.preconditioner_applications;
+    model_steps_tried += other.model_steps_tried;
+    model_steps_accepted += other.model_steps_accepted;
   }
 };
 
@@ -165,8 +169,19 @@ public:
    * coupling error is then a fraction of the time error.
    */
   double
-  stopping_tolerance(VectorType const & g, double const m0_norm) const
+  stopping_tolerance(VectorType const & g, double const m0_norm, VectorType const & m) const
   {
+    if(param.stopping_criterion == StoppingCriterion::DisplacementResidual)
+    {
+      // tolerance for ||m||_M equivalent to the displacement criterion at the current iterate:
+      // ||m|| <= tolerance  <=>  residual <= displacement tolerance
+      double const m_norm   = norm_mismatch(m);
+      double const residual = problem.displacement_residual(m);
+      if(residual <= 0.0)
+        return std::max(m_norm, param.mismatch_tolerance);
+      return m_norm * problem.displacement_tolerance() / residual;
+    }
+
     double tolerance = param.mismatch_tolerance;
     if(param.mismatch_tolerance_relative > 0.0)
       tolerance = std::max(tolerance, param.mismatch_tolerance_relative * norm_mismatch(g));
@@ -232,7 +247,7 @@ public:
     {
       double const m_norm = norm_mismatch(m);
 
-      double const tolerance = stopping_tolerance(g, m0_norm);
+      double const tolerance = stopping_tolerance(g, m0_norm, m);
 
       /*
        * Model step without tangent solves (ModelNewtonSteps): d = -H m with the recycled inverse
@@ -254,6 +269,7 @@ public:
           double const J_trial    = evaluate(trial_m, trial_g);
           double const trial_norm = norm_mismatch(trial_m);
           ++model_steps_tried;
+          ++stats.model_steps_tried;
           if(param.recycled_preconditioner and std::isfinite(trial_norm))
           {
             VectorType y(trial_m);
@@ -274,7 +290,10 @@ public:
           // with tangents (from the better point, if the model step reduced ||m||)
           bool const success = std::isfinite(trial_norm) and trial_norm <= tolerance;
           if(success)
+          {
             ++model_steps_accepted;
+            ++stats.model_steps_accepted;
+          }
           model_success_rate = (1.0 - param.model_step_rate_weight) * model_success_rate +
                                param.model_step_rate_weight * (success ? 1.0 : 0.0);
           model_steps_enabled = false;
@@ -578,7 +597,7 @@ public:
       double const m_norm = norm_mismatch(m);
       print_iteration(k, cost(m, g), m_norm, 0.0);
       stats.mismatch_norm    = m_norm;
-      double const tolerance = stopping_tolerance(g, m0_norm);
+      double const tolerance = stopping_tolerance(g, m0_norm, m);
       if(m_norm <= tolerance)
       {
         stats.converged = true;
@@ -1892,9 +1911,9 @@ private:
   std::vector<VectorType>                                    adj_Q, adj_MQ, adj_W;
 
 public:
-  unsigned int recycled_restarts = 0; // history discarded (no descent direction)
-  unsigned int model_steps_tried    = 0; // ModelNewtonSteps: steps d = -H m evaluated
-  unsigned int model_steps_accepted = 0; // ... that reached the tolerance
+  unsigned int recycled_restarts        = 0;   // history discarded (no descent direction)
+  unsigned int model_steps_tried        = 0;   // ModelNewtonSteps: steps d = -H m evaluated
+  unsigned int model_steps_accepted     = 0;   // ... that reached the tolerance
   double       model_success_rate       = 1.0; // moving average of the success of model steps
   unsigned int model_solves_since_probe = 0;
   // wall time of the recycled inverse: rebuild (orthogonalization) and application

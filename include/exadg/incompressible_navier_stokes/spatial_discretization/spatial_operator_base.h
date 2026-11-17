@@ -325,10 +325,61 @@ public:
 
   // FSI: coupling fluid -> structure
   // fills a DoF-vector (velocity) with values of traction on fluid-structure interface
+  // (force per area of the interface on the fluid, kinematic quantities multiplied by the density;
+  // the traction acting on the structure is the negative)
   void
   interpolate_stress_bc(VectorType &       stress,
                         VectorType const & velocity,
                         VectorType const & pressure) const;
+
+  /*
+   * Traction evaluation on DirichletCached boundaries (FSI): false = Cauchy traction of the fluid
+   * solution at the face nodes; true = in addition the penalty terms of the numerical fluxes
+   * through which the Dirichlet data g act on the momentum equation (viscous interior penalty with
+   * the mirror principle, continuity penalty with boundary data), i.e. the boundary force of the
+   * discrete momentum equation. The data g are read from the DirichletCached container, so that the
+   * map (u, p, g) -> traction is linear (the penalty parameters are frozen).
+   */
+  void
+  set_interface_traction_flux(bool const flux)
+  {
+    interface_traction_flux = flux;
+  }
+
+  bool
+  get_interface_traction_flux() const
+  {
+    return interface_traction_flux;
+  }
+
+  // the continuity penalty with boundary data acts on the interface velocity
+  bool
+  use_continuity_penalty_in_traction() const
+  {
+    return param.use_continuity_penalty and param.continuity_penalty_use_boundary_data and
+           conti_penalty_kernel.get() != nullptr;
+  }
+
+  /*
+   * Penalty part of the boundary force density on the fluid (kinematic) at a quadrature point of a
+   * DirichletCached face, for the interior value u_m and the Dirichlet data g (mirror principle
+   * u_p = -u_m + 2 g): the interior penalty term of the viscous value flux minus the continuity
+   * penalty flux. The kernels have to be initialized for the face (reinit_boundary_face).
+   */
+  vector
+  interface_penalty_flux(vector const & u_m,
+                         vector const & g,
+                         vector const & normal,
+                         scalar const & viscosity,
+                         bool const     continuity_penalty) const
+  {
+    vector const zero;
+    vector const u_p = -u_m + 2.0 * g;
+    vector       f = viscous_kernel->calculate_value_flux(zero, zero, u_m, u_p, normal, viscosity);
+    if(continuity_penalty)
+      f -= conti_penalty_kernel->calculate_flux(u_m, u_p, normal);
+    return f;
+  }
 
   /*
    * Time step calculation.
@@ -745,6 +796,8 @@ private:
                                             VectorType &                            dst,
                                             VectorType const &                      src,
                                             Range const & face_range) const;
+
+  bool interface_traction_flux = false;
 
   // Interpolation of stress requires velocity and pressure, but the MatrixFree interface
   // only provides one argument, so we store pointers to have access to both velocity and

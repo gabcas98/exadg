@@ -47,6 +47,38 @@ enum class AccelerationMethod
 // The initial guess used in the FSI coupling loop is computed using an extrapolation of suitable
 // order (defined within the single-field time integrators) or the last iterate from the previous
 // time step.
+/*
+ * Traction transferred from the fluid to the structure on the interface.
+ *
+ * Nodal: Cauchy traction rho (nu (grad u + grad u^T) n - p n) of the fluid solution interpolated at
+ * the nodes of the interface faces (one-sided gradient); the original behaviour.
+ *
+ * Flux (default): in addition the boundary terms of the numerical fluxes through which the weakly
+ * imposed interface velocity acts on the fluid momentum (interior penalty term of the viscous flux,
+ * continuity penalty with boundary data). This is the force that the discrete momentum equation of
+ * the fluid exchanges with the interface; it differs from Nodal by the penalised slip
+ * nu tau (u - v_s) and converges to the same limit. With the nodal traction the coupled solution
+ * depends on the fluid solver on under-resolved boundary layers (FSI2: 8.5% in the amplitude
+ * between the coupled and the dual-splitting solver, 0.05% with Flux).
+ */
+enum class TractionEvaluation
+{
+  Nodal,
+  Flux
+};
+
+/*
+ * Load of a generalized-alpha structure (alpha_f != 0, i.e. GenAlpha and HHT; no effect for Bossak
+ * and Newmark): the structure equation is evaluated at t_{n+1-alpha_f}, so the load has to be
+ * (1 - alpha_f) t_{n+1} + alpha_f t_n (MidPoint). EndOfStep applies t_{n+1} at the mid point (the
+ * original behaviour), which makes the coupled time step inconsistent with the integrator.
+ */
+enum class GeneralizedAlphaLoad
+{
+  EndOfStep,
+  MidPoint
+};
+
 enum class InitialGuessCouplingScheme
 {
   SolutionExtrapolatedToEndOfTimeStep,
@@ -70,7 +102,9 @@ struct Parameters
       update_ale(true),
       update_fluid_velocity(true),
       update_fluid_pressure(true),
-      monitor_point("")
+      monitor_point(""),
+      traction_evaluation(TractionEvaluation::Flux),
+      generalized_alpha_load(GeneralizedAlphaLoad::MidPoint)
   {
   }
 
@@ -147,6 +181,21 @@ struct Parameters
                         "velocity are printed after every time step (empty: disabled).",
                         dealii::Patterns::Anything(),
                         false);
+      prm.add_parameter("TractionEvaluation",
+                        traction_evaluation,
+                        "Traction of the fluid on the interface: Flux (default; including the "
+                        "penalty terms of the numerical fluxes, i.e. the force of the discrete "
+                        "fluid momentum equation) or Nodal (Cauchy stress of the fluid solution at "
+                        "the face nodes, the original behaviour).",
+                        Patterns::Enum<TractionEvaluation>(),
+                        false);
+      prm.add_parameter("GeneralizedAlphaLoad",
+                        generalized_alpha_load,
+                        "Interface load of a generalized-alpha structure with alpha_f != 0: "
+                        "MidPoint ((1 - alpha_f) t_{n+1} + alpha_f t_n, consistent) or EndOfStep "
+                        "(t_{n+1} at the mid point).",
+                        Patterns::Enum<GeneralizedAlphaLoad>(),
+                        false);
     }
     prm.leave_subsection();
   }
@@ -174,6 +223,9 @@ struct Parameters
 
   // point of the structure monitored after every time step (e.g. the tip of a flag)
   std::string monitor_point;
+
+  TractionEvaluation   traction_evaluation;
+  GeneralizedAlphaLoad generalized_alpha_load;
 };
 
 } // namespace FSI
