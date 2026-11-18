@@ -60,8 +60,8 @@ namespace OptimalControl
  *   void   apply_S_adjoint(VectorType & dst, VectorType const & src) const;  // (A,G)-adjoint of S
  *   bool   has_preconditioner() const;
  *   void   apply_preconditioner(VectorType & dst, VectorType const & src) const; // P^{-1} ~ S^{-1}
- *   VectorType const & get_linearization() const;   // data defining the current linearization
- *   void   set_linearization(VectorType const & data);
+ *   Linearization get_linearization() const;   // data defining the current linearization
+ *   void   set_linearization(Linearization const & data);
  *
  * evaluate() changes the state of the problem and sets the point at which apply_S() and
  * apply_S_adjoint() are linearized. After a rejected trial step, the optimizer restores the
@@ -756,6 +756,22 @@ public:
       dm.add(-1.0, m_old);
       dG_now.push_back(dg);
       dM_now.push_back(dm);
+    }
+
+    // an unconverged solve (stagnation or iteration limit) may carry pairs of a map that the secant
+    // model did not capture; they and the older pairs are discarded, so that the next solve starts
+    // from the initial inverse Jacobian instead of reusing them for QNReuseTimeSteps steps
+    if(not stats.converged)
+    {
+      dM_now.clear();
+      dG_now.clear();
+      problem.reset_initial_inverse_jacobian();
+      if(not qn_history_M.empty())
+      {
+        qn_history_G.clear();
+        qn_history_M.clear();
+        ++stats.restarts;
+      }
     }
 
     // IQN-IMVJ: multi-secant update of the inverse Jacobian with the (filtered) pairs of this solve
@@ -1886,7 +1902,7 @@ private:
   std::vector<std::vector<double>> krylov_H;
   std::vector<VectorType>          krylov_Z;
   double                           krylov_beta = 0.0;
-  VectorType                       linearization;
+  typename Problem::Linearization  linearization;
   bool                             state_is_current = false;
   double                           last_alpha       = 0.0;
 

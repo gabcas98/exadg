@@ -965,7 +965,15 @@ Driver<dim, Number>::solve_optimal_control() const
                 << fluid->time_integrator->get_next_time() << ", " << stats.reason
                 << ", ||m|| = " << std::setprecision(3) << stats.mismatch_norm << std::defaultfloat
                 << std::endl;
+          ++oc_not_converged_in_row;
+          unsigned int const limit = oc_parameters.max_consecutive_unconverged_steps;
+          AssertThrow(limit == 0 or oc_not_converged_in_row < limit,
+                      dealii::ExcMessage("Optimal control: " + std::to_string(limit) +
+                                         " consecutive solves did not reach the tolerance "
+                                         "(OptimalControl/MaxConsecutiveUnconvergedSteps)."));
         }
+        else
+          oc_not_converged_in_row = 0;
       }
       // the frozen Jacobian no longer represents S: re-assemble for the next time step
       if(oc_parameters.preconditioner == OptimalControl::Preconditioner::FrozenJacobian and

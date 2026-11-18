@@ -162,9 +162,9 @@ enum class StoppingCriterion
 struct Parameters
 {
   Parameters()
-    : method(Method::GaussNewton),
+    : method(Method::InterfaceQuasiNewton),
       regularization(0.0),
-      max_iterations(50),
+      max_iterations(200),
       mismatch_tolerance(1.e-10),
       mismatch_tolerance_relative(0.0),
       mismatch_reduction(0.0),
@@ -181,7 +181,8 @@ struct Parameters
       recycle_time_steps(8),
       recycle_max_pairs(60),
       method_schedule(""),
-      stagnation_iterations(0),
+      stagnation_iterations(10),
+      max_consecutive_unconverged_steps(10),
       gradient_tolerance_relative(1.e-8),
       armijo_c1(1.e-4),
       line_search_max_iterations(20),
@@ -189,12 +190,12 @@ struct Parameters
       forcing_term_max(1.e-1),
       forcing_term_target(0.0),
       forcing_term_target_max(0.0),
-      model_newton_steps(true),
+      model_newton_steps(false),
       model_step_min_success(0.5),
       model_step_rate_weight(0.1),
       model_step_probe_interval(10),
       native_tangent_step(1.e-2),
-      area_ratio_from_state(true),
+      area_ratio_from_state(false),
       surrogate_diagnostics(false),
       cheap_tangent_diagnostics(false),
       tangent_initial_guess(false),
@@ -213,11 +214,11 @@ struct Parameters
       geometry_iterations(1),
       geometry_tolerance(1.e-10),
       use_area_scaling(true),
-      extrapolate_control(false),
-      control_extrapolation_order(1),
+      extrapolate_control(true),
+      control_extrapolation_order(2),
       verify_derivatives(false),
-      formulation(Formulation::VelocityMismatch),
-      stopping_criterion(StoppingCriterion::Mismatch),
+      formulation(Formulation::NativeTraction),
+      stopping_criterion(StoppingCriterion::DisplacementResidual),
       tangent_difference(TangentDifference::Analytic),
       geometry_in_state(false),
       qn_reuse(8),
@@ -229,7 +230,7 @@ struct Parameters
       warm_start(false),
       adaptive_inner_tolerance(false),
       inner_tolerance_safety(1.e-2),
-      control_space(ControlSpace::Fluid),
+      control_space(ControlSpace::Structure),
       control_degree_reduction(0),
       preconditioner(Preconditioner::None),
       preconditioner_tolerance(1.e-8),
@@ -394,6 +395,15 @@ struct Parameters
                         "best iterate is restored (0: off).",
                         dealii::Patterns::Integer(0),
                         false);
+      prm.add_parameter(
+        "MaxConsecutiveUnconvergedSteps",
+        max_consecutive_unconverged_steps,
+        "Abort the simulation if this number of consecutive time steps ends "
+        "without reaching the tolerance (0: never abort). Unconverged steps are "
+        "accepted with the best iterate; InterfaceQuasiNewton discards their secant "
+        "pairs and the reused history.",
+        dealii::Patterns::Integer(0),
+        false);
       prm.add_parameter("GradientToleranceRelative",
                         gradient_tolerance_relative,
                         "Stop if ||r||_M <= tol * ||r_0||_M (not used by InterfaceNewton).",
@@ -763,6 +773,7 @@ struct Parameters
   unsigned int recycle_max_pairs;
   std::string  method_schedule;
   unsigned int stagnation_iterations;
+  unsigned int max_consecutive_unconverged_steps;
   double       gradient_tolerance_relative;
   double       armijo_c1;
   unsigned int line_search_max_iterations;

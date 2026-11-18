@@ -42,6 +42,9 @@
         "WriteOutput": "false"
     },
     "OptimalControl": {
+        "AreaRatioFromState": "true",
+        "StoppingCriterion": "Mismatch",
+        "MaxConsecutiveUnconvergedSteps": "0",
         "Method": "GaussNewton",
         "Regularization": "0",
         "MaxIterations": "200",

@@ -21,6 +21,13 @@
         "MonitorPoint": "0.6,0.2"
     },
     "OptimalControl": {
+        "ModelNewtonSteps": "true",
+        "AreaRatioFromState": "true",
+        "ExtrapolateControl": "false",
+        "ControlExtrapolationOrder": "1",
+        "StoppingCriterion": "Mismatch",
+        "StagnationIterations": "0",
+        "MaxConsecutiveUnconvergedSteps": "0",
         "Formulation": "VelocityMismatch",
         "ControlSpace": "Fluid",
         "Method": "InterfaceNewton",

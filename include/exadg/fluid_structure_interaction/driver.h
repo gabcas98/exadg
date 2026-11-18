@@ -158,9 +158,10 @@ private:
   std::shared_ptr<OptimalControl::Optimizer<OptimalControl::InterfaceProblem<dim, Number>>>
                                      oc_optimizer;
   mutable OptimalControl::Statistics oc_statistics;
-  mutable unsigned int               oc_time_steps          = 0;
-  mutable unsigned int               oc_geometry_iterations = 0;
-  mutable unsigned int               oc_not_converged       = 0;
+  mutable unsigned int               oc_time_steps           = 0;
+  mutable unsigned int               oc_geometry_iterations  = 0;
+  mutable unsigned int               oc_not_converged        = 0;
+  mutable unsigned int               oc_not_converged_in_row = 0;
   mutable VectorType                 oc_last_control;
 
   // GeneralizedAlphaLoad::MidPoint: alpha_f of the structure (0 if not applicable) and the

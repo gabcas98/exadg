@@ -43,6 +43,8 @@
         "WriteOutput": "false"
     },
     "OptimalControl": {
+        "AreaRatioFromState": "true",
+        "MaxConsecutiveUnconvergedSteps": "0",
         "Method": "InterfaceNewton",
         "Regularization": "0",
         "MaxIterations": "200",

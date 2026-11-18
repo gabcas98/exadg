@@ -594,10 +594,12 @@ Hence the fluid part of the native tangent can be computed by a forward differen
 steps with the same history,
 \begin{equation}\label{eq:fd_tangent}
   S\,v=v-\Pis\,\frac{T_f\big(v_s+\epsilon\,y\big)-T_f(v_s)}{\epsilon},\qquad
-  y=c_vK^{-1}L_sv,\qquad \epsilon=\epsilon_r\,\frac{\|v_s\|}{\|y\|},
+  y=c_vK^{-1}L_sv,\qquad \epsilon=\epsilon_r\,\frac{\max\{\|v_s\|,\|y\|\}}{\|y\|},
 \end{equation}
 with the exact linearised structure solve and one dual-splitting step (\code{NativeTangentDifference
-= Forward}). The truncation error is $O(\epsilon)$ and stems only from the upwind flux; the error
+= Forward}). The lower bound $\|y\|$ keeps the perturbation above the tolerance of the fluid solve when the
+structure starts from rest ($v_s\approx0$); with $\epsilon\propto\|v_s\|$ alone the fluid part of the
+difference vanished in the first time step ($S=I$, step length $1/16$ in the line search). The truncation error is $O(\epsilon)$ and stems only from the upwind flux; the error
 from the fluid solver tolerance $\tau_f$ is amplified by $1/\epsilon$. With
 $\epsilon_r=10^{-2}$ and $\tau_f=10^{-8}$ the tangent is accurate to about $10^{-4}$ relative,
 enough for the inexact Newton methods; a perturbation of the size of the data ($\epsilon_r=1$) is
@@ -3467,7 +3469,20 @@ the original behaviour used by all earlier runs, whose inputs do not set it;
 parameters \code{TestCase} (1, 2, 3) and \code{ViscousFormulation} (\code{Auto}, \code{Laplace},
 \code{Divergence}), \code{ContainerInterfaceData::sadd}, the interface force output now also
 reports the penalty part \code{F_penalty}, and the window statistics the model steps that reached
-the tolerance. Runs \code{output/p1*} and \code{output/t\_r*} (\cref{tab:all_methods}), inputs in \code{doc/fsi_optimal_control/inputs/p1*.json} and \code{t\_r*.json}
+the tolerance. Cleanup after these studies: the defaults of the subsection \code{OptimalControl}
+are now the recommended configuration (\code{Method = InterfaceQuasiNewton},
+\code{Formulation = NativeTraction}, \code{ControlSpace = Structure},
+\code{StoppingCriterion = DisplacementResidual}, \code{ExtrapolateControl = true} with
+\code{ControlExtrapolationOrder = 2}, \code{MaxIterations = 200}, \code{StagnationIterations = 10},
+\code{ModelNewtonSteps = false}, \code{AreaRatioFromState = false}); all inputs in
+\code{doc/fsi_optimal_control/inputs} set the former defaults explicitly where they relied on
+them. An unconverged solve (stagnation or iteration limit) is accepted with its best iterate, but
+the secant method discards its pairs and the reused history, and the run stops after
+\code{MaxConsecutiveUnconvergedSteps} ($10$) consecutive unconverged steps. A rejected trial step
+restores the complete linearization point (structure displacement and the velocity, traction and
+Dirichlet data of the fluid state); the lower bound of the difference step is that of
+\eqref{eq:fd_tangent}. The runs with the secant method are unchanged by these corrections, the
+interface Newton method changes by $2\cdot10^{-6}$. Runs \code{output/p1*} and \code{output/t\_r*} (\cref{tab:all_methods}), inputs in \code{doc/fsi_optimal_control/inputs/p1*.json} and \code{t\_r*.json}
 (with \code{TractionEvaluation} set explicitly; the inputs of the earlier sections rely on the former
 default and need \code{FSI/TractionEvaluation = Nodal} to be reproduced); the single-degree-of-freedom model of the coupled step is
 \code{doc/fsi_optimal_control/added_mass_model.py}, the force analysis

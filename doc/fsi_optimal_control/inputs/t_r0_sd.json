@@ -45,6 +45,8 @@
         "WriteOutput": "false"
     },
     "OptimalControl": {
+        "AreaRatioFromState": "true",
+        "MaxConsecutiveUnconvergedSteps": "0",
         "Method": "SteepestDescent",
         "Regularization": "0",
         "MaxIterations": "200",

@@ -540,16 +540,44 @@ public:
     project_control(m);
   }
 
-  VectorType const &
+  /*
+   * Linearization point of the tangent and the adjoint: mid-point displacement of the structure
+   * and, for the native formulation, the data of the fluid state (structure velocity, traction and
+   * Dirichlet data), which the difference quotients and the boundary terms of the tangent use.
+   * The optimizers restore it after a rejected trial step.
+   */
+  struct Linearization
+  {
+    VectorType structure;
+    VectorType velocity;
+    VectorType traction;
+    Container  base_data;
+  };
+
+  Linearization
   get_linearization() const
   {
-    return linearization;
+    Linearization data;
+    data.structure = linearization;
+    if(formulation == Formulation::NativeTraction)
+    {
+      data.velocity  = native_velocity;
+      data.traction  = native_traction;
+      data.base_data = native_base_data;
+    }
+    return data;
   }
 
   void
-  set_linearization(VectorType const & data)
+  set_linearization(Linearization const & data)
   {
-    linearization = data;
+    linearization = data.structure;
+    if(formulation == Formulation::NativeTraction)
+    {
+      native_velocity  = data.velocity;
+      native_traction  = data.traction;
+      native_base_data = data.base_data;
+    }
   }
 
   /*
@@ -2285,8 +2313,11 @@ private:
     }
     else if(y_norm > 0.0)
     {
+      // perturbation of size NativeTangentStep relative to the structure velocity, but not below
+      // that relative to the direction itself: starting from rest (v_s ~ 0) a perturbation scaled
+      // with |v_s| alone falls below the tolerance of the fluid solve and the fluid part vanishes
       double const eps =
-        native_tangent_step * std::max<double>(native_velocity.l2_norm(), 1.e-12) / y_norm;
+        native_tangent_step * std::max<double>(native_velocity.l2_norm(), y_norm) / y_norm;
 
       VectorType v_plus(native_velocity), t_plus;
       v_plus.add(eps, y);
@@ -2862,10 +2893,8 @@ private:
           if(control_space == ControlSpace::Structure)
             value = phi.get_value(q);
           else
-            value = FunctionEvaluator<1, dim, Number>::value(*fluid_at_structure,
-                                                             face,
-                                                             q,
-                                                             structure_space.quad_index);
+            value =
+              FunctionEvaluator<1, dim, Number>::value(*fluid_at_structure, face, q, quad_index);
           value = j * value;
           for(unsigned int v = 0; v < n_lanes; ++v)
           {

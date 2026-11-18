@@ -43,6 +43,8 @@
         "WriteOutput": "false"
     },
     "OptimalControl": {
+        "StoppingCriterion": "Mismatch",
+        "MaxConsecutiveUnconvergedSteps": "0",
         "Method": "InterfaceQuasiNewton",
         "Regularization": "0",
         "MaxIterations": "200",

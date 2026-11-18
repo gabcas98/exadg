@@ -14,8 +14,8 @@
     },
     "FSI": {
         "AccelerationMethod": "OptimalControl",
-        "AbsTol": "1.e-8",
-        "RelTol": "1.e-3",
+        "AbsTol": "1.e-14",
+        "RelTol": "1.e-5",
         "OmegaInit": "0.3",
         "PartitionedIterMax": "100",
         "MonitorPoint": "0.6,0.2"
