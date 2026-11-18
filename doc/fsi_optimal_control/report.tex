@@ -2761,6 +2761,50 @@ dual splitting & IQN-ILS & $10^{-7}$ & 322~s & 4.29 & --\\
 \end{tabular}}
 \end{table}
 
+\paragraph{All methods on two grids.} \Cref{tab:all_methods} completes the comparison on equal
+terms with all methods of \cref{sec:methods}, the Dirichlet--Neumann scheme with Aitken relaxation,
+and the coarser fluid grid (one batch, same setting as \cref{tab:iqn_comparison_flux},
+$\mathrm{RelTol}=10^{-5}$; the derivative-based methods with model steps). With the same scheme
+(implicit geometry) the secant method is $1.7$ (fluid $Q_3$) and $1.9$ (fluid $Q_3$ refined once)
+times faster than IQN-ILS; with the explicit geometry all optimisation-based methods are $2$ to
+$2.4$ times faster than IQN-ILS and $5$ to $8$ times faster than Aitken relaxation, which needs
+$10$--$13$ iterations per step. All optimisation-based methods need $1.75$--$2.0$ states per step;
+the differences of their wall times (about $\pm15\%$) are within the noise of runs that share the
+machine (GN and IN are the same algorithm, \cref{sec:methods}). On the coarse grid the explicit
+geometry deviates by $1.5\cdot10^{-2}$ from the implicit scheme (against $2.7\cdot10^{-3}$ on the
+finer grid); this is the error of the explicit treatment of the geometry at the larger time step,
+not a convergence error. No step of any method remained unconverged.
+
+\begin{table}[ht]\centering
+\caption{FSI2 from rest to $t=15$~s, coupled fluid solver, flux traction, displacement criterion
+with $\mathrm{RelTol}=10^{-5}$, same subproblem solvers; $2$ processes per run, $4$ runs in parallel
+(one batch). Iterations: Dirichlet--Neumann iterations or state evaluations per step; $S$, $S^*$:
+tangent and adjoint solves per step; deviation: maximal deviation of the tip displacement from
+IQN-ILS with $\mathrm{RelTol}=10^{-7}$ on the same grid, relative to its maximum. Optimisation-based
+methods with the explicit geometry unless stated otherwise.}
+\label{tab:all_methods}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccccccc}
+\toprule
+& \multicolumn{5}{c}{fluid $Q_3$, $2574$ steps} & \multicolumn{5}{c}{fluid $Q_3$ refined once, $6635$ steps}\\
+\cmidrule(lr){2-6}\cmidrule(lr){7-11}
+coupling & wall & ms/step & it./states & $S$ / $S^*$ & deviation & wall & ms/step & it./states & $S$ / $S^*$ & deviation\\
+\midrule
+DN, Aitken & 285~s & 111 & 10.02 & -- & $5.9\cdot10^{-5}$ & 2221~s & 335 & 12.75 & -- & $4.2\cdot10^{-5}$\\
+DN, IQN-ILS, $10^{-7}$ & 130~s & 50 & 4.73 & -- & -- & 937~s & 141 & 4.33 & -- & --\\
+DN, IQN-ILS & 103~s & 40 & 2.88 & -- & $1.1\cdot10^{-3}$ & 662~s & 100 & 3.13 & -- & $9.2\cdot10^{-4}$\\
+secant, implicit geometry & 61~s & 24 & 2.00 & 0 / 0 & $3.2\cdot10^{-4}$ & 343~s & 52 & 1.74 & 0 / 0 & $2.3\cdot10^{-4}$\\
+secant & \textbf{44~s} & 17 & 1.99 & 0 / 0 & $1.5\cdot10^{-2}$ & 296~s & 45 & 1.74 & 0 / 0 & $2.7\cdot10^{-3}$\\
+IN & 48~s & 19 & 1.95 & 0.14 / 0 & $1.5\cdot10^{-2}$ & 303~s & 46 & 1.75 & 0.47 / 0 & $2.8\cdot10^{-3}$\\
+GN & 48~s & 19 & 1.95 & 0.14 / 0 & $1.5\cdot10^{-2}$ & 363~s & 55 & 1.75 & 0.47 / 0 & $2.8\cdot10^{-3}$\\
+LM & 47~s & 18 & 1.95 & 0.13 / 0 & $1.5\cdot10^{-2}$ & 347~s & 52 & 1.76 & 0.47 / 0 & $3.0\cdot10^{-3}$\\
+TR & 52~s & 20 & 1.95 & 0.13 / 0 & $1.5\cdot10^{-2}$ & 343~s & 52 & 1.75 & 0.43 / 0 & $2.9\cdot10^{-3}$\\
+SD & 49~s & 19 & 1.99 & 0.07 / 0.07 & $1.5\cdot10^{-2}$ & \textbf{272~s} & 41 & 1.81 & 0.14 / 0.14 & $2.9\cdot10^{-3}$\\
+L-BFGS & \textbf{44~s} & 17 & 1.99 & 0.07 / 0.07 & $1.5\cdot10^{-2}$ & 316~s & 48 & 1.80 & 0.13 / 0.13 & $3.0\cdot10^{-3}$\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
 \subsubsection{The price of a fluid solve}\label{sec:fast_fluid}
 
 Since the number of fresh directions per step is close to its lower bound for every method
@@ -3423,7 +3467,7 @@ the original behaviour used by all earlier runs, whose inputs do not set it;
 parameters \code{TestCase} (1, 2, 3) and \code{ViscousFormulation} (\code{Auto}, \code{Laplace},
 \code{Divergence}), \code{ContainerInterfaceData::sadd}, the interface force output now also
 reports the penalty part \code{F_penalty}, and the window statistics the model steps that reached
-the tolerance. Runs \code{output/p1*}, inputs in \code{doc/fsi_optimal_control/inputs/p1*.json}
+the tolerance. Runs \code{output/p1*} and \code{output/t\_r*} (\cref{tab:all_methods}), inputs in \code{doc/fsi_optimal_control/inputs/p1*.json} and \code{t\_r*.json}
 (with \code{TractionEvaluation} set explicitly; the inputs of the earlier sections rely on the former
 default and need \code{FSI/TractionEvaluation = Nodal} to be reproduced); the single-degree-of-freedom model of the coupled step is
 \code{doc/fsi_optimal_control/added_mass_model.py}, the force analysis

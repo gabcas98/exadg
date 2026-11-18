@@ -30,9 +30,7 @@
         "AdaptiveTimeStepping": "true",
         "CoupledSolverRelTol": "1.e-12",
         "CoupledSolverAbsTol": "1.e-18",
-        "CFL": "0.25",
-        "PressurePoissonPreconditioner": "Multigrid",
-        "CoupledSchurDirect": "false"
+        "CFL": "0.25"
     },
     "Output": {
         "OutputDirectory": "output/t_ref_cfl/",
@@ -64,10 +62,6 @@
         "QNInitialJacobian": "Relaxation",
         "QNReuseTimeSteps": "8",
         "MismatchToleranceRelative": "1.e-10",
-        "StagnationIterations": "10",
-        "ModelNewtonSteps": "false",
-        "AffineStatePrediction": "false",
-        "TangentDifferenceToleranceFactor": "1.0",
-        "RecycleTimeSteps": "4"
+        "StagnationIterations": "10"
     }
 }
