@@ -73,9 +73,11 @@ fluid and structure simultaneously cannot reduce the wall time, because the 2-cy
 the two-control formulation doubles the Krylov iterations. On the Turek--Hron FSI2 benchmark all
 seven methods integrate the start-up and growth phase to $t=15$~s within $20\%$ of each other and
 $18$ to $52$ times faster than at the beginning of the study; with the coupled fluid solver they
-are about twice as fast as Dirichlet--Neumann with IQN-ILS at equal accuracy, and with the
-dual-splitting fluid solver the secant method is as fast as IQN-ILS. At the finest resolution the
-secant method reproduces the benchmark amplitudes and mean values within $1\%$. A review of the
+are about twice as fast as Dirichlet--Neumann with IQN-ILS at equal accuracy; with the same
+interface conditions and stopping criterion the secant method solves the same scheme $2.3$
+(coupled solver) and $1.3$ (dual splitting) times faster than IQN-ILS. At the finest resolution the
+secant method reproduces the benchmark amplitudes and mean values within $1\%$, with either
+interface traction. A review of the
 coupling shows that the nodal traction of ExaDG misses the penalty part of the numerical fluxes,
 which on the benchmark resolution carries most of the friction on the flag and makes the coupled
 solution depend on the fluid solver ($8.5\%$ in amplitude); with the flux traction the coupled and
@@ -793,8 +795,9 @@ $J=\frac12\|m\|_{\M}^2$, with
 \end{equation}
 where $\tau_{\mathrm{rel}}$ relates the tolerance to the size of the traction and the optional
 reduction factor $c$ (\code{MismatchReduction}) relates it to the error of the predictor, which
-estimates the local time error. A stagnation test stops the iteration if $\|m\|_{\M}$ has not
-decreased for $N_s=10$ iterations; the gradient criterion of the gradient methods is not used.
+estimates the local time error. A stagnation test stops the iteration if the smallest
+$\|m\|_{\M}$ so far has not decreased by $10\%$ for $N_s=10$ iterations, and returns the best
+iterate; the gradient criterion of the gradient methods is not used.
 Since \eqref{eq:tolerance} is an absolute statement on the coupling error, $\tau$ must lie above the
 noise floor of the state map (\cref{rem:noise}) and should lie below the time discretisation error
 (\cref{sec:fast_tolerances,sec:fast_production}).
@@ -1879,6 +1882,7 @@ fluid refined once & 13328 & $0.5$ & $-13.52\pm11.59\ [3.85]$ & $0.98\pm77.52\ [
 \addplot[only marks, mark=triangle*, green!50!black] coordinates {(3332,1.863)};
 \addplot[only marks, mark=square*, red!75!black] coordinates {(13328,1.926) (22032,1.937)};
 \addplot[only marks, mark=*, blue!70!black] coordinates {(22032,1.936) (53312,1.935)};
+\addplot[only marks, mark=diamond, thick, orange!80!black, mark size=3pt] coordinates {(22032,1.935) (53312,1.933)};
 \addplot[black, dashed, domain=2500:70000] {2.0};
 \end{semilogxaxis}
 \end{tikzpicture}\hfill
@@ -1895,6 +1899,8 @@ fluid refined once & 13328 & $0.5$ & $-13.52\pm11.59\ [3.85]$ & $0.98\pm77.52\ [
 \addlegendentry{$\rho_\infty=0$, mapping 4}
 \addplot[only marks, mark=*, blue!70!black] coordinates {(22032,80.62) (53312,80.87)};
 \addlegendentry{+ ALE stiffening}
+\addplot[only marks, mark=diamond, thick, orange!80!black, mark size=3pt] coordinates {(22032,80.54) (53312,80.81)};
+\addlegendentry{+ flux traction}
 \addplot[black, dashed, domain=2500:70000] {80.6};
 \addlegendentry{Turek--Hron}
 \end{semilogxaxis}
@@ -1903,7 +1909,8 @@ fluid refined once & 13328 & $0.5$ & $-13.52\pm11.59\ [3.85]$ & $0.98\pm77.52\ [
 regime against the number of velocity degrees of freedom of the fluid. Original setup: Bossak
 $\rho_\infty=0.8$, mapping of the degree of the fluid velocity, band-stiffened mesh motion
 ($Q_6$ and $Q_8$ without refinement, $Q_6$ refined once); the remedies of
-\cref{sec:instabilities} allow the finer grids.}\label{fig:resolution}
+\cref{sec:instabilities} allow the finer grids. All runs use the nodal traction except the last
+series (flux traction of \cref{sec:consistency}, \cref{sec:final_comparison}).}\label{fig:resolution}
 \end{figure}
 
 \subsubsection{Two instabilities at fine resolution}\label{sec:instabilities}
@@ -2018,20 +2025,49 @@ not consistent with each other at the given number of digits, and the remaining 
 frequency is of the order of their rounding. The secant method needs $2.6$ state evaluations per
 time step on the finest grid ($7635$~s for $15$~s of simulated time, $4$ processes).
 
+\paragraph{Flux traction.} The runs above use the nodal traction of ExaDG. With the flux traction
+of \cref{sec:consistency} (lower part of \cref{tab:final}) the amplitude of $d_y$ changes by
+$-0.1\%$ for fluid $Q_8$ refined once ($80.54$ against $80.62$) and by $-0.07\%$ for fluid $Q_6$
+refined twice ($80.81$ against $80.87$); the means change by at most $0.04\cdot10^{-3}$ and the
+frequency by at most $0.002$~Hz. Both runs agree with the reference to within $1\%$ in all four
+quantities (amplitudes within $0.1\%$ and $0.6\%$). With the dual-splitting solver the difference
+between the two tractions is $1.0\%$ in amplitude for fluid $Q_3$ refined once
+(\cref{tab:traction}) and $0.1\%$ here: the penalty part missing from the nodal traction is a
+consistency error that vanishes under refinement, and the comparison with the benchmark does not
+depend on the traction. A rerun of the nodal case with fluid $Q_8$ refined once with the final code
+reproduces all digits of the table ($2.63$ instead of $2.62$ evaluations per step). The flux
+traction costs $2.65$ evaluations per step on both grids.
+
+With the flux traction and fluid $Q_8$ refined once, the stagnation test (stated after
+\eqref{eq:tolerance}) stopped $21$ of the $36114$ time steps above the tolerance (nodal traction on
+the same grid: $1$; flux traction with fluid $Q_6$ refined twice: $1$). All of them lie after
+$t\approx9.9$~s, at instants that are multiples of half a period apart, i.e.\ in the same
+(mirror-symmetric) configuration of the flag. In $18$ of them the iteration stopped with
+$\|m\|_{\M}$ between $6\cdot10^{-3}$ and $0.2$, the size of the single stagnated step of the nodal
+run ($10^{-2}$). In three ($t=11.42$, $12.45$ and $14.52$~s) the best iterate had $\|m\|_{\M}$
+between $3$ and $14$, and the lift on the flag shows a kink of up to about $1$~N/m ($0.5\%$) in
+that single step, without a visible effect on the displacement or on the statistics of the limit
+cycle. The cause is open. The size of the penalty
+alone does not explain it: the interior-penalty factor, proportional to $(k+1)^2/h$, is about
+$20\%$ larger for fluid $Q_6$ refined twice, which has a single such step at the noise floor.
+
 \begin{table}[ht]\centering
 \caption{Periodic regime of FSI2, $t\in[12.5,15]$, secant method on the native formulation, Bossak
-$\rho_\infty=0$, structure $Q_4$, mapping of degree $4$: mean $\pm$ amplitude [frequency] of the
-tip displacement.}\label{tab:final}
+$\rho_\infty=0$, structure $Q_4$, mapping of degree $4$, dual-splitting fluid solver: mean $\pm$
+amplitude [frequency] of the tip displacement.}\label{tab:final}
 \resizebox{\textwidth}{!}{%
-\begin{tabular}{lccccc}
+\begin{tabular}{lcccccc}
 \toprule
-fluid & ALE stiffening & $N_u$ & $d_x(A)\ [10^{-3}]$ & $d_y(A)\ [10^{-3}]$ & evaluations/step\\
+fluid & traction & ALE stiffening & $N_u$ & $d_x(A)\ [10^{-3}]$ & $d_y(A)\ [10^{-3}]$ & evaluations/step\\
 \midrule
-Turek--Hron \cite{TurekHron2006} & & & $-14.58\pm12.44\ [3.8]$ & $1.23\pm80.6\ [2.0]$ & \\
-$Q_6$, refined once & band & 13328 & $-13.51\pm11.60\ [3.85]$ & $0.97\pm77.46\ [1.926]$ & 3.04\\
-$Q_8$, refined once & band & 22032 & $-14.38\pm12.36\ [3.87]$ & $1.20\pm80.23\ [1.937]$ & 3.29\\
-$Q_8$, refined once & \eqref{eq:ale_stiffening} & 22032 & $-14.53\pm12.46\ [3.87]$ & $1.21\pm80.62\ [1.936]$ & 2.63\\
-$Q_6$, refined twice & \eqref{eq:ale_stiffening} & 53312 & $-14.61\pm12.53\ [3.87]$ & $1.24\pm80.87\ [1.935]$ & 2.62\\
+Turek--Hron \cite{TurekHron2006} & & & & $-14.58\pm12.44\ [3.8]$ & $1.23\pm80.6\ [2.0]$ & \\
+$Q_6$, refined once & nodal & band & 13328 & $-13.51\pm11.60\ [3.85]$ & $0.97\pm77.46\ [1.926]$ & 3.04\\
+$Q_8$, refined once & nodal & band & 22032 & $-14.38\pm12.36\ [3.87]$ & $1.20\pm80.23\ [1.937]$ & 3.29\\
+$Q_8$, refined once & nodal & \eqref{eq:ale_stiffening} & 22032 & $-14.53\pm12.46\ [3.87]$ & $1.21\pm80.62\ [1.936]$ & 2.62\\
+$Q_6$, refined twice & nodal & \eqref{eq:ale_stiffening} & 53312 & $-14.61\pm12.53\ [3.87]$ & $1.24\pm80.87\ [1.935]$ & 2.63\\
+\midrule
+$Q_8$, refined once & flux & \eqref{eq:ale_stiffening} & 22032 & $-14.49\pm12.45\ [3.87]$ & $1.22\pm80.54\ [1.935]$ & 2.65\\
+$Q_6$, refined twice & flux & \eqref{eq:ale_stiffening} & 53312 & $-14.59\pm12.52\ [3.87]$ & $1.23\pm80.81\ [1.933]$ & 2.65\\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -2673,6 +2709,58 @@ $t\approx8.7$~s: when consecutive iterates barely differ, the initial residual o
 Poisson solve becomes so small that its absolute tolerance $10^{-12}$ lies below the round-off
 level of the residual; the runs of the table use the absolute tolerance $10^{-11}$.
 
+\paragraph{The comparison on equal terms.} After the consistency study of \cref{sec:consistency}
+the comparison was repeated with the same interface conditions and the same stopping criterion for
+both couplings (\cref{tab:iqn_comparison_flux}): flux traction, displacement criterion
+($\mathrm{AbsTol}=10^{-14}$, the relative tolerance decides), the same subproblem solvers for
+IQN-ILS (direct factorisation of the pressure Laplacian, as for the optimisation-based methods), and
+the newest configuration of the latter (\cref{tab:fast_model}). With the same scheme (implicit
+geometry) and the same tolerance the secant method is $2.3$ times faster than IQN-ILS with the
+coupled fluid solver ($1.74$ states against $3.13$ iterations per step) and $1.33$ times faster with
+dual splitting ($1.79$ against $3.11$); with the coupled solver it is also more accurate
+($3.6\cdot10^{-4}$ against $9.2\cdot10^{-4}$), because its states start from the affine
+prediction and reach the absolute accuracy of the solve from the extrapolation, whereas the
+iterates of IQN-ILS inherit the tolerance of each fluid solve. The relative tolerance hardly
+changes the number of states ($1.72$ for $10^{-4}$, $1.74$--$1.79$ for $10^{-5}$), so that the
+secant method is cheapest at the tighter tolerance as well. With the explicit geometry the secant
+method is $2.8$ (coupled) and $1.69$ (dual splitting) times faster than IQN-ILS with
+$\mathrm{RelTol}=10^{-5}$, IN and TR $1.4$--$2.6$ times; the deviation of about $2.7\cdot10^{-3}$
+is the difference between the explicit and the implicit treatment of the geometry, three times
+below the time error. No step of any method remained unconverged.
+
+\begin{table}[ht]\centering
+\caption{FSI2 from rest to $t=15$~s on equal terms: flux traction, displacement criterion with the
+same tolerances for all couplings, same subproblem solvers; $2$ processes per run, $4$ runs in
+parallel (one batch). Iterations: Dirichlet--Neumann iterations (IQN-ILS) or state evaluations
+per step; deviation: maximal deviation of the tip displacement from IQN-ILS with
+$\mathrm{RelTol}=10^{-7}$ of the same fluid solver, relative to its maximum.}
+\label{tab:iqn_comparison_flux}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lllccc}
+\toprule
+fluid solver & coupling & RelTol & wall time & iterations / states & deviation\\
+\midrule
+coupled & IQN-ILS & $10^{-7}$ & 1521~s & 4.33 & --\\
+ & IQN-ILS & $10^{-5}$ & 1202~s & 3.13 & $9.2\cdot10^{-4}$\\
+ & IQN-ILS & $10^{-4}$ & 1019~s & 2.69 & $1.3\cdot10^{-3}$\\
+ & secant, implicit geometry & $10^{-5}$ & 526~s & 1.74 & $3.6\cdot10^{-4}$\\
+ & secant, implicit geometry & $10^{-4}$ & 538~s & 1.72 & $1.0\cdot10^{-3}$\\
+ & secant, explicit geometry & $10^{-5}$ & \textbf{430~s} & 1.74 & $2.7\cdot10^{-3}$\\
+ & secant, explicit geometry & $10^{-4}$ & 492~s & 1.72 & $2.5\cdot10^{-3}$\\
+ & IN / TR, explicit geometry & $10^{-5}$ & 466 / 454~s & 1.75 & $2.8\cdot10^{-3}$ / $2.9\cdot10^{-3}$\\
+\midrule
+dual splitting & IQN-ILS & $10^{-7}$ & 322~s & 4.29 & --\\
+ & IQN-ILS & $10^{-5}$ & 246~s & 3.11 & $2.5\cdot10^{-5}$\\
+ & IQN-ILS & $10^{-4}$ & 214~s & 2.67 & $1.6\cdot10^{-4}$\\
+ & secant, implicit geometry & $10^{-5}$ & 184~s & 1.79 & $3.0\cdot10^{-4}$\\
+ & secant, implicit geometry & $10^{-4}$ & 176~s & 1.72 & $1.1\cdot10^{-3}$\\
+ & secant, explicit geometry & $10^{-5}$ & \textbf{146~s} & 1.78 & $2.7\cdot10^{-3}$\\
+ & secant, explicit geometry & $10^{-4}$ & 133~s & 1.72 & $3.0\cdot10^{-3}$\\
+ & IN / TR, explicit geometry & $10^{-5}$ & 177 / 151~s & 1.79 / 1.78 & $2.8\cdot10^{-3}$ / $2.6\cdot10^{-3}$\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
 \subsubsection{The price of a fluid solve}\label{sec:fast_fluid}
 
 Since the number of fresh directions per step is close to its lower bound for every method
@@ -3161,7 +3249,8 @@ consistent and harmless, which makes the derivative-free secant method on the na
 robust with the cheap dual-splitting fluid solver.
 \item In long FSI2 simulations all couplings reach the same limit cycle. The frequency is
 controlled by the spatial resolution of the fluid; at the finest resolution amplitudes and means
-agree with the reference to within $1\%$ and the frequency is $1.935$~Hz. Two instabilities had to
+agree with the reference to within $1\%$ with the nodal and with the flux traction (which differ
+there by $0.1\%$ in amplitude) and the frequency is $1.935$~Hz. Two instabilities had to
 be removed first: a mode of about $300$~Hz that grows for small time steps unless the structure
 integrator dissipates at $\omega\Delta t\approx0.6$ (Bossak with $\rho_\infty=0$), and the
 degeneration of the fluid mesh at large deflections (high-order mapping, mesh motion not
@@ -3230,8 +3319,10 @@ state, and all seven methods integrate FSI2 to $t=15$~s within $20\%$ of each ot
 with the coupled fluid solver, $69$--$108$~s with dual splitting), about $18$ to $50$ times faster
 than at the start of the study. At equal accuracy they are about twice as fast as the
 Dirichlet--Neumann scheme of ExaDG with IQN-ILS when the coupled fluid solver is used, mostly
-because the predicted fluid states are cheap; with the dual-splitting solver the secant method is
-as fast as IQN-ILS.
+because the predicted fluid states are cheap. On equal terms (flux traction, shared displacement
+criterion, same subproblem solvers, \cref{tab:iqn_comparison_flux}) the secant method solves the
+same scheme $2.3$ times faster with the coupled and $1.33$ times faster with the dual-splitting
+solver ($2.8$ and $1.69$ times with the explicit geometry).
 \item With the number of fresh directions near its lower bound, only the price of a fluid solve is
 left. Tangents at no cost would save at most $17\%$ (coupled solver) and nothing with dual
 splitting; tangents solved less accurately save linear iterations but cost Newton iterations
@@ -3273,7 +3364,8 @@ Open points are the source of the energy that feeds the high-frequency mode of
 periodic regime as a test case for the initial Jacobians of
 \cref{sec:initial_jacobian}, the second Newton iteration on the limit cycle
 (\cref{sec:fast_periodic}), a face-wise $L^2$ projection of the flux traction that makes the force
-transfer exactly conservative, a test case on which the per-step problem is strongly nonlinear
+transfer exactly conservative, the stagnated steps of the secant method with the flux traction at
+polynomial degree $8$ (\cref{sec:final_comparison}), a test case on which the per-step problem is strongly nonlinear
 (implicit geometry with shape derivatives, implicit convection, larger time steps), fewer tangent solves for the derivative-based methods, a cheap
 preconditioner of the convective velocity block that would allow larger time steps
 (\cref{sec:fast_fluid}), the sensitivity
@@ -3387,7 +3479,8 @@ model and secant reference), \code{lt_c3}, \code{tg16}, \code{tg16a} (tangent in
 (tolerance), \code{kr16} (recycling), \code{sl_base}, \code{sl_dir10}, \code{sl_dir10a},
 \code{sl_ws}, \code{sd_*} (subproblem solvers), \code{lr_win6}, \code{lr_ds4} (long runs) and
 \code{m15_c_*}, \code{m15_d_*} (\cref{tab:fast_m15}); \code{iqn15_c_*}, \code{iqn15_d_*} and
-\code{m15_c_qn_geo1}, \code{m15_d_qn_geo1} (\cref{tab:iqn_comparison}). For
+\code{m15_c_qn_geo1}, \code{m15_d_qn_geo1} (\cref{tab:iqn_comparison}); \code{p1i_*}
+(\cref{tab:iqn_comparison_flux}). For
 \cref{sec:fast_fluid}: parameters \code{CheapTangentDiagnostics} (subsection \code{OptimalControl},
 diagnostics only), \code{PressurePoissonPreconditioner}, \code{ViscousPreconditioner},
 \code{ProjectionPreconditioner}, \code{FluidPreconditionerUpdate}, \code{CoupledSchurDirect},
