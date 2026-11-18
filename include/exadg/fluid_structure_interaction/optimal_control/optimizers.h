@@ -243,6 +243,10 @@ public:
     VectorType r_old, s_old;
     bool       has_pending_pair = false;
 
+    // GradientSubspaceMinimization: secant pairs (s, m(g + s) - m(g)) of the accepted steps
+    subspace_s.clear();
+    subspace_y.clear();
+
     for(unsigned int k = 0; k < param.max_iterations; ++k)
     {
       double const m_norm = norm_mismatch(m);
@@ -362,7 +366,14 @@ public:
 
       bool step_accepted = false;
 
-      if(active_method == Method::SteepestDescent)
+      if(active_method == Method::SteepestDescent and use_gradient_subspace())
+      {
+        double slope = 0.0;
+        if(not preconditioned_gradient_direction(d, r, slope))
+          d.equ(-1.0, r);
+        step_accepted = subspace_gradient_step(g, m, J, r, d, trial_g, trial_m);
+      }
+      else if(active_method == Method::SteepestDescent)
       {
         double slope = 0.0;
         if(preconditioned_gradient_direction(d, r, slope))
@@ -426,21 +437,25 @@ public:
           slope = -r_norm * r_norm;
         }
 
-        // with the recycled initial inverse Hessian: step length from the exact quadratic model
-        // (one application of S, which also enriches H and predicts the fluid state)
-        double alpha0 = 1.0;
-        if(has_recycled_preconditioner())
-        {
-          problem.begin_tangent_record();
-          double const dHd = hessian_quadratic_form(d);
-          problem.set_state_prediction(g, d, std::vector<double>(1, 1.0));
-          if(dHd > 0.0)
-            alpha0 = -slope / dHd;
-        }
-
         VectorType g_old(g);
-        r_old         = r;
-        step_accepted = armijo(g, m, J, d, slope, alpha0, trial_g, trial_m, false);
+        r_old = r;
+        if(use_gradient_subspace())
+          step_accepted = subspace_gradient_step(g, m, J, r, d, trial_g, trial_m);
+        else
+        {
+          // with the recycled initial inverse Hessian: step length from the exact quadratic
+          // model (one application of S, which also enriches H and predicts the fluid state)
+          double alpha0 = 1.0;
+          if(has_recycled_preconditioner())
+          {
+            problem.begin_tangent_record();
+            double const dHd = hessian_quadratic_form(d);
+            problem.set_state_prediction(g, d, std::vector<double>(1, 1.0));
+            if(dHd > 0.0)
+              alpha0 = -slope / dHd;
+          }
+          step_accepted = armijo(g, m, J, d, slope, alpha0, trial_g, trial_m, false);
+        }
         if(step_accepted)
         {
           s_old = g;
@@ -1033,7 +1048,16 @@ private:
       }
       R.push_back(r);
       VectorType d(p->first);
-      d.add(-1.0, p->second);
+      if(use_initial_preconditioner())
+      {
+        // H_0 = P (S) or P^* (S^*) of the problem: D = V - H_0 Y
+        VectorType h0y;
+        problem.initialize_vector(h0y);
+        apply_initial_preconditioner(h0y, p->second, control_metric);
+        d.add(-1.0, h0y);
+      }
+      else
+        d.add(-1.0, p->second);
       D.push_back(d);
     }
 
@@ -1048,6 +1072,41 @@ private:
     }
   }
 
+  // RecycledInitialPreconditioner for the normal operator S^* S: P P^* (symmetric positive
+  // definite, exact on the modes of the coarse space) as initial matrix of the Morales-Nocedal
+  // preconditioner of CG, as initial inverse Hessian of L-BFGS and as metric of steepest descent
+  bool
+  normal_initial_preconditioner() const
+  {
+    return param.recycled_initial_preconditioner and problem.has_normal_preconditioner() and
+           not gradient_method();
+  }
+
+  // steepest descent and L-BFGS keep the recycled H H_A started from the identity: P P^* alone
+  // leaves the bulk of the spectrum unpreconditioned, and H H_A started from P stalls
+  bool
+  gradient_method() const
+  {
+    return active_method == Method::SteepestDescent or active_method == Method::LBFGS;
+  }
+
+  // RecycledInitialPreconditioner: H_0 = P of the problem (e.g. coarse space) instead of I
+  bool
+  use_initial_preconditioner() const
+  {
+    return param.recycled_initial_preconditioner and problem.has_preconditioner() and
+           not gradient_method();
+  }
+
+  void
+  apply_initial_preconditioner(VectorType & dst, VectorType const & src, bool const adjoint) const
+  {
+    if(adjoint)
+      problem.apply_preconditioner_adjoint(dst, src);
+    else
+      problem.apply_preconditioner(dst, src);
+  }
+
   bool
   has_recycled_preconditioner() const
   {
@@ -1059,7 +1118,10 @@ private:
   apply_recycled(VectorType & dst, VectorType const & src) const
   {
     dealii::Timer timer;
-    dst = src;
+    if(use_initial_preconditioner())
+      apply_initial_preconditioner(dst, src, false);
+    else
+      dst = src;
     for(unsigned int j = 0; j < rec_Q.size(); ++j)
       dst.add(rec_MQ.empty() ? problem.inner_product_mismatch(rec_Q[j], src) : rec_MQ[j] * src,
               rec_W[j]);
@@ -1070,7 +1132,10 @@ private:
   void
   apply_recycled_adjoint_inverse(VectorType & dst, VectorType const & src) const
   {
-    dst = src;
+    if(use_initial_preconditioner())
+      apply_initial_preconditioner(dst, src, true);
+    else
+      dst = src;
     for(unsigned int j = 0; j < adj_Q.size(); ++j)
       dst.add(adj_MQ.empty() ? problem.inner_product(adj_Q[j], src) : adj_MQ[j] * src, adj_W[j]);
   }
@@ -1215,13 +1280,9 @@ private:
     // from exact pairs (p, A0 p) of previous CG solves (A0 = S^* S, current shift added), or with
     // (J^* J)^{-1} of the frozen Jacobian
     double const sigma        = param.regularization + shift;
-    bool const   lmp          = param.recycled_preconditioner and not cg_pairs.empty();
-    bool const   precondition = lmp or problem.has_normal_preconditioner();
+    bool const   precondition = has_cg_preconditioner();
     auto const   apply_P      = [&](VectorType & dst, VectorType const & src) {
-      if(lmp)
-        apply_lmp(dst, src, sigma);
-      else
-        problem.apply_normal_preconditioner(dst, src);
+      apply_cg_preconditioner(dst, src, sigma);
     };
     std::vector<std::pair<VectorType, VectorType>> new_pairs;
 
@@ -1235,10 +1296,7 @@ private:
       return;
 
     if(precondition)
-    {
       apply_P(z, res);
-      ++stats.preconditioner_applications;
-    }
     else
       z = res;
     p         = z;
@@ -1268,10 +1326,7 @@ private:
       res.add(-alpha, Hp);
 
       if(precondition)
-      {
         apply_P(z, res);
-        ++stats.preconditioner_applications;
-      }
       else
         z = res;
       double const rz_new = problem.inner_product(res, z);
@@ -1279,13 +1334,39 @@ private:
       rz = rz_new;
     }
 
-    // keep the newest exact pairs for the next solves (the preconditioner is fixed within a solve)
+    store_cg_pairs(new_pairs);
+  }
+
+  // preconditioner of the CG for the normal equations: limited-memory quasi-Newton preconditioner
+  // from the exact pairs of previous CG solves, or (J^* J)^{-1} / P P^* of the problem
+  bool
+  has_cg_preconditioner() const
+  {
+    return (param.recycled_preconditioner and not cg_pairs.empty()) or
+           problem.has_normal_preconditioner();
+  }
+
+  void
+  apply_cg_preconditioner(VectorType & dst, VectorType const & src, double const sigma)
+  {
+    if(param.recycled_preconditioner and not cg_pairs.empty())
+      apply_lmp(dst, src, sigma);
+    else
+      problem.apply_normal_preconditioner(dst, src);
+    ++stats.preconditioner_applications;
+  }
+
+  // keep the newest exact pairs for the next solves (the preconditioner is fixed within a solve)
+  void
+  store_cg_pairs(std::vector<std::pair<VectorType, VectorType>> & new_pairs)
+  {
     for(auto & pair : new_pairs)
     {
       cg_pairs.push_back(std::move(pair));
       if(cg_pairs.size() > param.recycle_max_pairs)
         cg_pairs.pop_front();
     }
+    new_pairs.clear();
   }
 
   /*
@@ -1311,8 +1392,15 @@ private:
       a[i] = rho[i] * problem.inner_product(cg_pairs[i].first, dst);
       dst.add(-a[i], y[i]);
     }
-    dst *= problem.inner_product(cg_pairs[n - 1].first, y[n - 1]) /
-           problem.inner_product(y[n - 1], y[n - 1]);
+    if(normal_initial_preconditioner())
+    {
+      // initial matrix P P^* of the problem (coarse space), exact on its modes
+      VectorType tmp(dst);
+      problem.apply_normal_preconditioner(dst, tmp);
+    }
+    else
+      dst *= problem.inner_product(cg_pairs[n - 1].first, y[n - 1]) /
+             problem.inner_product(y[n - 1], y[n - 1]);
     for(unsigned int i = 0; i < n; ++i)
     {
       double const beta = rho[i] * problem.inner_product(y[i], dst);
@@ -1441,11 +1529,105 @@ private:
         Sx.add(H[j][i] * y[j], V[i]);
   }
 
+  bool
+  use_gradient_subspace() const
+  {
+    return param.gradient_subspace_minimization and param.regularization == 0.0;
+  }
+
+  /*
+   * GradientSubspaceMinimization: step of SteepestDescent / LBFGS that minimises the Gauss-Newton
+   * model 0.5 ||m + B c||^2 in the span of the accepted steps s_j of this solve and of the new
+   * direction d, with the images B = [m(g + s_j) - m(g) (secant pairs, exact also for the
+   * nonlinear mismatch), S d (one tangent solve, as for the step length of the line search)].
+   * Only secant pairs with ||y_j|| <= GradientSubspaceLocality ||m|| are used.
+   * For a linear mismatch this is GCR with the direction of the method as preconditioned
+   * residual. If the subspace step is not a descent direction for J, the minimiser along d alone
+   * is taken. The step is accepted with the Armijo condition starting at alpha = 1.
+   */
+  bool
+  subspace_gradient_step(VectorType &       g,
+                         VectorType &       m,
+                         double &           J,
+                         VectorType const & r,
+                         VectorType const & d,
+                         VectorType &       trial_g,
+                         VectorType &       trial_m)
+  {
+    VectorType Sd;
+    problem.initialize_vector(Sd);
+    apply_S(Sd, d);
+
+    std::vector<VectorType const *> D, B;
+    double const                    m_norm = norm_mismatch(m);
+    for(unsigned int j = 0; j < subspace_s.size(); ++j)
+      if(norm_mismatch(subspace_y[j]) <= param.gradient_subspace_locality * m_norm)
+      {
+        D.push_back(&subspace_s[j]);
+        B.push_back(&subspace_y[j]);
+      }
+    D.push_back(&d);
+    B.push_back(&Sd);
+
+    // least squares min ||m + B c|| (normal equations, slightly regularised)
+    unsigned int const               k = D.size();
+    std::vector<std::vector<double>> A(k, std::vector<double>(k, 0.0)), I(A);
+    std::vector<double>              c(k, 0.0);
+    double                           max_diag = 0.0;
+    for(unsigned int i = 0; i < k; ++i)
+    {
+      c[i] = -problem.inner_product_mismatch(*B[i], m);
+      for(unsigned int j = 0; j <= i; ++j)
+        A[i][j] = A[j][i] = problem.inner_product_mismatch(*B[i], *B[j]);
+      I[i][i]  = 1.0;
+      max_diag = std::max(max_diag, A[i][i]);
+    }
+    if(not(max_diag > 0.0))
+      return false;
+
+    VectorType step;
+    problem.initialize_vector(step);
+    double slope = 0.0;
+    if(k > 1)
+    {
+      std::vector<double> const y = solve_small(A, I, c, 1.e-12 * max_diag);
+      for(unsigned int j = 0; j < k; ++j)
+        step.add(y[j], *D[j]);
+      slope = problem.inner_product(r, step);
+    }
+    if(k == 1 or not is_descent(slope, r, step))
+    {
+      // minimiser of the model along d
+      step.equ(c[k - 1] / A[k - 1][k - 1], d);
+      slope = problem.inner_product(r, step);
+      if(not(slope < 0.0))
+        return false;
+    }
+
+    VectorType const g_old(g), m_old(m);
+    bool const       accepted = armijo(g, m, J, step, slope, 1.0, trial_g, trial_m, false);
+    if(accepted)
+    {
+      subspace_s.emplace_back(g);
+      subspace_s.back().add(-1.0, g_old);
+      subspace_y.emplace_back(m);
+      subspace_y.back().add(-1.0, m_old);
+      while(subspace_s.size() > param.lbfgs_memory)
+      {
+        subspace_s.pop_front();
+        subspace_y.pop_front();
+      }
+    }
+    return accepted;
+  }
+
   void
   lbfgs_direction(VectorType & d, VectorType const & r)
   {
     unsigned int const n = lbfgs_s.size();
     rebuild_recycled_preconditioner();
+    // the normal preconditioner P P^* of the problem is not used: as initial inverse Hessian it
+    // slows L-BFGS down, and without the Cauchy step no tangent pairs for H H_A would be generated
     bool const recycled = has_recycled_preconditioner();
     if(n == 0)
     {
@@ -1469,7 +1651,7 @@ private:
     }
     if(recycled)
     {
-      // initial inverse Hessian H H^* from the recycled tangent pairs
+      // initial inverse Hessian H H_A from the recycled tangent and adjoint pairs
       VectorType tmp(q);
       apply_recycled_normal(q, tmp);
     }
@@ -1507,6 +1689,8 @@ private:
     for(unsigned int attempt = 0; attempt < 2; ++attempt)
     {
       rebuild_recycled_preconditioner();
+      // the normal preconditioner P P^* of the problem is not used (steepest descent diverges
+      // with it in the hard cases)
       if(not has_recycled_preconditioner())
         return false;
       apply_recycled_normal(d, r);
@@ -1764,6 +1948,10 @@ private:
   /*
    * Gauss-Newton trust-region step with the Steihaug-Toint CG. The complete CG path is stored,
    * so that a rejected step is recomputed for the reduced radius without new solves.
+   * TRPreconditioned: preconditioned CG with the preconditioner P of the Gauss-Newton CG (fixed
+   * within the solve) and the trust region in the norm ||x||_W, W = P^{-1}, in which the iterates
+   * of the preconditioned CG increase monotonically. W is not applied: with z = P res, W z = res,
+   * so W p and W x follow from the CG recurrences.
    */
   bool
   trust_region_step(VectorType &       g,
@@ -1775,45 +1963,81 @@ private:
                     VectorType &       trial_g,
                     VectorType &       trial_m)
   {
-    // CG path for H x = b, b = -r: iterates x_j, directions p_j, H p_j, residuals res_j = b - H x_j
+    // CG path for H x = b, b = -r: iterates x_j, W x_j, directions p_j, W p_j, H p_j, residuals
+    // res_j = b - H x_j
     VectorType b(r);
     b *= -1.0;
 
-    std::vector<VectorType> X, P, HP, RES;
+    double const sigma        = param.regularization;
+    bool const   precondition = param.tr_preconditioned and has_cg_preconditioner();
+
+    std::vector<VectorType> X, WX, P, WP, HP, RES;
     {
-      VectorType x, res(b), p(b), Hp;
+      std::vector<std::pair<VectorType, VectorType>> new_pairs;
+
+      VectorType x, Wx, res(b), z, Hp;
       problem.initialize_vector(x);
+      problem.initialize_vector(Wx);
+      problem.initialize_vector(z);
       problem.initialize_vector(Hp);
+      if(precondition)
+        apply_cg_preconditioner(z, res, sigma);
+      else
+        z = res;
+      VectorType   p(z), Wp(res);
       double const b_norm = norm(b);
-      double       rr     = problem.inner_product(res, res);
+      double       rz     = problem.inner_product(res, z);
 
       X.push_back(x);
+      WX.push_back(Wx);
       RES.push_back(res);
 
       for(unsigned int j = 0; j < param.krylov_max_iterations; ++j)
       {
-        if(std::sqrt(rr) <= eta * b_norm)
+        if(norm(res) <= eta * b_norm)
           break;
         hessian_vector(Hp, p, 0.0);
         ++stats.krylov_iterations;
         double const pHp = problem.inner_product(p, Hp);
         if(pHp <= 0.0)
           break;
-        double const alpha = rr / pHp;
+        if(param.recycled_preconditioner and param.tr_preconditioned)
+        {
+          VectorType A0p(Hp);
+          A0p.add(-sigma, p);
+          new_pairs.emplace_back(p, A0p);
+        }
+        double const alpha = rz / pHp;
         P.push_back(p);
+        WP.push_back(Wp);
         HP.push_back(Hp);
         x.add(alpha, p);
+        Wx.add(alpha, Wp);
         res.add(-alpha, Hp);
         X.push_back(x);
+        WX.push_back(Wx);
         RES.push_back(res);
-        double const rr_new = problem.inner_product(res, res);
-        p.sadd(rr_new / rr, 1.0, res);
-        rr = rr_new;
+        if(precondition)
+          apply_cg_preconditioner(z, res, sigma);
+        else
+          z = res;
+        double const rz_new = problem.inner_product(res, z);
+        double const beta   = rz_new / rz;
+        p.sadd(beta, 1.0, z);
+        Wp.sadd(beta, 1.0, res);
+        rz = rz_new;
         // stop the path once it leaves the largest admissible region
-        if(norm(x) >= param.tr_radius_max)
+        if(std::sqrt(std::max(0.0, problem.inner_product(x, Wx))) >= param.tr_radius_max)
           break;
       }
+
+      store_cg_pairs(new_pairs);
     }
+
+    // ||x_j||_W
+    auto const w_norm = [&](unsigned int const j) {
+      return std::sqrt(std::max(0.0, problem.inner_product(X[j], WX[j])));
+    };
 
     VectorType Hd;
     for(unsigned int t = 0; t < 30; ++t)
@@ -1823,20 +2047,23 @@ private:
       d                = X.back();
       Hd               = b;
       Hd.add(-1.0, RES.back()); // H x = b - res
+      double d_norm = w_norm(X.size() - 1);
       for(unsigned int j = 0; j + 1 < X.size(); ++j)
       {
-        if(norm(X[j + 1]) >= tr_radius)
+        if(w_norm(j + 1) >= tr_radius)
         {
-          // tau >= 0 with ||x_j + tau p_j|| = radius
-          double const pp  = problem.inner_product(P[j], P[j]);
-          double const xp  = problem.inner_product(X[j], P[j]);
-          double const xx  = problem.inner_product(X[j], X[j]);
-          double const tau = (-xp + std::sqrt(xp * xp + pp * (tr_radius * tr_radius - xx))) / pp;
+          // tau >= 0 with ||x_j + tau p_j||_W = radius
+          double const pp  = problem.inner_product(P[j], WP[j]);
+          double const xp  = problem.inner_product(X[j], WP[j]);
+          double const xx  = problem.inner_product(X[j], WX[j]);
+          double const disc = xp * xp + pp * (tr_radius * tr_radius - xx);
+          double const tau  = (-xp + std::sqrt(std::max(0.0, disc))) / pp;
           d                = X[j];
           d.add(tau, P[j]);
           Hd = b;
           Hd.add(-1.0, RES[j]);
           Hd.add(tau, HP[j]);
+          d_norm      = tr_radius;
           on_boundary = true;
           break;
         }
@@ -1850,7 +2077,6 @@ private:
       trial_g.add(1.0, d);
       double const J_trial = evaluate(trial_m, trial_g);
       double const rho     = (J - J_trial) / pred;
-      double const d_norm  = norm(d);
 
       if(std::isfinite(J_trial) and rho > param.tr_eta)
       {
@@ -1866,7 +2092,7 @@ private:
       }
 
       restore_linearization();
-      tr_radius = 0.25 * (on_boundary ? tr_radius : d_norm);
+      tr_radius = 0.25 * d_norm;
     }
     return false;
   }
@@ -1911,6 +2137,8 @@ private:
   double tr_radius;
 
   std::deque<VectorType> lbfgs_s, lbfgs_y;
+  // GradientSubspaceMinimization: steps and mismatch differences of the accepted steps
+  std::deque<VectorType> subspace_s, subspace_y;
 
   // InterfaceQuasiNewton: secant pairs of previous solves
   std::deque<std::vector<VectorType>> qn_history_G, qn_history_M;

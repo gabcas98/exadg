@@ -29,13 +29,15 @@ namespace ExaDG
 // Test cases FSI1, FSI2, FSI3 of Turek and Hron (2006), selected at run time by the parameter
 // Application/TestCase (default: FSI2). The dependent constants (U_X_MAX, END_TIME, output
 // interval) are set by set_test_case(); EndTime should be given explicitly for FSI1 and FSI3.
-inline unsigned int TEST_CASE                = 2;
-inline double       U_MEAN                   = 1.0;
-inline double       FLUID_VISCOSITY          = 1.0e-3;
-inline double       FLUID_DENSITY            = 1.0e3;
-inline double       DENSITY_STRUCTURE        = 1.0e4;
-inline double       POISSONS_RATIO_STRUCTURE = 0.4;
-inline double       YOUNGS_MODULUS_STRUCTURE = 0.5e6 * 2.0 * (1.0 + 0.4);
+inline unsigned int TEST_CASE         = 2;
+inline double       U_MEAN            = 1.0;
+inline double       FLUID_VISCOSITY   = 1.0e-3;
+inline double       FLUID_DENSITY     = 1.0e3;
+inline double       DENSITY_STRUCTURE = 1.0e4;
+// Application/StructureDensity: overrides the density of the test case if positive
+inline double DENSITY_STRUCTURE_OVERRIDE = 0.0;
+inline double POISSONS_RATIO_STRUCTURE   = 0.4;
+inline double YOUNGS_MODULUS_STRUCTURE   = 0.5e6 * 2.0 * (1.0 + 0.4);
 
 // physical dimensions (diameter D and center coordinate Y_C can be varied)
 double const X_0    = 0.0;  // origin (x-coordinate)
@@ -110,6 +112,10 @@ add_test_case_parameter(dealii::ParameterHandler & prm)
                     "Turek-Hron benchmark: 1 (FSI1), 2 (FSI2) or 3 (FSI3).",
                     dealii::Patterns::Integer(1, 3));
   prm.add_action("TestCase", [](std::string const & value) { set_test_case(std::stoi(value)); });
+  prm.add_parameter("StructureDensity",
+                    DENSITY_STRUCTURE_OVERRIDE,
+                    "Density of the structure; 0: value of the test case (density ratio studies).",
+                    dealii::Patterns::Double(0.0));
 }
 
 double const REL_TOL = 1.e-6;
@@ -278,6 +284,10 @@ private:
                         coupled_schur_coarse_preconditioner,
                         "Preconditioner of that coarse-grid solver.",
                         Patterns::Enum<MultigridCoarseGridPreconditioner>());
+      prm.add_parameter("TimeStepSize",
+                        time_step_size,
+                        "Constant time step size; 0: from the CFL condition (CFL).",
+                        dealii::Patterns::Double(0.0));
       prm.add_parameter(
         "AdaptiveTimeStepping",
         adaptive_time_stepping,
@@ -379,6 +389,7 @@ private:
   bool                                 coupled_fluid_solver   = false;
   std::string                          viscous_formulation    = "Auto";
   double                               cfl                    = 0.5;
+  double                               time_step_size         = 0.0;
   bool                                 pull_back_traction     = true;
   double                               fluid_abs_tol          = ABS_TOL;
   double                               fluid_rel_tol          = REL_TOL;
@@ -444,14 +455,15 @@ private:
     param.density    = FLUID_DENSITY;
 
     // TEMPORAL DISCRETIZATION
-    param.solver_type                     = SolverType::Unsteady;
-    param.temporal_discretization         = TemporalDiscretization::BDFDualSplitting;
-    param.treatment_of_convective_term    = TreatmentOfConvectiveTerm::Explicit;
-    param.order_time_integrator           = 2;
-    param.start_with_low_order            = true;
-    param.adaptive_time_stepping          = adaptive_time_stepping;
-    param.calculation_of_time_step_size   = TimeStepCalculation::CFL;
-    param.time_step_size                  = END_TIME;
+    param.solver_type                  = SolverType::Unsteady;
+    param.temporal_discretization      = TemporalDiscretization::BDFDualSplitting;
+    param.treatment_of_convective_term = TreatmentOfConvectiveTerm::Explicit;
+    param.order_time_integrator        = 2;
+    param.start_with_low_order         = true;
+    param.adaptive_time_stepping       = adaptive_time_stepping;
+    param.calculation_of_time_step_size =
+      time_step_size > 0.0 ? TimeStepCalculation::UserSpecified : TimeStepCalculation::CFL;
+    param.time_step_size                  = time_step_size > 0.0 ? time_step_size : END_TIME;
     param.max_velocity                    = U_X_MAX;
     param.cfl                             = cfl;
     param.cfl_exponent_fe_degree_velocity = 1.5;
@@ -1230,7 +1242,8 @@ private:
     param.pull_back_traction = pull_back_traction and not traction_coupling;
     param.material_type      = MaterialType::StVenantKirchhoff;
 
-    param.density = DENSITY_STRUCTURE;
+    param.density =
+      DENSITY_STRUCTURE_OVERRIDE > 0.0 ? DENSITY_STRUCTURE_OVERRIDE : DENSITY_STRUCTURE;
 
     param.start_time                           = 0.0;
     param.end_time                             = end_time;

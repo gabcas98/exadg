@@ -69,7 +69,8 @@ enum class QNInitialJacobian
 {
   Relaxation,
   PreviousTimeStep,
-  FrozenJacobian
+  FrozenJacobian,
+  Preconditioner // H_0 = P of Preconditioner (e.g. CoarseSpace)
 };
 
 enum class TangentDifference
@@ -94,7 +95,13 @@ enum class Preconditioner
   // P^{-1} = S_0^{-1}, with S_0 the Jacobian S assembled densely (one tangent solve per interface
   // dof) and LU-factorized, frozen over PreconditionerUpdateInterval time steps. Practical for
   // interfaces with up to a few hundred dofs.
-  FrozenJacobian
+  FrozenJacobian,
+  // coarse space of the dominant (added-mass) modes of S - I (subspace iteration, Z), with the
+  // multiplicative coarse correction P = I + Z E^{-1} (Z - U)^T M, U = S^* Z, E = U^T M Z, which is
+  // exact on span(Z); also the normal preconditioner P P^* of the gradient methods and, with
+  // QNInitialJacobian = Preconditioner, the initial inverse Jacobian of the secant method.
+  // Requires the adjoint (coupled fluid solver).
+  CoarseSpace
 };
 
 /*
@@ -204,12 +211,15 @@ struct Parameters
       fluid_krylov_recycling(0),
       tangent_difference_tolerance_factor(1.e4),
       lbfgs_memory(10),
+      gradient_subspace_minimization(false),
+      gradient_subspace_locality(10.0),
       lm_lambda_initial(1.e-2),
       lm_lambda_min(1.e-12),
       lm_lambda_max(1.e8),
       lm_max_tries(10),
       tr_radius_initial(1.0),
       tr_radius_max(1.e6),
+      tr_preconditioned(true),
       tr_eta(1.e-4),
       geometry_iterations(1),
       geometry_tolerance(1.e-10),
@@ -217,6 +227,8 @@ struct Parameters
       extrapolate_control(true),
       control_extrapolation_order(2),
       verify_derivatives(false),
+      spectrum_diagnostics_interval(0),
+      spectrum_diagnostics_file(""),
       formulation(Formulation::NativeTraction),
       stopping_criterion(StoppingCriterion::DisplacementResidual),
       tangent_difference(TangentDifference::Analytic),
@@ -235,6 +247,10 @@ struct Parameters
       preconditioner(Preconditioner::None),
       preconditioner_tolerance(1.e-8),
       preconditioner_update_interval(10),
+      coarse_space_dimension(16),
+      coarse_space_iterations(2),
+      coarse_space_rebuild_interval(0),
+      recycled_initial_preconditioner(false),
       preconditioner_update_dt_change(0.0),
       preconditioner_update_krylov(0.0),
       mismatch_metric(InterfaceMetric::L2),
@@ -570,6 +586,29 @@ struct Parameters
                         dealii::Patterns::Double(0.0),
                         false);
       prm.add_parameter(
+        "GradientSubspaceMinimization",
+        gradient_subspace_minimization,
+        "SteepestDescent, LBFGS: instead of the line search along the direction d alone, minimise "
+        "the Gauss-Newton model in the span of the accepted steps of the solve (secant pairs "
+        "(s, m(g + s) - m(g))) and d (tangent pair (d, S d)), at most LBFGSMemory + 1 vectors.",
+        dealii::Patterns::Bool(),
+        false);
+      prm.add_parameter(
+        "GradientSubspaceLocality",
+        gradient_subspace_locality,
+        "GradientSubspaceMinimization: only secant pairs with ||m(g + s) - m(g)|| <= "
+        "GradientSubspaceLocality * ||m|| enter the subspace (pairs of large steps carry a "
+        "nonlinear error that is large compared to a small mismatch).",
+        dealii::Patterns::Double(0.0),
+        false);
+      prm.add_parameter("TRPreconditioned",
+                        tr_preconditioned,
+                        "TrustRegion on the normal equations: preconditioned Steihaug-Toint CG "
+                        "with the preconditioner of the Gauss-Newton CG, trust region in the "
+                        "norm of its inverse.",
+                        dealii::Patterns::Bool(),
+                        false);
+      prm.add_parameter(
         "GeometryIterations",
         geometry_iterations,
         "Outer fixed-point iterations on the fluid geometry per time step. "
@@ -600,6 +639,20 @@ struct Parameters
                         ">= 2: Lagrange extrapolation in the actual times of the last order + 1 "
                         "time steps (variable time step).",
                         dealii::Patterns::Integer(1, 4),
+                        false);
+      prm.add_parameter("SpectrumDiagnosticsInterval",
+                        spectrum_diagnostics_interval,
+                        "Every this number of time steps (0: never), assemble the dense interface "
+                        "operator S after the solve and print its singular values in the metric M, "
+                        "its eigenvalues and the contraction of the Dirichlet-Neumann iteration "
+                        "(diagnostics; one tangent per interface dof).",
+                        dealii::Patterns::Integer(0),
+                        false);
+      prm.add_parameter("SpectrumDiagnosticsFile",
+                        spectrum_diagnostics_file,
+                        "If not empty: write the dense S and the interface mass matrix M of each "
+                        "spectrum diagnosis to <file>_<count>.txt (offline studies).",
+                        dealii::Patterns::Anything(),
                         false);
       prm.add_parameter("VerifyDerivatives",
                         verify_derivatives,
@@ -708,6 +761,34 @@ struct Parameters
                         "Preconditioner of InterfaceNewton.",
                         Patterns::Enum<Preconditioner>(),
                         false);
+      prm.add_parameter("CoarseSpaceDimension",
+                        coarse_space_dimension,
+                        "Preconditioner = CoarseSpace: number k of modes.",
+                        dealii::Patterns::Integer(1),
+                        false);
+      prm.add_parameter("CoarseSpaceIterations",
+                        coarse_space_iterations,
+                        "Preconditioner = CoarseSpace: subspace iterations with S - I that build "
+                        "the modes (k tangents each).",
+                        dealii::Patterns::Integer(1),
+                        false);
+      prm.add_parameter("CoarseSpaceRebuildInterval",
+                        coarse_space_rebuild_interval,
+                        "Preconditioner = CoarseSpace: rebuild the modes every this number of time "
+                        "steps (0: only in the first time step). The coarse matrix E and U = S^* Z "
+                        "(k adjoint solves) follow PreconditionerUpdateInterval and "
+                        "PreconditionerUpdateDtChange.",
+                        dealii::Patterns::Integer(0),
+                        false);
+      prm.add_parameter(
+        "RecycledInitialPreconditioner",
+        recycled_initial_preconditioner,
+        "RecycledPreconditioner: start the recycled inverse from the preconditioner "
+        "P of Preconditioner (H = P + corrections that are exact on the recycled "
+        "pairs, P^* for the adjoint) instead of the identity. Requires "
+        "Preconditioner = CoarseSpace.",
+        dealii::Patterns::Bool(),
+        false);
       prm.add_parameter("PreconditionerTolerance",
                         preconditioner_tolerance,
                         "Relative tolerance of the inner solves of the preconditioner.",
@@ -795,12 +876,15 @@ struct Parameters
   unsigned int fluid_krylov_recycling;
   double       tangent_difference_tolerance_factor;
   unsigned int lbfgs_memory;
+  bool         gradient_subspace_minimization;
+  double       gradient_subspace_locality;
   double       lm_lambda_initial;
   double       lm_lambda_min;
   double       lm_lambda_max;
   unsigned int lm_max_tries;
   double       tr_radius_initial;
   double       tr_radius_max;
+  bool         tr_preconditioned;
   double       tr_eta;
   unsigned int geometry_iterations;
   double       geometry_tolerance;
@@ -808,6 +892,8 @@ struct Parameters
   bool         extrapolate_control;
   unsigned int control_extrapolation_order;
   bool         verify_derivatives;
+  unsigned int spectrum_diagnostics_interval;
+  std::string  spectrum_diagnostics_file;
 
   Formulation       formulation;
   StoppingCriterion stopping_criterion;
@@ -827,6 +913,10 @@ struct Parameters
   Preconditioner    preconditioner;
   double            preconditioner_tolerance;
   unsigned int      preconditioner_update_interval;
+  unsigned int      coarse_space_dimension;
+  unsigned int      coarse_space_iterations;
+  unsigned int      coarse_space_rebuild_interval;
+  bool              recycled_initial_preconditioner;
   double            preconditioner_update_dt_change;
   double            preconditioner_update_krylov;
   InterfaceMetric   mismatch_metric;

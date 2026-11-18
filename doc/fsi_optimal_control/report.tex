@@ -84,7 +84,13 @@ solution depend on the fluid solver ($8.5\%$ in amplitude); with the flux tracti
 the dual-splitting solver agree to $0.05\%$. With a displacement criterion shared with IQN-ILS the
 secant method is $1.4$ (FSI2, dual splitting) to $2.4$ (FSI3, coupled solver) times faster than
 IQN-ILS, and on FSI3 the Newton-type methods need exactly one iteration per step, while the
-normal-equation methods cost $4.5$ to $16$ times more.
+normal-equation methods cost $4.5$ to $16$ times more. The interface Jacobian has a cluster of
+eigenvalues at one and a few added-mass outliers that grow like $1/\Delta t$ and $\rho_f/\rho_s$;
+Neumann--Neumann and FETI preconditioners with constant weights do not bound this spectrum, while a
+matrix-free coarse space of the outlier modes (the adaptive coarse space of GenEO/BDDC type for two
+subdomains) reduces the condition number to below $2$, halves the tangent solves of Gauss--Newton
+for $\rho_s/\rho_f=0.1$ and, with a preconditioned Steihaug CG, makes the trust-region method $6$
+times faster.
 \end{abstract}
 
 \noindent\textbf{Keywords:} fluid--structure interaction; partitioned coupling; optimisation-based
@@ -629,7 +635,8 @@ $\eta_k=\min\{\eta_{\max},(\|r_k\|/\|r_0\|)^{1/2}\}$, Armijo.
 \item[Levenberg--Marquardt (LM).] $(H+\lambda I)d=-r$ by CG, gain ratio, adaptive $\lambda$.
 \item[Trust region (TR).] Steihaug--Toint CG \cite{Steihaug1983} on $H$; the full CG path ($x_j$, $p_j$, $Hp_j$,
 residuals) is stored, so that a rejected step is recomputed for a smaller radius without new
-solves.
+solves; preconditioned like the CG of GN, with the trust region in the norm of the inverse
+preconditioner (\cref{sec:preconditioning}).
 \item[Interface Newton (IN).] $Sd=-m$ by flexible GMRES in the $A$ inner product (right
 preconditioning), Armijo on $\tfrac12\|m\|_A^2$; $Sd$ is assembled from the Arnoldi relation.
 \item[Interface quasi-Newton (IQN).] The least-squares secant method of \cref{alg:qn}, an
@@ -3265,6 +3272,230 @@ implicit geometry & IN & 1.05 & 2.05 & 2.03 & 0 & 96.7\\
 \end{tabular}
 \end{table}
 
+\subsection{Spectrum and preconditioning of the interface problem}\label{sec:preconditioning}
+
+The methods of \cref{sec:fast} need few directions per step because the recycled inverses learn
+the Jacobian over the time steps. This subsection measures the Jacobian itself, tests the
+preconditioners of domain decomposition on it, and uses the result for the methods that solve the
+normal equations. All runs use the native formulation with the flux traction, structure control
+and the coupled fluid solver.
+
+\paragraph{Spectrum.} With \code{SpectrumDiagnosticsInterval} the driver assembles $S$ and the
+mass matrix $\M$ of the control space densely (one tangent solve per interface degree of freedom)
+and reports the eigenvalues of $S$, the singular values in the $\M$ norm and the contraction of
+relaxed Dirichlet--Neumann. In the language of domain decomposition,
+$S=I+\Sigma_f\Sigma_s^{-1}$ with the structure Neumann-to-Dirichlet map $\Sigma_s^{-1}$ (load to
+interface velocity) and the fluid Dirichlet-to-Neumann map $\Sigma_f$ (velocity to traction): the
+primal Steklov--Poincar\'e operator $\Sigma_s+\Sigma_f$, right-preconditioned by the structure
+(Dirichlet--Neumann). \Cref{tab:spectrum} varies time step, resolution and structure density from
+the base case (FSI2, fluid $Q_3$ refined once, $\Delta t=10^{-3}$, $20$ steps from rest, no recycled
+inverses, so that the iterations measure the operator). In every case the eigenvalues are real and
+$\ge1$: a cluster at one and a few large outliers, the added-mass modes. $188$ of the $262$
+eigenvalues are one to round-off, because the fluid sees the structure trace only through the
+non-matching transfer, so that $\Sigma_f\Sigma_s^{-1}$ has rank $74$. The largest eigenvalue grows
+like $1/\Delta t$ and like $\rho_f/\rho_s$, and it does not depend on the fluid or structure mesh;
+the condition number in the $\M$ norm decreases under fluid refinement because the smallest
+singular value moves towards one. Unrelaxed Dirichlet--Neumann diverges ($\rho(I-S)=\lambda_{\max}-1$),
+and the optimal constant relaxation $\omega=2/(1+\lambda_{\max})$ contracts only with
+$0.6$--$0.993$. The iterations follow: GMRES (IN) and the secant method grow slowly with
+$\lambda_{\max}$, CG on the normal equations grows with its square ($20$ to $381$ iterations per
+time step) and L-BFGS reaches its iteration limit.
+
+\begin{table}[ht]\centering
+\caption{Spectrum of $S$ at $t=20\Delta t$ and iterations per time step without recycled inverses
+($20$ steps from rest; fluid $Q_3$ refined once, structure $Q_4$, $\Delta t=10^{-3}$,
+$\rho_s/\rho_f=10$ unless stated). $\kappa_{\M}$: condition number in the $\M$ norm;
+$n_{>1}$: eigenvalues with $\lambda-1>1$; $\rho_{\mathrm{opt}}$: contraction of Dirichlet--Neumann
+with optimal constant relaxation; QN: states; IN: GMRES iterations; GN: CG iterations on the normal
+equations; L-BFGS: iterations (limit $200$).}\label{tab:spectrum}
+\begin{tabular}{lcccc|cccc}
+\toprule
+case & $\kappa_{\M}$ & $\lambda_{\max}$ & $n_{>1}$ & $\rho_{\mathrm{opt}}$ & QN & IN & GN & L-BFGS\\
+\midrule
+$\Delta t=4\cdot10^{-3}$ & 6.7 & 3.94 & 2 & 0.597 & 5.19 & 4.10 & 19.6 & 12.2\\
+$\Delta t=2\cdot10^{-3}$ & 25.5 & 7.34 & 2 & 0.762 & 5.71 & 4.14 & 20.0 & 15.8\\
+base & 84.6 & 22.98 & 3 & 0.917 & 6.62 & 4.62 & 33.1 & 57.7\\
+$\Delta t=5\cdot10^{-4}$ & 225.4 & 61.76 & 4 & 0.969 & 7.81 & 5.38 & 62.9 & 174.9\\
+$\Delta t=2.5\cdot10^{-4}$ & 519.7 & 131.93 & 8 & 0.985 & 9.71 & 6.62 & 100.7 & 200\\
+fluid not refined & 196.6 & 23.07 & 3 & 0.917 & 6.33 & 4.43 & 44.2 & 127.5\\
+fluid refined twice & 35.4 & 22.94 & 3 & 0.918 & 6.48 & 4.67 & 24.9 & 19.7\\
+structure refined & 118.5 & 22.97 & 3 & 0.917 & 6.57 & 4.62 & 39.7 & 75.5\\
+$\rho_s/\rho_f=1$ & 116.6 & 30.27 & 8 & 0.937 & 9.90 & 7.14 & 78.9 & 167.1\\
+$\rho_s/\rho_f=0.1$ & 705.6 & 275.09 & 12 & 0.993 & 14.57 & 10.86 & 381.1 & 200\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Neumann--Neumann and FETI.} The standard preconditioners of the Steklov--Poincar\'e
+equation are Neumann--Neumann/BDDC for the primal form (here: the interface equation for the
+traction) and FETI with the Dirichlet preconditioner for the dual form (the mismatch of the
+fluxes) \cite{ToselliWidlund2005}. With the generalised eigenproblem $\Sigma_fv=a\,\Sigma_sv$
+the Dirichlet--Neumann operator $S$ has the eigenvalues $1+a$, the Neumann--Neumann operator
+$(w_s\Sigma_s^{-1}+w_f\Sigma_f^{-1})(\Sigma_s+\Sigma_f)$ with weights $w_s+w_f=1$ has
+$w_s(1+a)+w_f(1+1/a)$, and the weighted FETI operator with the Dirichlet preconditioner has the
+same spectrum up to the kernels. Most eigenvalues are $a=0$ here (the kernel of
+$\Sigma_f\Sigma_s^{-1}$), the others range up to $a\approx270$: no constant weights bound
+$w_s(1+a)+w_f(1+1/a)$, and the best choice is $w_f=0$, i.e.\ Dirichlet--Neumann itself.
+FSI is the case of extreme coefficient jumps across the interface for which adaptive coarse
+spaces were developed: GenEO \cite{SpillaneEtAl2014} and adaptive BDDC/FETI-DP
+\cite{MandelSousedik2007} add to the coarse space the eigenvectors of local generalised
+eigenproblems of this type whose eigenvalues exceed a threshold. With two subdomains the local
+eigenproblem is the global one, and the adaptive coarse space consists of the few eigenvectors of
+$S$ with large $a=\lambda-1$.
+
+\paragraph{The coarse space offline.} With the dense $S$ of the sweep and $Z$ the invariant
+subspace of the $k$ eigenvalues farthest from one, the coarse correction
+\begin{equation}\label{eq:coarse}
+  P=I+ZE^{-1}Z^{\top}\M(I-S),\qquad E=Z^{\top}\M SZ,
+\end{equation}
+makes $SP$ the identity on $\operatorname{span}Z$ and leaves the cluster at one untouched
+(\cref{tab:coarse_offline}). Eight to sixteen vectors reduce $\kappa_{\M}$ to $1.1$--$3.6$ in all
+cases, also for $\rho_s/\rho_f=0.1$, where the outliers are spread out and the first four vectors
+help little. The modes of step $5$ used at step $20$ give the same iterations as the exact
+ones, and so does the whole correction frozen at step $5$: the outlier subspace changes
+slowly, and the coarse space need not be rebuilt every step.
+
+\begin{table}[ht]\centering
+\caption{Coarse correction \eqref{eq:coarse} with the $k$ eigenvectors of $S$ farthest from one
+(dense $S$ at $t=20\Delta t$, cases of \cref{tab:spectrum}): GMRES and CGNR iterations to $10^{-5}$
+(mean of three random right-hand sides) and $\kappa_{\M}(SP)$.}\label{tab:coarse_offline}
+\begin{tabular}{r|ccc|ccc|ccc}
+\toprule
+& \multicolumn{3}{c|}{base} & \multicolumn{3}{c|}{$\Delta t=2.5\cdot10^{-4}$} & \multicolumn{3}{c}{$\rho_s/\rho_f=0.1$}\\
+$k$ & GMRES & CGNR & $\kappa_{\M}$ & GMRES & CGNR & $\kappa_{\M}$ & GMRES & CGNR & $\kappa_{\M}$\\
+\midrule
+0 & 8.0 & 18.7 & 84.6 & 11.7 & 44.7 & 519.7 & 16.0 & 67.0 & 705.6\\
+2 & 6.0 & 11.3 & 2.9 & 10.0 & 27.7 & 14.4 & 14.0 & 50.0 & 183.6\\
+4 & 5.7 & 9.0 & 2.0 & 8.0 & 20.7 & 7.1 & 12.0 & 32.3 & 67.2\\
+8 & 4.0 & 6.3 & 1.5 & 6.3 & 14.0 & 3.1 & 8.0 & 21.0 & 20.7\\
+16 & 3.3 & 5.0 & 1.2 & 5.0 & 8.0 & 1.7 & 5.0 & 7.0 & 1.5\\
+24 & 3.0 & 3.3 & 1.1 & 4.0 & 5.0 & 1.2 & 4.0 & 4.3 & 1.1\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Matrix-free coarse space.} \code{Preconditioner = CoarseSpace} builds $Z$ without
+assembling $S$: $q$ steps of subspace iteration with $S-I$ from a fixed start basis
+($k=16$, $q=2$: $48$ tangent solves), $\M$-orthonormalised. With $U=S^*Z$ ($k$ adjoint solves)
+the correction \eqref{eq:coarse} becomes
+\begin{equation}\label{eq:coarse_mf}
+  Px=x+ZE^{-1}(Z-U)^{\top}\M x,\qquad P^*y=y+(Z-U)E^{-\top}Z^{\top}\M y,\qquad E=U^{\top}\M Z,
+\end{equation}
+with no solves per application; in the runs below $Z$ is rebuilt only when the time step has
+changed by more than $5\%$ (\code{PreconditionerUpdateDtChange}). The
+additive form $x+Z(\cdots)$ without $U$ was worse for the normal equations ($\kappa$ up to
+$4.8\cdot10^4$). $P$ is the right preconditioner of GMRES (IN), the initial inverse Jacobian of the
+secant method (\code{QNInitialJacobian = Preconditioner}) and, as $PP^*\approx(S^*S)^{-1}$, the
+preconditioner of CG on the normal equations. In the sweep without recycled inverses
+(\code{output/cs16\_*}) it reduces the CG iterations of GN from $33$, $101$ and $381$ to $12$, $16$
+and $19$ per step (base, $\Delta t=2.5\cdot10^{-4}$, $\rho_s/\rho_f=0.1$; $1.7$, $3.6$ and $16.8$
+times faster including the setup), the L-BFGS iterations from $58$ and $200$ to $8$ and $14$, and
+the states of the secant method from $6.6$, $9.7$ and $14.6$ to $4.1$, $4.5$ and $5.0$; IN gains
+fewer GMRES iterations than it pays for the setup.
+
+\paragraph{Combination with the recycled inverses.} In production the recycled inverses
+\eqref{eq:recycled} already contain the outlier modes after a few steps, and the question is what
+the coarse space adds to them (\code{RecycledInitialPreconditioner}: $P$ replaces the identity as
+$H_0$ in \eqref{eq:recycled}, i.e.\ $H=P+(V-PY)R^{-1}Q^{\top}A$). For the normal equations the
+symmetric $PP^*$ replaces the scalar initial matrix of the Morales--Nocedal limited-memory
+preconditioner \cite{MoralesNocedal2000} of the CG, which is built from the exact pairs
+$(p,S^*Sp)$ of the previous CG solves. The trust-region method had its own Steihaug--Toint CG
+without preconditioner, which explains its $83$ tangent solves per step in the
+hard case below; it now uses the same preconditioner $\tilde P$ as GN and LM
+(\code{TRPreconditioned}, default) with the trust region in the norm
+$\|x\|_W=(x,\tilde P^{-1}x)^{1/2}$, in which the iterates of preconditioned CG grow monotonically
+\cite{Steihaug1983}. $\tilde P^{-1}$ is never applied: with $z=\tilde Pr$ one has
+$\tilde P^{-1}z=r$, so that $\tilde P^{-1}p_j$ and $\tilde P^{-1}x_j$ follow from the CG
+recurrences, and the stored path still gives the step for every radius without new solves.
+
+\Cref{tab:hard} shows the hard case $\rho_s/\rho_f=0.1$ (fluid $Q_3$, $t\in[0,3]$~s, adaptive
+time step, all ingredients of \cref{sec:fast}), on which IQN-ILS (Dirichlet--Neumann of ExaDG) fails at $t=0.33$~s. The coarse
+space removes the two unconverged steps of the secant method and $22\%$ of its states. On the
+normal equations it halves the tangent solves of GN ($6.9\to3.5$) and reduces those of LM by a
+third; the preconditioned Steihaug CG reduces the tangent solves of TR from $83$ to $6.9$, and
+with the coarse space to $3.6$, which makes TR $5.8$ times faster and as cheap as GN. All runs
+of one batch agree to $10^{-6}$ in the tip displacement.
+
+\begin{table}[ht]\centering
+\caption{Hard case $\rho_s/\rho_f=0.1$, fluid $Q_3$, $t\in[0,3]$~s ($380$ adaptive steps), per time
+step: states, tangent and adjoint solves; unc.: unconverged steps. Recycled inverses and model
+steps in all runs; GN, LM, TR on the normal equations. Wall times of different batches (in
+brackets: range over two batches) differ by up to $40\%$ through the load of the machine; GN, LM,
+TR, SD and L-BFGS each from one batch, secant and IN from several (compare the counts).}\label{tab:hard}
+\begin{tabular}{llccccc}
+\toprule
+method & variant & wall & states & $S$ & $S^*$ & unc.\\
+\midrule
+secant & recycled & [8.6, 12.8]~s & 5.01 & -- & -- & 2\\
+ & + coarse space & 7.4~s & 3.91 & -- & -- & 0\\
+IN & recycled & [10.1, 13.1]~s & 2.58 & 4.34 & -- & 0\\
+ & + coarse space & 13.4~s & 2.49 & 3.98 & -- & 0\\
+GN & limited-memory preconditioner & 53.2~s & 3.16 & 6.87 & 8.91 & 0\\
+ & initial matrix $PP^*$ & 45.3~s & 3.01 & 3.52 & 5.42 & 0\\
+LM & limited-memory preconditioner & 64.6~s & 3.14 & 8.51 & 8.51 & 0\\
+ & initial matrix $PP^*$ & 47.6~s & 3.01 & 5.46 & 5.46 & 0\\
+TR & Steihaug--Toint CG & 326.4~s & 3.88 & 83.16 & 85.92 & 0\\
+ & preconditioned & 87.6~s & 3.18 & 6.88 & 8.95 & 0\\
+ & preconditioned, initial matrix $PP^*$ & 56.0~s & 3.01 & 3.58 & 5.47 & 0\\
+SD & $HH_A$ & 27.9~s & 4.07 & 2.96 & 2.96 & 0\\
+ & subspace minimisation & 25.9~s & 3.75 & 2.63 & 2.63 & 0\\
+L-BFGS & $HH_A$ & 26.2~s & 3.66 & 2.55 & 2.55 & 0\\
+ & subspace minimisation & 27.1~s & 3.83 & 2.70 & 2.70 & 0\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{FSI2.} On the start-up of FSI2 (fluid $Q_3$ refined once, $t\in[0,15]$~s, one batch,
+\cref{tab:fsi2_prec}) every method needs $1.71$--$1.80$ states per step, $0.6$--$0.7$ of them for the model step
+without derivatives that every solve tries first. The coarse space again reduces the tangent
+and adjoint solves of GN and LM by a third and those of TR by a factor $5$ together with the
+preconditioned Steihaug CG, but the wall times of the derivative-based methods change by at most
+$17\%$, because the states dominate. The secant method needs $1.71$ instead of $1.74$ states; its $27\%$ shorter wall time is
+mostly the load of the machine. All runs deviate by at most $3.4\cdot10^{-4}$ from the secant
+method.
+
+\begin{table}[ht]\centering
+\caption{FSI2, fluid $Q_3$ refined once, $t\in[0,15]$~s ($6635$ steps), per time step: states,
+tangent and adjoint solves. Recycled inverses and model steps in all runs; GN, LM, TR on the normal
+equations. TR in a second batch; L-BFGS with coarse space repeated alone (wall time not
+comparable).}\label{tab:fsi2_prec}
+\begin{tabular}{lcccc|cccc}
+\toprule
+& \multicolumn{4}{c|}{recycled inverses} & \multicolumn{4}{c}{+ coarse space}\\
+method & wall & states & $S$ & $S^*$ & wall & states & $S$ & $S^*$\\
+\midrule
+secant & 297~s & 1.74 & -- & -- & 218~s & 1.71 & -- & --\\
+IN & 312~s & 1.76 & 0.43 & -- & 278~s & 1.75 & 0.45 & --\\
+GN & 427~s & 1.79 & 0.41 & 0.52 & 408~s & 1.77 & 0.27 & 0.36\\
+LM & 428~s & 1.79 & 0.51 & 0.51 & 431~s & 1.77 & 0.33 & 0.33\\
+TR, Steihaug--Toint & 610~s & 1.80 & 1.35 & 1.55 & & & & \\
+TR, preconditioned & 522~s & 1.78 & 0.40 & 0.51 & 504~s & 1.78 & 0.26 & 0.35\\
+SD & 330~s & 1.80 & 0.11 & 0.11 & 336~s & 1.80 & 0.11 & 0.11\\
+L-BFGS & 318~s & 1.79 & 0.11 & 0.11 & -- & 1.79 & 0.11 & 0.11\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Steepest descent and L-BFGS.} Used as initial inverse Hessian, $PP^*$ slows L-BFGS down
+and lets SD diverge in the hard case: it is exact only on $\operatorname{span}Z$, while $HH_A$ of
+the recycled pairs is a good approximation of $(S^*S)^{-1}$ everywhere the pairs reach. The gradient
+methods therefore ignore the coarse space. (In a first version L-BFGS took $PP^*$ instead of the
+Cauchy step in its first iteration; then no tangent was ever solved, the recycled inverse was never
+built, and L-BFGS needed $18$ states per step on FSI2.) The remaining cost of SD and L-BFGS is
+structural: each iteration costs a state, a tangent and an adjoint and advances along one
+direction, so that in the first second of the hard case SD needs about $3.8$ iterations per step
+to reduce the mismatch to $10^4$ times the tolerance, where TR needs $1.2$. A step that minimises the Gauss--Newton model on the
+span of the accepted steps of the solve (secant pairs $(s_j,m(g+s_j)-m(g))$, exact also for the
+nonlinear mismatch) and of the new direction (tangent pair $(d,Sd)$),
+\[
+  \min_c\tfrac12\big\|m+[\Delta M,\,Sd]\,c\big\|_A^2,
+\]
+turns SD into a GCR-type method at the same cost per iteration
+(\code{GradientSubspaceMinimization}); it saves $10\%$ of the solves of SD in the hard case and
+nothing on FSI2 or for L-BFGS, also when secant pairs of large steps are excluded
+(\code{GradientSubspaceLocality}), and is off by default. Fewer outer iterations would require inner
+iterations on the model, i.e.\ GN or TR.
+
 %=================================================================================================
 \section{Conclusions and outlook}\label{sec:conclusions}
 %=================================================================================================
@@ -3404,6 +3635,21 @@ method, and are identical (GN in the Krylov subspace is IN); the multi-secant mo
 ingredient, helps on FSI2 and costs $5$--$7\%$ on FSI3. The optimisation methods proper (GN, LM,
 TR on the normal equations) cost $4.5$ to $16$ times the secant method, as predicted by the squared
 condition number.
+\item The interface Jacobian of the native formulation is Dirichlet--Neumann written as an
+operator, $S=I+\Sigma_f\Sigma_s^{-1}$ (\cref{sec:preconditioning}): real eigenvalues $\ge1$, a
+cluster at one (most of the structure trace is invisible to the fluid) and a few added-mass
+outliers whose size grows like $1/\Delta t$ and $\rho_f/\rho_s$ and does not depend on the mesh.
+Neumann--Neumann and FETI preconditioners with constant weights are unbounded on this spectrum;
+the adaptive coarse spaces of GenEO/adaptive BDDC reduce here to the few outlier eigenvectors, which
+a matrix-free subspace iteration finds with $48$ tangent solves and which change slowly. Sixteen
+vectors bring $\kappa_{\M}$ to $1.0$--$1.7$. Without recycled inverses they speed up GN and L-BFGS
+up to $17$ times; with the recycled inverses, which learn the same modes, they remain useful for
+the normal equations (half the tangent solves of GN in the hard case $\rho_s/\rho_f=0.1$) and the
+secant method (no unconverged steps). The trust-region method had an unpreconditioned Steihaug CG;
+preconditioned like GN, with the trust region in the norm of the inverse preconditioner, it needs
+$23$ times fewer tangent solves in the hard case and is as cheap as GN. SD and L-BFGS advance along
+one direction per state and are not improved by the coarse space or by a subspace minimisation
+over the steps of the solve.
 \end{enumerate}
 Open points are the source of the energy that feeds the high-frequency mode of
 \cref{sec:instabilities}, which the dissipation of the structure integrator only suppresses, the
@@ -3412,7 +3658,7 @@ periodic regime as a test case for the initial Jacobians of
 (\cref{sec:fast_periodic}), a face-wise $L^2$ projection of the flux traction that makes the force
 transfer exactly conservative, the stagnated steps of the secant method with the flux traction at
 polynomial degree $8$ (\cref{sec:final_comparison}), a test case on which the per-step problem is strongly nonlinear
-(implicit geometry with shape derivatives, implicit convection, larger time steps), fewer tangent solves for the derivative-based methods, a cheap
+(implicit geometry with shape derivatives, implicit convection, larger time steps), fewer tangent solves for the derivative-based methods, the coarse space of \cref{sec:preconditioning} with many subdomains (three dimensions, parallel structure), a cheap
 preconditioner of the convective velocity block that would allow larger time steps
 (\cref{sec:fast_fluid}), the sensitivity
 of the secant method to the fluid tolerance on the limit cycle (\cref{sec:fast_tolerances}), the
@@ -3572,6 +3818,20 @@ repository; it reads \code{output/<run>/run.log}).
 The variants discussed in \cref{sec:diagnosis} that were removed from the code (constraint-only
 stabilisation, Robin penalty) are preserved in \code{snapshot_all_variants.patch}.
 
+For \cref{sec:preconditioning}: parameters \code{SpectrumDiagnosticsInterval} and
+\code{SpectrumDiagnosticsFile} (dense $S$ and $\M$, read by
+\code{doc/fsi_optimal_control/coarse_space_offline.py} for \cref{tab:coarse_offline}), \code{Preconditioner = CoarseSpace}
+with \code{CoarseSpaceDimension} ($16$), \code{CoarseSpaceIterations} ($2$) and
+\code{CoarseSpaceRebuildInterval}, \code{QNInitialJacobian = Preconditioner},
+\code{RecycledInitialPreconditioner} (coarse space as $H_0$ of the recycled inverses and as initial
+matrix of the limited-memory CG preconditioner), \code{TRPreconditioned} (default \code{true}),
+\code{GradientSubspaceMinimization} and \code{GradientSubspaceLocality} (off), and the application
+parameters \code{StructureDensity} and \code{TimeStepSize}. Inputs in
+\code{doc/fsi_optimal_control/inputs}: \code{sp_*} (\cref{tab:spectrum}), \code{spd_*}
+(\cref{tab:coarse_offline}), \code{cs16_*} (coarse
+space without recycled inverses), \code{hd_*}, \code{pp_*}, \code{gh_*} (\cref{tab:hard}),
+\code{fl_*}, \code{gl_*} (\cref{tab:fsi2_prec}).
+
 \paragraph{Inputs.} \code{input_optimal_control.json} (native traction, \cref{alg:qn}) and
 \code{input_optimal_control_velocity.json} (velocity mismatch, fluid control, interface Newton
 with frozen Jacobian and derivative verification) in
@@ -3607,12 +3867,22 @@ procedure versus a monolithic procedure in fluid--structure interaction. \emph{C
 \bibitem{GunzburgerHeinkenschlossLee2000} M.~D.~Gunzburger, M.~Heinkenschloss, H.~K.~Lee. Solution
 of elliptic partial differential equations by an optimization-based domain decomposition method.
 \emph{Appl.\ Math.\ Comput.} 113 (2000).
+\bibitem{MandelSousedik2007} J.~Mandel, B.~Soused\'ik. Adaptive selection of face coarse degrees
+of freedom in the BDDC and the FETI-DP iterative substructuring methods. \emph{Comput. Methods
+Appl. Mech. Engrg.} 196 (2007) 1389--1399.
+\bibitem{MoralesNocedal2000} J.~L.~Morales, J.~Nocedal. Automatic preconditioning by limited
+memory quasi-Newton updating. \emph{SIAM J. Optim.} 10 (2000) 1079--1096.
 \bibitem{NocedalWright2006} J.~Nocedal, S.~J.~Wright. \emph{Numerical Optimization}, 2nd ed.,
 Springer, 2006.
+\bibitem{SpillaneEtAl2014} N.~Spillane, V.~Dolean, P.~Hauret, F.~Nataf, C.~Pechstein,
+R.~Scheichl. Abstract robust coarse spaces for systems of PDEs via generalized eigenproblems in the
+overlaps. \emph{Numer. Math.} 126 (2014) 741--770.
 \bibitem{Stenberg1995} R.~Stenberg. On some techniques for approximating boundary conditions in the
 finite element method. \emph{J.\ Comput.\ Appl.\ Math.} 63 (1995).
 \bibitem{Steihaug1983} T.~Steihaug. The conjugate gradient method and trust regions in large scale
 optimization. \emph{SIAM J.\ Numer.\ Anal.} 20 (1983).
+\bibitem{ToselliWidlund2005} A.~Toselli, O.~Widlund. \emph{Domain Decomposition Methods ---
+Algorithms and Theory}. Springer, 2005.
 \bibitem{TurekHron2006} S.~Turek, J.~Hron. Proposal for numerical benchmarking of fluid--structure
 interaction between an elastic object and laminar incompressible flow. In: \emph{Fluid--Structure
 Interaction}, Springer, 2006.

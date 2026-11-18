@@ -811,7 +811,9 @@ Driver<dim, Number>::setup_optimal_control()
               "None" :
               (oc_parameters.preconditioner == OptimalControl::Preconditioner::FrozenJacobian ?
                  "FrozenJacobian" :
-                 "StructureDirichletToNeumann"))
+                 (oc_parameters.preconditioner == OptimalControl::Preconditioner::CoarseSpace ?
+                    "CoarseSpace" :
+                    "StructureDirichletToNeumann")))
         << std::endl
         << "  metric eigenvalue range (l^2 K + M, M): " << oc_problem->metric_eigenvalue_range.first
         << " ... " << oc_problem->metric_eigenvalue_range.second << std::endl;
@@ -895,7 +897,8 @@ Driver<dim, Number>::solve_optimal_control() const
 
     oc_problem->begin_time_step();
 
-    if(oc_parameters.preconditioner == OptimalControl::Preconditioner::FrozenJacobian)
+    if(oc_parameters.preconditioner == OptimalControl::Preconditioner::FrozenJacobian or
+       oc_parameters.preconditioner == OptimalControl::Preconditioner::CoarseSpace)
     {
       bool update = (oc_time_steps % oc_parameters.preconditioner_update_interval == 0);
       // the frozen Jacobian depends on the time step size through the single-field operators
@@ -1024,6 +1027,10 @@ Driver<dim, Number>::solve_optimal_control() const
       oc_last_control = control;
       print_interface_forces();
     }
+
+    if(oc_parameters.spectrum_diagnostics_interval > 0 and
+       (oc_time_steps + 1) % oc_parameters.spectrum_diagnostics_interval == 0)
+      oc_problem->spectrum_diagnostics(pcout, fluid->time_integrator->get_next_time());
 
     // the load of the returned control becomes the load of t_n (mid-point load)
     oc_problem->finish_time_step();

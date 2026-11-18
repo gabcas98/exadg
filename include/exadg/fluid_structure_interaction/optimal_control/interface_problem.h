@@ -35,10 +35,12 @@
 // C/C++
 #include <array>
 #include <deque>
+#include <fstream>
 #include <functional>
 #include <iomanip>
 #include <random>
 #include <set>
+#include <sstream>
 
 // ExaDG
 #include <exadg/fluid_structure_interaction/optimal_control/parameters.h>
@@ -305,6 +307,16 @@ public:
     tangent_difference_tolerance_factor = param.tangent_difference_tolerance_factor;
     preconditioner                      = param.preconditioner;
     preconditioner_tolerance            = param.preconditioner_tolerance;
+    coarse_dimension                    = param.coarse_space_dimension;
+    coarse_iterations                   = param.coarse_space_iterations;
+    coarse_rebuild_interval             = param.coarse_space_rebuild_interval;
+    if(preconditioner == Preconditioner::CoarseSpace)
+      AssertThrow(operator_coupled.get() and control_space == ControlSpace::Structure and
+                    formulation == Formulation::NativeTraction,
+                  dealii::ExcMessage(
+                    "Preconditioner = CoarseSpace requires the native formulation, "
+                    "the structure control space and the coupled fluid solver "
+                    "(adjoint)."));
 
     AssertThrow(param.control_degree_reduction == 0 or control_space == ControlSpace::Fluid,
                 dealii::ExcMessage(
@@ -327,6 +339,7 @@ public:
     double const s_c = exponent(param.control_metric);
 
     use_dense_metrics = (s_m != 0.0 or s_c != 0.0);
+    spectrum_file     = param.spectrum_diagnostics_file;
 
     AssertThrow(control_space == ControlSpace::Structure or
                   (not use_dense_metrics and
@@ -702,12 +715,23 @@ public:
   bool
   has_normal_preconditioner() const
   {
-    return preconditioner == Preconditioner::FrozenJacobian and not use_dense_metrics;
+    return (preconditioner == Preconditioner::FrozenJacobian or
+            preconditioner == Preconditioner::CoarseSpace) and
+           not use_dense_metrics;
   }
 
   void
   apply_normal_preconditioner(VectorType & dst, VectorType const & src) const
   {
+    if(preconditioner == Preconditioner::CoarseSpace)
+    {
+      // (S^* S)^{-1} ~ P P^*
+      VectorType tmp;
+      initialize_vector(tmp);
+      apply_coarse_adjoint(tmp, src);
+      apply_coarse(dst, tmp);
+      return;
+    }
     if(jacobian_needs_update)
       assemble_frozen_jacobian();
     VectorType tmp;
@@ -722,9 +746,24 @@ public:
     scatter(dst, x);
   }
 
+  // dst = P^* src (M-adjoint of the preconditioner; CoarseSpace only)
+  void
+  apply_preconditioner_adjoint(VectorType & dst, VectorType const & src) const
+  {
+    AssertThrow(preconditioner == Preconditioner::CoarseSpace,
+                dealii::ExcMessage("The adjoint of the preconditioner is implemented for "
+                                   "Preconditioner = CoarseSpace."));
+    apply_coarse_adjoint(dst, src);
+  }
+
   void
   apply_preconditioner(VectorType & dst, VectorType const & src) const
   {
+    if(preconditioner == Preconditioner::CoarseSpace)
+    {
+      apply_coarse(dst, src);
+      return;
+    }
     if(preconditioner == Preconditioner::FrozenJacobian)
     {
       if(jacobian_needs_update)
@@ -744,6 +783,164 @@ public:
     apply_structure_steklov_poincare(sigma, src);
     solve_mass(structure_space, dst, sigma);
     dst *= -1.0 / velocity_factor();
+  }
+
+  /*
+   * Spectrum of the interface operator S = dm/dg at the current state
+   * (SpectrumDiagnosticsInterval): dense S from one tangent per interface dof, singular values in
+   * the metric of the mismatch
+   * (||S||_M = ||M^{1/2} S M^{-1/2}||_2), eigenvalues of S, and the contraction of the
+   * Dirichlet-Neumann iteration g <- g - omega m(g), i.e. of I - omega S, unrelaxed and with the
+   * best constant relaxation. The tangents also feed the histories of the derivative-based methods
+   * (diagnostic runs only).
+   */
+  void
+  spectrum_diagnostics(dealii::ConditionalOStream const & pcout, double const time)
+  {
+    AssertThrow(control_space == ControlSpace::Structure and not use_dense_metrics,
+                dealii::ExcMessage("SpectrumDiagnostics: structure control space, L2 metrics."));
+    if(n_dense == 0)
+      setup_interface_numbering();
+    unsigned int const n = n_dense;
+
+    dealii::Timer              timer;
+    dealii::FullMatrix<double> S(n, n), M(n, n);
+    VectorType                 e, Se, Me;
+    initialize_vector(e);
+    initialize_vector(Se);
+    initialize_vector(Me);
+    for(unsigned int k = 0; k < n; ++k)
+    {
+      e = 0.0;
+      for(auto const & [local, position] : owned_positions)
+        if(position == k)
+          e.local_element(local) = 1.0;
+      apply_S(Se, e);
+      apply_mass(control(), Me, e);
+      dealii::Vector<double> const s_col = gather(Se), m_col = gather(Me);
+      for(unsigned int i = 0; i < n; ++i)
+      {
+        S(i, k) = s_col[i];
+        M(i, k) = m_col[i];
+      }
+    }
+
+    // dense matrices for offline studies (SpectrumDiagnosticsFile): S and M, row by row
+    if(not spectrum_file.empty() and dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)
+    {
+      std::ostringstream name;
+      name << spectrum_file << "_" << std::setw(6) << std::setfill('0') << spectrum_count << ".txt";
+      std::ofstream file(name.str());
+      file << std::setprecision(17) << std::scientific << "# t = " << time << " n = " << n
+           << " dt = " << fluid->time_integrator->get_time_step_size() << "\n";
+      for(auto const * A : {&S, &M})
+        for(unsigned int i = 0; i < n; ++i)
+        {
+          for(unsigned int j = 0; j < n; ++j)
+            file << (*A)(i, j) << (j + 1 < n ? " " : "\n");
+        }
+    }
+    ++spectrum_count;
+
+    // M^{1/2}, M^{-1/2} from the eigen-decomposition of the (symmetric) mass matrix
+    dealii::LAPACKFullMatrix<double> mass(n, n), identity(n, n);
+    for(unsigned int i = 0; i < n; ++i)
+      for(unsigned int j = 0; j < n; ++j)
+      {
+        mass(i, j)     = 0.5 * (M(i, j) + M(j, i));
+        identity(i, j) = (i == j) ? 1.0 : 0.0;
+      }
+    std::vector<dealii::Vector<double>> V(n, dealii::Vector<double>(n));
+    mass.compute_generalized_eigenvalues_symmetric(identity, V);
+    dealii::FullMatrix<double> M_half(n, n), M_half_inv(n, n);
+    for(unsigned int k = 0; k < n; ++k)
+    {
+      double const mu = mass.eigenvalue(k).real();
+      for(unsigned int i = 0; i < n; ++i)
+        for(unsigned int j = 0; j < n; ++j)
+        {
+          M_half(i, j) += std::sqrt(mu) * V[k][i] * V[k][j];
+          M_half_inv(i, j) += V[k][i] * V[k][j] / std::sqrt(mu);
+        }
+    }
+    dealii::FullMatrix<double> tmp(n, n), B(n, n);
+    M_half.mmult(tmp, S);
+    tmp.mmult(B, M_half_inv);
+
+    auto const singular_values = [n](dealii::FullMatrix<double> const & A) {
+      dealii::LAPACKFullMatrix<double> L(n, n);
+      L = A;
+      L.compute_svd();
+      std::vector<double> sv(n);
+      for(unsigned int i = 0; i < n; ++i)
+        sv[i] = L.singular_value(i);
+      std::sort(sv.begin(), sv.end());
+      return sv;
+    };
+    std::vector<double> const  sv = singular_values(B);
+    dealii::FullMatrix<double> I_minus_B(n, n);
+    for(unsigned int i = 0; i < n; ++i)
+      for(unsigned int j = 0; j < n; ++j)
+        I_minus_B(i, j) = (i == j ? 1.0 : 0.0) - B(i, j);
+    double const norm_T = singular_values(I_minus_B).back();
+
+    dealii::LAPACKFullMatrix<double> Sl(n, n);
+    Sl = S;
+    Sl.compute_eigenvalues();
+    std::vector<std::complex<double>> lambda(n);
+    for(unsigned int i = 0; i < n; ++i)
+      lambda[i] = Sl.eigenvalue(i);
+    double abs_min = 1e300, abs_max = 0.0, re_min = 1e300, im_max = 0.0, rho_dn = 0.0;
+    for(auto const & l : lambda)
+    {
+      abs_min = std::min(abs_min, std::abs(l));
+      abs_max = std::max(abs_max, std::abs(l));
+      re_min  = std::min(re_min, l.real());
+      im_max  = std::max(im_max, std::abs(l.imag()));
+      rho_dn  = std::max(rho_dn, std::abs(1.0 - l));
+    }
+    // best constant relaxation omega in (0, 2]
+    double omega_best = 1.0, rho_best = rho_dn;
+    for(unsigned int i = 1; i <= 2000; ++i)
+    {
+      double const omega = 0.001 * i;
+      double       rho   = 0.0;
+      for(auto const & l : lambda)
+        rho = std::max(rho, std::abs(1.0 - omega * l));
+      if(rho < rho_best)
+      {
+        rho_best   = rho;
+        omega_best = omega;
+      }
+    }
+
+    pcout << std::scientific << std::setprecision(4) << "OC spectrum: t = " << time << ", n = " << n
+          << ", sigma_M = [" << sv.front() << ", " << sv.back()
+          << "], kappa_M = " << sv.back() / sv.front() << ", |lambda| = [" << abs_min << ", "
+          << abs_max << "], min Re lambda = " << re_min << ", max |Im lambda| = " << im_max
+          << ", rho(I-S) = " << rho_dn << ", ||I-S||_M = " << norm_T
+          << ", omega_opt = " << std::defaultfloat << omega_best << std::scientific
+          << ", rho(I-omega_opt S) = " << rho_best << std::defaultfloat << " (" << timer.wall_time()
+          << " s)" << std::endl;
+    // number of eigenvalues away from the cluster at 1 (the Krylov and secant methods need about
+    // one iteration per outlier) and the sorted real parts
+    unsigned int        n_01 = 0, n_1 = 0, n_10 = 0;
+    std::vector<double> re(n);
+    for(unsigned int i = 0; i < n; ++i)
+    {
+      double const d = std::abs(lambda[i] - 1.0);
+      n_01 += (d > 0.1);
+      n_1 += (d > 1.0);
+      n_10 += (d > 10.0);
+      re[i] = lambda[i].real();
+    }
+    std::sort(re.begin(), re.end(), std::greater<double>());
+    pcout << "OC spectrum outliers: |lambda-1| > 0.1: " << n_01 << ", > 1: " << n_1
+          << ", > 10: " << n_10 << std::endl
+          << "OC spectrum Re lambda:" << std::setprecision(4) << std::scientific;
+    for(auto const r : re)
+      pcout << " " << r;
+    pcout << std::defaultfloat << std::endl;
   }
 
   /*
@@ -896,6 +1093,7 @@ public:
   void
   begin_time_step()
   {
+    ++coarse_steps_since_build;
     evaluations_in_step   = 0;
     prediction_valid      = false;
     cold_initial_residual = 0.0;
@@ -1530,6 +1728,8 @@ public:
       return H_previous.m() > 0;
     if(type == QNInitialJacobian::FrozenJacobian)
       return preconditioner == Preconditioner::FrozenJacobian;
+    if(type == QNInitialJacobian::Preconditioner)
+      return preconditioner != Preconditioner::None;
     return false;
   }
 
@@ -1538,7 +1738,7 @@ public:
                                  VectorType const &      src,
                                  QNInitialJacobian const type) const
   {
-    if(type == QNInitialJacobian::FrozenJacobian)
+    if(type == QNInitialJacobian::FrozenJacobian or type == QNInitialJacobian::Preconditioner)
     {
       apply_preconditioner(dst, src);
       return;
@@ -3596,6 +3796,138 @@ private:
   }
 
   /*
+   * Coarse space of the added-mass modes (Preconditioner = CoarseSpace).
+   * S - I = (fluid Dirichlet-to-Neumann) (structure Neumann-to-Dirichlet) has a few large
+   * eigenvalues (added mass, growing like 1/dt and 1/rho_s) and a cluster at zero; its dominant
+   * invariant subspace is approximated by subspace iteration from a fixed start (Z, M-orthonormal),
+   * which depends mainly on the geometry of the interface and is kept over many time steps. The
+   * multiplicative coarse correction
+   *   P x = x + Z E^{-1} (Z - U)^T M x,   U = S^* Z,   E = Z^T M S Z = U^T M Z,
+   * makes S P exact (= I) on span(Z) for an invariant span(Z) and needs no tangent per application;
+   * P^* y = y + (Z - U) E^{-T} Z^T M y. U and E follow the time step (k adjoint solves).
+   */
+  void
+  orthonormalize_coarse(std::vector<VectorType> & Z) const
+  {
+    std::vector<VectorType> Q;
+    for(auto & z : Z)
+    {
+      double const original = std::sqrt(l2_inner_product(z, z));
+      for(unsigned int pass = 0; pass < 2; ++pass)
+        for(auto const & q : Q)
+          z.add(-l2_inner_product(q, z), q);
+      double const norm = std::sqrt(l2_inner_product(z, z));
+      if(norm > 1.e-10 * original and norm > 0.0)
+      {
+        z *= 1.0 / norm;
+        Q.push_back(z);
+      }
+    }
+    Z = std::move(Q);
+  }
+
+  void
+  build_coarse_space() const
+  {
+    unsigned int const k = coarse_dimension;
+    coarse_Z.assign(k, VectorType());
+    for(unsigned int j = 0; j < k; ++j)
+    {
+      initialize_vector(coarse_Z[j]);
+      VectorType const & mask = control().mask;
+      for(unsigned int i = 0; i < coarse_Z[j].locally_owned_size(); ++i)
+      {
+        double const global = double(mask.get_partitioner()->local_to_global(i));
+        coarse_Z[j].local_element(i) =
+          mask.local_element(i) * std::sin(0.7071 * global * (j + 1) + 0.3 * j + 1.0);
+      }
+    }
+    orthonormalize_coarse(coarse_Z);
+    VectorType Sz;
+    initialize_vector(Sz);
+    for(unsigned int it = 0; it < coarse_iterations; ++it)
+    {
+      for(auto & z : coarse_Z)
+      {
+        apply_S(Sz, z);
+        Sz.add(-1.0, z); // (S - I) z
+        z = Sz;
+        ++preconditioner_setup_solves;
+      }
+      orthonormalize_coarse(coarse_Z);
+    }
+    coarse_steps_since_build = 0;
+    coarse_needs_refresh     = true;
+    ++coarse_builds;
+  }
+
+  void
+  refresh_coarse_space() const
+  {
+    if(coarse_Z.empty() or
+       (coarse_rebuild_interval > 0 and coarse_steps_since_build >= coarse_rebuild_interval))
+      build_coarse_space();
+    unsigned int const k = coarse_Z.size();
+    coarse_U.assign(k, VectorType());
+    for(unsigned int j = 0; j < k; ++j)
+    {
+      initialize_vector(coarse_U[j]);
+      apply_S_adjoint(coarse_U[j], coarse_Z[j]);
+      ++preconditioner_setup_solves;
+    }
+    coarse_E.reinit(k, k);
+    for(unsigned int i = 0; i < k; ++i)
+      for(unsigned int j = 0; j < k; ++j)
+        coarse_E(i, j) = l2_inner_product(coarse_U[i], coarse_Z[j]); // z_i^T M S z_j
+    coarse_E.compute_lu_factorization();
+    coarse_needs_refresh  = false;
+    jacobian_needs_update = false;
+    jacobian_time_step    = fluid->time_integrator->get_time_step_size();
+    ++preconditioner_assemblies;
+  }
+
+  // dst = P src = src + Z E^{-1} (Z - U)^T M src
+  void
+  apply_coarse(VectorType & dst, VectorType const & src) const
+  {
+    if(coarse_needs_refresh or jacobian_needs_update)
+      refresh_coarse_space();
+    unsigned int const k = coarse_Z.size();
+    VectorType         Msrc;
+    initialize_vector(Msrc);
+    apply_mass(control(), Msrc, src);
+    dealii::Vector<double> c(k);
+    for(unsigned int i = 0; i < k; ++i)
+      c[i] = coarse_Z[i] * Msrc - coarse_U[i] * Msrc;
+    coarse_E.solve(c);
+    dst = src;
+    for(unsigned int i = 0; i < k; ++i)
+      dst.add(c[i], coarse_Z[i]);
+  }
+
+  // dst = P^* src = src + (Z - U) E^{-T} Z^T M src
+  void
+  apply_coarse_adjoint(VectorType & dst, VectorType const & src) const
+  {
+    if(coarse_needs_refresh or jacobian_needs_update)
+      refresh_coarse_space();
+    unsigned int const k = coarse_Z.size();
+    VectorType         Msrc;
+    initialize_vector(Msrc);
+    apply_mass(control(), Msrc, src);
+    dealii::Vector<double> c(k);
+    for(unsigned int i = 0; i < k; ++i)
+      c[i] = coarse_Z[i] * Msrc;
+    coarse_E.solve(c, true /* transposed */);
+    dst = src;
+    for(unsigned int i = 0; i < k; ++i)
+    {
+      dst.add(c[i], coarse_Z[i]);
+      dst.add(-c[i], coarse_U[i]);
+    }
+  }
+
+  /*
    * Dense Jacobian S in the coordinates of the interface dofs, one tangent solve per column,
    * linearized at the current state; LU factorization for the FrozenJacobian preconditioner.
    */
@@ -3884,6 +4216,8 @@ private:
   // dense Sobolev metrics on the interface dofs
   bool                                               use_dense_metrics = false;
   unsigned int                                       n_dense           = 0;
+  std::string                                        spectrum_file;
+  unsigned int                                       spectrum_count = 0;
   std::vector<std::pair<unsigned int, unsigned int>> owned_positions;
   dealii::FullMatrix<double>                         A_dense, G_dense, pre_dense, post_dense;
 
@@ -3955,6 +4289,15 @@ private:
 
   // FrozenJacobian preconditioner
   mutable bool jacobian_needs_update = true;
+  // Preconditioner = CoarseSpace
+  unsigned int                             coarse_dimension        = 16;
+  unsigned int                             coarse_iterations       = 2;
+  unsigned int                             coarse_rebuild_interval = 0;
+  mutable std::vector<VectorType>          coarse_Z, coarse_U;
+  mutable dealii::LAPACKFullMatrix<double> coarse_E;
+  mutable bool                             coarse_needs_refresh     = true;
+  mutable unsigned int                     coarse_steps_since_build = 0;
+  mutable unsigned int                     coarse_builds            = 0;
 
 public:
   // time step size of the last assembly of the frozen Jacobian and number of assemblies
