@@ -31,6 +31,8 @@ double const FLUID_VISCOSITY = 3.0e-6;
 double const FLUID_DENSITY   = 1.0e3;
 
 double const DENSITY_STRUCTURE        = 1.2e3;
+// Application/StructureDensity (> 0 overrides DENSITY_STRUCTURE, density ratio studies)
+inline double DENSITY_STRUCTURE_OVERRIDE = 0.0;
 double const POISSONS_RATIO_STRUCTURE = 0.3;
 double const YOUNGS_MODULUS_STRUCTURE = 3.0e5;
 
@@ -112,10 +114,81 @@ public:
                       Patterns::Enum<IncNS::TemporalDiscretization>(),
                       false);
     prm.leave_subsection();
+
+    prm.enter_subsection("Application");
+    {
+      prm.add_parameter("EndTime",
+                        end_time,
+                        "End time of the simulation.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("TimeStepSize",
+                        time_step_size,
+                        "Constant time step size.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("OutputInterval",
+                        output_interval,
+                        "Time interval of the vtu output (0: END_TIME / 20).",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("CoupledFluidSolver",
+                        coupled_fluid_solver,
+                        "Coupled fluid solver with explicit convection and the divergence "
+                        "formulation of the viscous term (required by FSI/AccelerationMethod = "
+                        "OptimalControl, optional for Dirichlet-Neumann schemes).",
+                        dealii::Patterns::Bool());
+      prm.add_parameter("CoupledSolverAbsTol",
+                        coupled_abs_tol,
+                        "Absolute tolerance of the linear solver of the coupled fluid solver.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("CoupledSolverRelTol",
+                        coupled_rel_tol,
+                        "Relative tolerance of the linear solver of the coupled fluid solver.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("CoupledVelocityPreconditioner",
+                        coupled_velocity_preconditioner,
+                        "Preconditioner of the velocity block of the coupled fluid solver.",
+                        Patterns::Enum<IncNS::MomentumPreconditioner>());
+      prm.add_parameter("CoupledSchurPreconditioner",
+                        coupled_schur_preconditioner,
+                        "Preconditioner of the Schur complement of the coupled fluid solver.",
+                        Patterns::Enum<IncNS::SchurComplementPreconditioner>());
+      prm.add_parameter("CoupledSchurDirect",
+                        coupled_schur_direct,
+                        "Coupled fluid solver: Laplace operator of the Schur-complement "
+                        "preconditioner inverted by a sparse direct solver instead of multigrid.",
+                        dealii::Patterns::Bool());
+      prm.add_parameter("FluidSolverRelTol",
+                        fluid_rel_tol,
+                        "Relative tolerance of the linear solvers of the projection-type fluid "
+                        "schemes.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("ALESolverRelTol",
+                        ale_rel_tol,
+                        "Relative tolerance of the linear solver of the ALE mesh motion.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("StructureDensity",
+                        DENSITY_STRUCTURE_OVERRIDE,
+                        "Density of the structure; 0: default value.",
+                        dealii::Patterns::Double(0.0));
+    }
+    prm.leave_subsection();
     // clang format on
   }
 
 private:
+  double       end_time             = END_TIME;
+  double       time_step_size       = TIME_STEP_SIZE;
+  double       output_interval      = 0.0;
+  bool         coupled_fluid_solver = false;
+  double       coupled_abs_tol      = 1.e-14;
+  double       coupled_rel_tol      = 1.e-8;
+  bool         coupled_schur_direct = false;
+  double       fluid_rel_tol        = REL_TOL;
+  double       ale_rel_tol          = REL_TOL;
+  IncNS::MomentumPreconditioner coupled_velocity_preconditioner =
+    IncNS::MomentumPreconditioner::InverseMassMatrix;
+  IncNS::SchurComplementPreconditioner coupled_schur_preconditioner =
+    IncNS::SchurComplementPreconditioner::PressureConvectionDiffusion;
+
   void
   set_parameters() final
   {
@@ -138,7 +211,7 @@ private:
 
     // PHYSICAL QUANTITIES
     param.start_time = 0.0;
-    param.end_time   = END_TIME;
+    param.end_time   = end_time;
     param.viscosity  = FLUID_VISCOSITY;
     param.density    = FLUID_DENSITY;
 
@@ -150,7 +223,7 @@ private:
     param.start_with_low_order            = true;
     param.adaptive_time_stepping          = false;
     param.calculation_of_time_step_size   = TimeStepCalculation::UserSpecified;
-    param.time_step_size                  = TIME_STEP_SIZE;
+    param.time_step_size                  = time_step_size;
     param.max_velocity                    = 1.0;
     param.cfl                             = 0.4;
     param.cfl_exponent_fe_degree_velocity = 1.5;
@@ -202,7 +275,8 @@ private:
     // PROJECTION METHODS
 
     // pressure Poisson equation
-    param.solver_data_pressure_poisson = SolverData(1000, ABS_TOL, REL_TOL, LinearSolver::CG, 100);
+    param.solver_data_pressure_poisson =
+      SolverData(1000, ABS_TOL, fluid_rel_tol, LinearSolver::CG, 100);
     param.preconditioner_pressure_poisson      = PreconditionerPressurePoisson::Multigrid;
     param.multigrid_data_pressure_poisson.type = MultigridType::cphMG;
     param.multigrid_data_pressure_poisson.smoother_data.smoother = MultigridSmoother::Chebyshev;
@@ -214,7 +288,7 @@ private:
     param.multigrid_data_pressure_poisson.coarse_problem.solver_data.rel_tol = 1.e-3;
 
     // projection step
-    param.solver_data_projection    = SolverData(1000, ABS_TOL, REL_TOL, LinearSolver::CG);
+    param.solver_data_projection    = SolverData(1000, ABS_TOL, fluid_rel_tol, LinearSolver::CG);
     param.preconditioner_projection = PreconditionerProjection::InverseMassMatrix;
 
     // HIGH-ORDER DUAL SPLITTING SCHEME
@@ -226,7 +300,8 @@ private:
 
     if(this->param.temporal_discretization == TemporalDiscretization::BDFDualSplitting)
     {
-      this->param.solver_data_momentum    = SolverData(1000, ABS_TOL, REL_TOL, LinearSolver::CG);
+      this->param.solver_data_momentum =
+        SolverData(1000, ABS_TOL, fluid_rel_tol, LinearSolver::CG);
       this->param.preconditioner_momentum = MomentumPreconditioner::InverseMassMatrix;
     }
 
@@ -283,6 +358,31 @@ private:
     // preconditioner Schur-complement block
     param.preconditioner_pressure_block =
       SchurComplementPreconditioner::PressureConvectionDiffusion;
+
+    // Traction-controlled coupling (optimal control): the fluid step has to be affine in the
+    // interface data with a symmetric saddle point matrix, and the natural boundary condition
+    // has to be the Cauchy traction.
+    if(coupled_fluid_solver)
+    {
+      param.temporal_discretization      = TemporalDiscretization::BDFCoupledSolution;
+      param.formulation_viscous_term     = FormulationViscousTerm::DivergenceFormulation;
+      param.treatment_of_convective_term = TreatmentOfConvectiveTerm::Explicit;
+      param.apply_penalty_terms_in_postprocessing_step = false;
+      param.solver_data_coupled =
+        SolverData(1e4, coupled_abs_tol, coupled_rel_tol, LinearSolver::FGMRES, 100);
+      param.preconditioner_velocity_block = coupled_velocity_preconditioner;
+      param.multigrid_operator_type_velocity_block = MultigridOperatorType::ReactionDiffusion;
+      param.multigrid_data_velocity_block.smoother_data.smoother = MultigridSmoother::Chebyshev;
+      param.multigrid_data_velocity_block.coarse_problem.solver  = MultigridCoarseGridSolver::CG;
+      param.multigrid_data_velocity_block.coarse_problem.preconditioner =
+        MultigridCoarseGridPreconditioner::AMG;
+      param.preconditioner_pressure_block  = coupled_schur_preconditioner;
+      param.direct_solve_of_pressure_block = coupled_schur_direct;
+      param.multigrid_data_pressure_block.type                  = MultigridType::cphMG;
+      param.multigrid_data_pressure_block.coarse_problem.solver = MultigridCoarseGridSolver::CG;
+      param.multigrid_data_pressure_block.coarse_problem.preconditioner =
+        MultigridCoarseGridPreconditioner::AMG;
+    }
   }
 
   void
@@ -462,7 +562,8 @@ private:
     // write output for visualization of results
     pp_data.output_data.time_control_data.is_active        = this->output_parameters.write;
     pp_data.output_data.time_control_data.start_time       = 0.0;
-    pp_data.output_data.time_control_data.trigger_interval = OUTPUT_INTERVAL_TIME;
+    pp_data.output_data.time_control_data.trigger_interval =
+      output_interval > 0.0 ? output_interval : OUTPUT_INTERVAL_TIME;
     pp_data.output_data.directory                 = this->output_parameters.directory + "vtu/";
     pp_data.output_data.filename                  = this->output_parameters.filename + "_fluid";
     pp_data.output_data.write_boundary_IDs        = true;
@@ -497,7 +598,7 @@ private:
     param.degree                 = this->param.mapping_degree;
 
     // SOLVER
-    param.solver_data    = SolverData(1e4, ABS_TOL, REL_TOL, LinearSolver::FGMRES, 100);
+    param.solver_data    = SolverData(1e4, ABS_TOL, ale_rel_tol, LinearSolver::FGMRES, 100);
     param.preconditioner = Preconditioner::Multigrid;
 
     param.multigrid_data.type                          = MultigridType::phMG;
@@ -654,7 +755,72 @@ public:
   {
   }
 
+  void
+  add_parameters(dealii::ParameterHandler & prm) final
+  {
+    StructureFSI::ApplicationBase<dim, Number>::add_parameters(prm);
+
+    prm.enter_subsection("Application");
+    {
+      prm.add_parameter("EndTime",
+                        end_time,
+                        "End time of the simulation.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("TimeStepSize",
+                        time_step_size,
+                        "Constant time step size.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("OutputInterval",
+                        output_interval,
+                        "Time interval of the vtu output (0: END_TIME / 20).",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("StructureDensity",
+                        DENSITY_STRUCTURE_OVERRIDE,
+                        "Density of the structure; 0: default value.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter(
+        "PullBackTraction",
+        pull_back_traction,
+        "Structure: pull back the (spatial) interface traction with the current "
+        "deformation. false is required by FSI/AccelerationMethod = OptimalControl.",
+        dealii::Patterns::Bool());
+      prm.add_parameter("SpectralRadius",
+                        spectral_radius,
+                        "Spectral radius of the generalized-alpha (Bossak) structure integrator.",
+                        dealii::Patterns::Double(0.0, 1.0));
+      prm.add_parameter("StructurePreconditioner",
+                        structure_preconditioner,
+                        "Preconditioner of the linear solver of the structure (Direct: sparse "
+                        "direct solver of the assembled matrix).",
+                        Patterns::Enum<Structure::Preconditioner>());
+      prm.add_parameter("StructurePreconditionerUpdate",
+                        structure_preconditioner_update,
+                        "Update of the structure preconditioner every ... time steps and Newton "
+                        "iterations (0: never, the preconditioner of the first solve is kept).",
+                        dealii::Patterns::Integer(0));
+      prm.add_parameter("StructureNewtonRelTol",
+                        structure_newton_rel_tol,
+                        "Relative tolerance of the Newton solver of the structure.",
+                        dealii::Patterns::Double(0.0));
+      prm.add_parameter("StructureLinearRelTol",
+                        structure_linear_rel_tol,
+                        "Relative tolerance of the linear solver of the structure.",
+                        dealii::Patterns::Double(0.0));
+    }
+    prm.leave_subsection();
+  }
+
 private:
+  double                    end_time                 = END_TIME;
+  double                    time_step_size           = TIME_STEP_SIZE;
+  double                    output_interval          = 0.0;
+  bool                      pull_back_traction       = true;
+  double                    spectral_radius          = 0.8;
+  Structure::Preconditioner structure_preconditioner = Structure::Preconditioner::AMG;
+  unsigned int              structure_preconditioner_update = 10;
+  double                    structure_newton_rel_tol = REL_TOL;
+  double                    structure_linear_rel_tol = REL_TOL_LINEARIZED;
+
   void
   set_parameters() final
   {
@@ -666,36 +832,38 @@ private:
     param.body_force           = false;
     param.pull_back_body_force = false;
     param.large_deformation    = true;
-    param.pull_back_traction   = true;
+    param.pull_back_traction   = pull_back_traction;
     param.material_type        = MaterialType::StVenantKirchhoff;
 
-    param.density = DENSITY_STRUCTURE;
+    param.density =
+      DENSITY_STRUCTURE_OVERRIDE > 0.0 ? DENSITY_STRUCTURE_OVERRIDE : DENSITY_STRUCTURE;
 
     param.start_time                           = 0.0;
-    param.end_time                             = END_TIME;
-    param.time_step_size                       = TIME_STEP_SIZE;
+    param.end_time                             = end_time;
+    param.time_step_size                       = time_step_size;
     param.gen_alpha_type                       = GenAlphaType::BossakAlpha;
-    param.spectral_radius                      = 0.8;
+    param.spectral_radius                      = spectral_radius;
     param.solver_info_data.interval_time_steps = OUTPUT_SOLVER_INFO_EVERY_TIME_STEPS;
 
     param.grid.triangulation_type     = TriangulationType::Distributed;
     param.mapping_degree              = MAPPING_DEGREE;
     param.mapping_degree_coarse_grids = param.mapping_degree;
 
-    param.newton_solver_data = Newton::SolverData(1e4, ABS_TOL, REL_TOL);
+    param.newton_solver_data = Newton::SolverData(1e4, ABS_TOL, structure_newton_rel_tol);
     if(param.large_deformation)
-      param.solver_data =
-        SolverData(1e4, ABS_TOL_LINEARIZED, REL_TOL_LINEARIZED, LinearSolver::FGMRES, 100);
+      param.solver_data = SolverData(
+        1e4, ABS_TOL_LINEARIZED, structure_linear_rel_tol, LinearSolver::FGMRES, 100);
     else
       param.solver_data = SolverData(1e4, ABS_TOL, REL_TOL, LinearSolver::FGMRES, 100);
-    param.preconditioner                               = Preconditioner::AMG; // Multigrid;
+    param.preconditioner                               = structure_preconditioner;
     param.multigrid_data.type                          = MultigridType::phMG;
     param.multigrid_data.coarse_problem.solver         = MultigridCoarseGridSolver::CG;
     param.multigrid_data.coarse_problem.preconditioner = MultigridCoarseGridPreconditioner::AMG;
 
-    param.update_preconditioner                         = true;
-    param.update_preconditioner_every_time_steps        = 10;
-    param.update_preconditioner_every_newton_iterations = 10;
+    unsigned int const update_interval = std::max(1u, structure_preconditioner_update);
+    param.update_preconditioner                         = structure_preconditioner_update > 0;
+    param.update_preconditioner_every_time_steps        = update_interval;
+    param.update_preconditioner_every_newton_iterations = update_interval;
   }
 
   void
@@ -869,7 +1037,8 @@ private:
 
     pp_data.output_data.time_control_data.is_active        = this->output_parameters.write;
     pp_data.output_data.time_control_data.start_time       = 0.0;
-    pp_data.output_data.time_control_data.trigger_interval = OUTPUT_INTERVAL_TIME;
+    pp_data.output_data.time_control_data.trigger_interval =
+      output_interval > 0.0 ? output_interval : OUTPUT_INTERVAL_TIME;
     pp_data.output_data.directory          = this->output_parameters.directory + "vtu/";
     pp_data.output_data.filename           = this->output_parameters.filename + "_structure";
     pp_data.output_data.write_higher_order = true;

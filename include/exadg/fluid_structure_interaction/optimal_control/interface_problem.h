@@ -1936,6 +1936,27 @@ public:
             << ", rel. diff = " << std::abs(a - b) / std::abs(a) << std::endl;
     }
 
+    // (d) transpose of the evaluation E_f of a structure vector at the fluid interface points
+    {
+      VectorType yy, ETc;
+      structure->pde_operator->initialize_dof_vector(yy);
+      structure->pde_operator->initialize_dof_vector(ETc);
+      randomize(yy);
+      structure_to_fluid->update_data(yy);
+      Container const Ey = *fluid_neumann;
+      Container       c  = native_base_data;
+      for(auto const qi : c.get_quad_indices())
+        for(unsigned int i = 0; i < c.get_array_solution(qi).size(); ++i)
+          for(unsigned int d = 0; d < dim; ++d)
+            const_cast<typename Container::data_type &>(c.get_array_solution(qi)[i])[d] =
+              std::sin(1.0 + 7.0 * i + 3.0 * d + 11.0 * qi);
+      *fluid_neumann = c;
+      structure_to_fluid->add_transpose(ETc);
+      double const a = container_dot(Ey, c), b = yy * ETc;
+      pcout << "  transpose test E_f:            " << a << ", " << b
+            << ", rel. diff = " << std::abs(a - b) / std::abs(a) << std::endl;
+    }
+
     *fluid_neumann = native_base_data;
   }
 

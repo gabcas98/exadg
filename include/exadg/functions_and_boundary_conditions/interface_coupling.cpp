@@ -171,11 +171,22 @@ InterfaceCoupling<rank, dim, Number>::add_transpose(VectorType & dof_vector_src)
           point_values[i * n_components + c] = weight * Number(data[i][c]);
     }
 
+    /*
+     * FEPointEvaluation::test_and_sum() of deal.II 9.7 writes the result of its fast path for
+     * linear elements in component-blocked lexicographic order, ignoring the dof numbering of
+     * FESystem (the evaluation reads with the correct numbering), so that the transpose is wrong
+     * for vector-valued Q1 elements. For these the transpose is computed from the shape functions
+     * of the element.
+     */
+    auto const & fe            = dof_handler_src->get_fe();
+    bool const   linear_vector = (fe.degree == 1 and fe.n_components() > 1);
+
     auto const cell_operation =
       [&](dealii::ArrayView<Number const> const &                                       values,
           typename dealii::Utilities::MPI::RemotePointEvaluation<dim>::CellData const & cell_data) {
-        dealii::FEPointEvaluation<n_components, dim, dim, Number> fe_point(
-          *mapping_src, dof_handler_src->get_fe(), dealii::update_values);
+        dealii::FEPointEvaluation<n_components, dim, dim, Number> fe_point(*mapping_src,
+                                                                          fe,
+                                                                          dealii::update_values);
 
         for(unsigned int const i : cell_data.cell_indices())
         {
@@ -183,25 +194,40 @@ InterfaceCoupling<rank, dim, Number>::add_transpose(VectorType & dof_vector_src)
           auto const unit_points = cell_data.get_unit_points(i);
           auto const local_data  = cell_data.get_data_view(i, values, n_components);
 
-          fe_point.reinit(cell, unit_points);
+          dof_values.assign(fe.n_dofs_per_cell(), Number(0.0));
 
-          for(unsigned int q = 0; q < unit_points.size(); ++q)
+          if(linear_vector)
           {
-            if constexpr(n_components == 1)
-            {
-              fe_point.submit_value(local_data[q], q);
-            }
-            else
-            {
-              dealii::Tensor<1, n_components, Number> value;
-              for(unsigned int c = 0; c < n_components; ++c)
-                value[c] = local_data[q * n_components + c];
-              fe_point.submit_value(value, q);
-            }
+            for(unsigned int q = 0; q < unit_points.size(); ++q)
+              for(unsigned int j = 0; j < fe.n_dofs_per_cell(); ++j)
+              {
+                unsigned int const c = fe.system_to_component_index(j).first;
+                if(c < n_components)
+                  dof_values[j] += fe.shape_value_component(j, unit_points[q], c) *
+                                   local_data[q * n_components + c];
+              }
           }
+          else
+          {
+            fe_point.reinit(cell, unit_points);
 
-          dof_values.assign(dof_handler_src->get_fe().n_dofs_per_cell(), Number(0.0));
-          fe_point.test_and_sum(dof_values, dealii::EvaluationFlags::values);
+            for(unsigned int q = 0; q < unit_points.size(); ++q)
+            {
+              if constexpr(n_components == 1)
+              {
+                fe_point.submit_value(local_data[q], q);
+              }
+              else
+              {
+                dealii::Tensor<1, n_components, Number> value;
+                for(unsigned int c = 0; c < n_components; ++c)
+                  value[c] = local_data[q * n_components + c];
+                fe_point.submit_value(value, q);
+              }
+            }
+
+            fe_point.test_and_sum(dof_values, dealii::EvaluationFlags::values);
+          }
 
           auto const dof_cell = cell->as_dof_handler_iterator(*dof_handler_src);
           dof_indices.resize(dof_values.size());
