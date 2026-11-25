@@ -413,12 +413,13 @@ private:
     this->param.newton_solver_data.n_nonmonotone_steps = nonmonotone_steps;
     this->param.newton_solver_data.nonmonotone_factor  = nonmonotone_factor;
     this->param.newton_solver_data.max_iter_damping    = max_iter_damping;
-    // the linearized operator of Nitsche's method is only symmetric for theta = 1
-    LinearSolver const linear_solver =
-      (contact_method == ContactMethod::Nitsche and nitsche_theta != 1.0) ? LinearSolver::GMRES :
-                                                                            LinearSolver::CG;
-    this->param.solver_data    = SolverData(1e4, 1.e-14, 1.e-6, linear_solver, 100);
-    this->param.preconditioner = preconditioner;
+    // the linearized operator is not symmetric for Nitsche's method with theta != 1 and for
+    // frictional contact (slip)
+    bool const symmetric = (contact_method == ContactMethod::Penalty or nitsche_theta == 1.0) and
+                           friction_coefficient == 0.0;
+    LinearSolver const linear_solver = symmetric ? LinearSolver::CG : LinearSolver::GMRES;
+    this->param.solver_data          = SolverData(1e4, 1.e-14, 1.e-6, linear_solver, 100);
+    this->param.preconditioner       = preconditioner;
 
     this->param.multigrid_data.type                          = multigrid_type;
     this->param.multigrid_data.p_sequence                    = PSequenceType::DecreaseByOne;

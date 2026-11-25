@@ -273,11 +273,12 @@ Operator<dim, Number>::setup_operators()
   operator_data.contact_friction_coefficient = param.contact_friction_coefficient;
 
   AssertThrow(param.contact_friction_coefficient == 0.0 or
-                (param.contact_method == ContactMethod::Nitsche and
-                 param.contact_nitsche_theta == 0.0 and
+                ((param.contact_method == ContactMethod::Penalty or
+                  param.contact_nitsche_theta == 0.0) and
                  param.problem_type != ProblemType::Unsteady),
-              dealii::ExcMessage("Frictional contact is only implemented for Nitsche's method with "
-                                 "theta = 0 and quasi-static or steady problems."));
+              dealii::ExcMessage("Frictional contact is only implemented for the penalty method "
+                                 "and Nitsche's method with theta = 0, for quasi-static or steady "
+                                 "problems."));
   operator_data.large_deformation = param.large_deformation;
 
   AssertThrow(boundary_descriptor->contact_bc.empty() or param.large_deformation,

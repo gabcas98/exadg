@@ -105,22 +105,31 @@ NonLinearOperator<dim, Number>::initialize_derived()
         this->integrator_flags.face_integrate =
           this->integrator_flags.face_integrate | dealii::EvaluationFlags::gradients;
 
-      // frictional contact: history of the previous load step
-      friction_active = (this->operator_data.contact_friction_coefficient > 0.0);
-      if(friction_active)
+      AssertThrow(this->operator_data.contact_friction_coefficient == 0.0 or
+                    this->operator_data.contact_nitsche_theta == 0.0,
+                  dealii::ExcMessage("Frictional contact requires theta = 0."));
+    }
+
+    // frictional contact: history of the previous load step
+    friction_active = (this->operator_data.contact_friction_coefficient > 0.0);
+    if(friction_active)
+    {
+      this->matrix_free->initialize_dof_vector(displacement_previous,
+                                               this->operator_data.dof_index);
+      displacement_previous.update_ghost_values();
+
+      integrator_previous_face =
+        std::make_shared<IntegratorFace>(*this->matrix_free,
+                                         true,
+                                         this->operator_data.dof_index_inhomogeneous,
+                                         this->operator_data.quad_index);
+
+      if(this->operator_data.contact_method == ContactMethod::Penalty)
       {
-        AssertThrow(this->operator_data.contact_nitsche_theta == 0.0,
-                    dealii::ExcMessage("Frictional contact requires theta = 0."));
-
-        this->matrix_free->initialize_dof_vector(displacement_previous,
-                                                 this->operator_data.dof_index);
-        displacement_previous.update_ghost_values();
-
-        integrator_previous_face =
-          std::make_shared<IntegratorFace>(*this->matrix_free,
-                                           true,
-                                           this->operator_data.dof_index_inhomogeneous,
-                                           this->operator_data.quad_index);
+        n_q_points_face = integrator_previous_face->n_q_points;
+        traction_history.resize(this->matrix_free->n_boundary_face_batches() * n_q_points_face,
+                                vector());
+        traction_history_before = traction_history;
       }
     }
   }
@@ -145,6 +154,18 @@ NonLinearOperator<dim, Number>::evaluate_contact_state(
   if(this->operator_data.contact_method == ContactMethod::Penalty)
   {
     argument = -this->operator_data.contact_penalty * state.obstacle.gap;
+
+    if(friction_active)
+    {
+      state.delta_g = calculate_relative_slip(x, q, boundary_id);
+
+      // trial traction (I - n (x) n)(t_T^old - epsilon Delta g)
+      unsigned int const face = integrator.get_current_cell_index();
+      vector const &     t_old =
+        traction_history[(face - this->matrix_free->n_inner_face_batches()) * n_q_points_face + q];
+      state.w   = t_old - this->operator_data.contact_penalty * state.delta_g;
+      state.A_T = state.w - (state.obstacle.normal * state.w) * state.obstacle.normal;
+    }
   }
   else if(this->operator_data.contact_method == ContactMethod::Nitsche)
   {
@@ -168,8 +189,8 @@ NonLinearOperator<dim, Number>::evaluate_contact_state(
       state.delta_g  = calculate_relative_slip(x, q, boundary_id);
 
       // A_T = (I - n (x) n)(sigma - gamma Delta g)
-      vector const w = state.traction - state.gamma * state.delta_g;
-      state.A_T      = w - (state.obstacle.normal * w) * state.obstacle.normal;
+      state.w   = state.traction - state.gamma * state.delta_g;
+      state.A_T = state.w - (state.obstacle.normal * state.w) * state.obstacle.normal;
     }
 
     if(this->operator_data.contact_nitsche_theta != 0.0)
@@ -263,6 +284,14 @@ NonLinearOperator<dim, Number>::set_previous_solution(VectorType const & displac
 
   if(friction_active)
   {
+    // penalty method: the tangential traction of the new state becomes the history (evaluated
+    // with the old history and the old previous displacement)
+    if(this->operator_data.contact_method == ContactMethod::Penalty)
+    {
+      traction_history_before = traction_history;
+      update_traction_history(displacement, time);
+    }
+
     if(displacement_before.size() != displacement_previous.size())
       this->matrix_free->initialize_dof_vector(displacement_before, this->operator_data.dof_index);
     displacement_before.copy_locally_owned_data_from(displacement_previous);
@@ -290,6 +319,57 @@ double
 NonLinearOperator<dim, Number>::get_time_previous() const
 {
   return time_previous;
+}
+
+template<int dim, typename Number>
+void
+NonLinearOperator<dim, Number>::update_traction_history(VectorType const & displacement,
+                                                        double const       time) const
+{
+  // evaluate obstacle and relative slip at the time of the displacement
+  double const current_time = this->get_time();
+  this->set_time(time);
+
+  VectorType src;
+  this->matrix_free->initialize_dof_vector(src, this->operator_data.dof_index);
+  src.copy_locally_owned_data_from(displacement);
+  src.update_ghost_values();
+
+  IntegratorFace integrator(*this->matrix_free,
+                            true,
+                            this->operator_data.dof_index_inhomogeneous,
+                            this->operator_data.quad_index);
+
+  dealii::AlignedVector<vector> new_history(traction_history.size(), vector());
+
+  unsigned int const begin = this->matrix_free->n_inner_face_batches();
+  unsigned int const end   = begin + this->matrix_free->n_boundary_face_batches();
+  for(unsigned int face = begin; face < end; ++face)
+  {
+    dealii::types::boundary_id const boundary_id = this->matrix_free->get_boundary_id(face);
+    if(this->operator_data.bc->get_boundary_type(boundary_id) != BoundaryType::Contact)
+      continue;
+
+    auto const obstacle = this->operator_data.bc->contact_bc.find(boundary_id)->second;
+    obstacle->set_time(this->time);
+
+    integrator.reinit(face);
+    integrator.gather_evaluate(src, dealii::EvaluationFlags::values);
+
+    integrator_previous_face->reinit(face);
+    integrator_previous_face->read_dof_values(displacement_previous);
+    integrator_previous_face->evaluate(dealii::EvaluationFlags::values);
+
+    for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+    {
+      ContactState const state = evaluate_contact_state(integrator, q, *obstacle, boundary_id);
+      new_history[(face - begin) * n_q_points_face + q] = state.traction_tangential;
+    }
+  }
+
+  traction_history = new_history;
+
+  this->set_time(current_time);
 }
 
 template<int dim, typename Number>
@@ -378,6 +458,7 @@ NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & di
   {
     displacement_previous.swap(displacement_before);
     std::swap(time_previous, time_before);
+    traction_history.swap(traction_history_before);
   }
 
   IntegratorFace integrator(*this->matrix_free,
@@ -477,6 +558,7 @@ NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & di
   {
     displacement_previous.swap(displacement_before);
     std::swap(time_previous, time_before);
+    traction_history.swap(traction_history_before);
   }
 
   return result;
@@ -912,10 +994,13 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact(
 
     if(friction_active)
     {
-      // delta A_T = delta ((I - n (x) n) w) with w = sigma - gamma Delta g, delta w = delta sigma -
-      // gamma delta d (the motion of the obstacle does not depend on the displacement)
-      vector const w         = state.traction - state.gamma * state.delta_g;
-      vector const delta_w   = delta_sigma - state.gamma * delta_d;
+      // delta A_T = delta ((I - n (x) n) w) with
+      //  Nitsche: w = sigma - gamma Delta g, delta w = delta sigma - gamma delta d,
+      //  penalty: w = t_T^old - epsilon Delta g, delta w = - epsilon delta d
+      // (the motion of the obstacle does not depend on the displacement)
+      vector const & w       = state.w;
+      vector const   delta_w = nitsche ? vector(delta_sigma - state.gamma * delta_d) :
+                                         vector(-this->operator_data.contact_penalty * delta_d);
       vector const delta_A_T = delta_w - (n * delta_w) * n - (delta_n * w) * n - (n * w) * delta_n;
 
       // delta t_T: stick: delta A_T; slip: mu delta lambda s + mu lambda / |A_T| (I - s (x) s)

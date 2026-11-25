@@ -270,6 +270,7 @@ private:
     // t_T = Proj_{|t| <= mu lambda}(A_T) and stick indicator (|A_T| <= mu lambda)
     vector traction;
     vector delta_g;
+    vector w; // Nitsche: sigma - gamma Delta g, penalty: t_T^old - epsilon Delta g
     vector A_T;
     scalar norm_A_T;
     vector traction_tangential;
@@ -409,6 +410,17 @@ private:
   bool               friction_active = false;
   mutable VectorType displacement_previous;
   mutable double     time_previous = 0.0;
+
+  // penalty method with friction: tangential traction of the previous load step at the
+  // quadrature points of the boundary face batches (index (face - n_inner_face_batches) * n_q + q)
+  mutable dealii::AlignedVector<vector> traction_history, traction_history_before;
+  unsigned int                          n_q_points_face = 0;
+
+  // evaluates the tangential traction of the given displacement at the given time (the time of
+  // the displacement, which may differ from the current time of the operator, e.g. on multigrid
+  // levels) with the current history and stores it as the new history
+  void
+  update_traction_history(VectorType const & displacement, double const time) const;
 
   // history before the last call of set_previous_solution(): if the history has been updated
   // after the last evaluation of the residual (e.g. by the quasi-static driver after a converged

@@ -293,8 +293,12 @@ def main():
 
     # friction: sliding block (Coulomb law) and Cattaneo-Mindlin
     rows = []
-    for name, dim, label in [("sliding_block", 2, "2d AMG"), ("sb2d_mg", 2, "2d multigrid"),
-                             ("sb3d_mg", 3, "3d multigrid")]:
+    for name, dim, label in [("sliding_block", 2, "Nitsche 2d AMG"),
+                             ("sb2d_mg", 2, "Nitsche 2d multigrid"),
+                             ("sb3d_mg", 3, "Nitsche 3d multigrid"),
+                             ("psb2d_amg", 2, "penalty 2d AMG"),
+                             ("psb2d_mg", 2, "penalty 2d multigrid"),
+                             ("psb3d_mg", 3, "penalty 3d multigrid")]:
         last = load(prefix(run_dir, name) + ".txt")[-1]
         force = last[1:1 + dim]
         F_N = abs(force[1])
@@ -316,19 +320,45 @@ def main():
         for r in rows:
             f.write(f"{r[0]},{r[1]:.10f},{r[2]:.1e},{r[3]:.1e},{r[4]}\n")
 
+    def newton_total(name):
+        text = open(os.path.join(run_dir, name + ".log")).read()
+        return sum(int(n) for n in re.findall(r"Nonlinear iterations:\s*(\d+)", text))
+
     rows = []
-    for shift in ["5e-5", "1e-4", "2e-4", "4e-4"]:
-        c = cattaneo_comparison.compare(1.0, 0.49, 1.0, 0.3, prefix(run_dir, "cat_s" + shift))
-        rows.append((shift, c["ratio"], c["c_num"] / c["a"], c["c"] / c["a"],
-                     (c["c_num"] - c["c"]) / c["c"], c["err_l2"]))
+    for method, name_prefix in [("Nitsche", "cat_s"), ("penalty", "pcat_s")]:
+        for shift in ["5e-5", "1e-4", "2e-4", "4e-4"]:
+            c = cattaneo_comparison.compare(1.0, 0.49, 1.0, 0.3,
+                                            prefix(run_dir, name_prefix + shift))
+            rows.append((method, shift, c["ratio"], c["c_num"] / c["a"], c["c"] / c["a"],
+                         (c["c_num"] - c["c"]) / c["c"], c["err_l2"],
+                         newton_total(name_prefix + shift)))
+    with open(os.path.join(HERE, "data", "cattaneo.csv"), "w") as f:
+        f.write("method,shift,Q_over_muP,c_over_a,c_over_a_theory,err_c,err_q,newton\n")
+        for r in rows:
+            f.write(f"{r[0]},{r[1]},{r[2]:.4f},{r[3]:.4f},{r[4]:.4f},{r[5]:+.1e},{r[6]:.1e},"
+                    f"{r[7]}\n")
+
+    # penalty parameter for frictional contact (Cattaneo, Q / (mu P) = 0.45)
+    rows = []
+    for e, name in [("1e3", "pcat_e1e3"), ("1e4", "pcat_e1e4"), ("1e5", "pcat_s2e-4")]:
+        c = cattaneo_comparison.compare(1.0, 0.49, 1.0, 0.3, prefix(run_dir, name))
+        last = load(prefix(run_dir, name) + ".txt")[-1]
+        rows.append((e, (c["a_num"] - c["a"]) / c["a"], (c["c_num"] - c["c"]) / c["c"], c["err_l2"],
+                     -last[5] / 1e-3, newton_total(name)))
+    c = cattaneo_comparison.compare(1.0, 0.49, 1.0, 0.3, prefix(run_dir, "cat_s2e-4"))
+    last = load(prefix(run_dir, "cat_s2e-4") + ".txt")[-1]
+    rows.append(("Nitsche", (c["a_num"] - c["a"]) / c["a"], (c["c_num"] - c["c"]) / c["c"],
+                 c["err_l2"], -last[5] / 1e-3, newton_total("cat_s2e-4")))
+    with open(os.path.join(HERE, "data", "cattaneo_penalty.csv"), "w") as f:
+        f.write("eps,err_a,err_c,err_q,penetration,newton\n")
+        for r in rows:
+            f.write(f"{r[0]},{r[1]:+.1e},{r[2]:+.1e},{r[3]:.1e},{r[4]:.1e},{r[5]}\n")
+
         if shift == "2e-4":
             write("cattaneo_profile.dat", "x_over_a q_over_mup0 q_analytical",
                   [(x / c["a"], abs(t) / (0.3 * c["p0"]), c["q_analytical"](x) / (0.3 * c["p0"]))
                    for x, p, t in c["profile"] if abs(x) < 1.3 * c["a"]])
-    with open(os.path.join(HERE, "data", "cattaneo.csv"), "w") as f:
-        f.write("shift,Q_over_muP,c_over_a,c_over_a_theory,err_c,err_q\n")
-        for r in rows:
-            f.write(f"{r[0]},{r[1]:.4f},{r[2]:.4f},{r[3]:.4f},{r[4]:+.1e},{r[5]:.1e}\n")
+
 
 
 if __name__ == "__main__":

@@ -743,7 +743,8 @@ regression tests of the structure module are unchanged.
 \section{Frictional contact}\label{sec:friction}
 
 \paragraph{Formulation.}
-Coulomb friction is added to Nitsche's method ($\theta=0$) for quasi-static problems. With the
+Coulomb friction is added to Nitsche's method ($\theta=0$) and to the penalty method for
+quasi-static problems; we first describe Nitsche's method. With the
 traction $\sigma=P(d)N$ of the body, the relative slip since the previous load step
 \begin{equation}
   \Delta g = (x - x_{\mathrm{prev}}) - (u_{\mathrm{obs}}(x,t)-u_{\mathrm{obs}}(x,t_{\mathrm{prev}})),
@@ -775,6 +776,25 @@ before the postprocessing, the operator keeps the history of the last solution a
 contact quantities with it; otherwise the reported tangential tractions would be those of a
 vanishing slip increment.
 
+\paragraph{Penalty method.}
+For the penalty method, the trial traction is the classical return mapping
+$A_T = \Pi_T(t_T^{\mathrm{old}} - \varepsilon\,\Delta g)$ with the tangential traction
+$t_T^{\mathrm{old}}$ of the previous load step, followed by the same projection onto the friction
+disk; the linearisation is the one above with $\delta w = -\varepsilon\,\delta d$ instead of
+$\delta\sigma - \gamma\delta d$. Here a history at the quadrature points is unavoidable, since the
+accumulated stick traction cannot be recovered from the displacement. It is stored for the
+quadrature points of the boundary faces and updated in \code{set_previous_solution()} by evaluating
+the tangential traction of the converged state with the old history. Every multigrid level keeps
+its own history at its own quadrature points and updates it in the same way when the multigrid
+preconditioner passes the previous solution to it; repeated calls with the same state are
+idempotent ($\Delta g=0$, and the projection of a projected traction does not change it). The
+update has to evaluate the obstacle at the time of the passed state: initially the levels used
+their current time (that of the new load step), so that their history already contained the
+motion of the obstacle in the new step, and the multigrid needed up to 363 iterations in the
+stick/slip transition of the 3d sliding block; with the correct time it needs 10--14, as for
+Nitsche's method. Since the tangent is not symmetric in the slip case, GMRES has to be used also
+for the penalty method with friction.
+
 \paragraph{Newton's method.}
 Friction makes the active set (now stick/slip in addition to contact/no contact) much harder to
 identify. At the beginning of a sliding step, the obstacle has moved by $\Delta s$ but the body not
@@ -796,7 +816,8 @@ $t\le1/2$), then the plane is translated tangentially by $s=0.2$ while the top f
 that the Coulomb law holds to round-off at all contact quadrature points, $|t_T| = \mu\lambda$, and
 that the tangential force is exactly $\mu$ times the normal force, in 2d and 3d, with AMG and with
 the matrix-free multigrid (which uses the transferred history on its levels; 9--17 linear
-iterations per Newton step in 3d).
+iterations per Newton step in 3d), for both Nitsche's method ($\gamma_0E=10$) and the penalty
+method ($\varepsilon=10^3$).
 
 \begin{table}[ht]
   \centering\small
@@ -811,7 +832,8 @@ iterations per Newton step in 3d).
     every head row/.style={before row=\toprule, after row=\midrule},
     every last row/.style={after row=\bottomrule},
   ]{\slidingtab}
-  \caption{Sliding block ($\mu=0.3$) at the end of the sliding phase.}
+  \caption{Sliding block ($\mu=0.3$) at the end of the sliding phase, Nitsche's method
+  ($\gamma_0E=10$) and penalty method ($\varepsilon=10^3$).}
   \label{tab:sliding}
 \end{table}
 
@@ -835,8 +857,11 @@ needs at most 18.)
   \centering\small
   \pgfplotstableread[col sep=comma]{data/cattaneo.csv}\cattaneotab
   \pgfplotstabletypeset[
-    columns={shift,Q_over_muP,c_over_a,c_over_a_theory,err_c,err_q},
+    columns={method,shift,Q_over_muP,c_over_a,c_over_a_theory,err_c,err_q,newton},
+    columns/method/.style={string type, column name={method}, column type=l},
     columns/shift/.style={string type, column name={shift $s$}},
+    columns/newton/.style={column name={Newton it.}},
+    every row no 4/.style={before row=\midrule},
     columns/Q_over_muP/.style={column name={$Q/(\mu P)$}, fixed, precision=3},
     columns/c_over_a/.style={column name={$c/a$ computed}, fixed, precision=3},
     columns/c_over_a_theory/.style={column name={$c/a$ theory}, fixed, precision=3},
@@ -845,8 +870,41 @@ needs at most 18.)
     every head row/.style={before row=\toprule, after row=\midrule},
     every last row/.style={after row=\bottomrule},
   ]{\cattaneotab}
-  \caption{Cattaneo--Mindlin problem: stick zone and tangential traction ($|x|<0.8a$).}
+  \caption{Cattaneo--Mindlin problem: stick zone and tangential traction ($|x|<0.8a$);
+  Nitsche's method with $\gamma_0E=10$, penalty method with $\varepsilon=10^5$.}
   \label{tab:cattaneo}
+\end{table}
+
+For the penalty method with $\varepsilon=10^5$ ($\varepsilon h/E\approx200$), the stick zone is the
+same as for Nitsche's method (it is determined at the quadrature points), but the tangential
+traction oscillates strongly between neighbouring quadrature points in the stick zone (the ratio
+$|t_T|/\lambda$ jumps between $0.08$ and $0.22$), and the profile error is 7--11\,\%. As for
+frictionless contact, the stick constraint becomes over-determined for a stiff penalty.
+\Cref{tab:cattaneo-penalty} shows the dependence on $\varepsilon$ for $Q/(\mu P)=0.45$: a softer
+penalty $\varepsilon=10^4$ ($\varepsilon h/E\approx20$) gives the most accurate stick zone ($-0.8\,\%$)
+and traction (5.6\,\%) with half the Newton iterations, whereas $\varepsilon=10^3$ is too soft
+(penetration $1.2\,\%$ of the indentation, contact and stick zone too large by 6--7\,\%). The
+penalty method can thus be competitive, but its parameter has to be tuned within a narrow window,
+which is not necessary for Nitsche's method.
+
+\begin{table}[ht]
+  \centering\small
+  \pgfplotstableread[col sep=comma]{data/cattaneo_penalty.csv}\cattaneopentab
+  \pgfplotstabletypeset[
+    columns={eps,err_a,err_c,err_q,penetration,newton},
+    columns/eps/.style={string type, column name={$\varepsilon$}},
+    columns/err_a/.style={string type, column name={error $a$}},
+    columns/err_c/.style={string type, column name={error $c$}},
+    columns/err_q/.style={string type, column name={$\|q-q_{\mathrm{ex}}\|/(\mu p_0)$}},
+    columns/penetration/.style={string type, column name={$\max(-g)/\delta$}},
+    columns/newton/.style={column name={Newton it.}},
+    every head row/.style={before row=\toprule, after row=\midrule},
+    every row no 3/.style={before row=\midrule},
+    every last row/.style={after row=\bottomrule},
+  ]{\cattaneopentab}
+  \caption{Cattaneo--Mindlin problem with $Q/(\mu P)=0.45$: penalty method with different
+  $\varepsilon$, compared with Nitsche's method ($\gamma_0E=10$).}
+  \label{tab:cattaneo-penalty}
 \end{table}
 
 \begin{figure}[ht]
@@ -863,7 +921,8 @@ needs at most 18.)
       \addlegendentry{computed}
     \end{axis}
   \end{tikzpicture}
-  \caption{Tangential traction for $Q/(\mu P)=0.45$ (quadrature points of the contact boundary).}
+  \caption{Tangential traction for $Q/(\mu P)=0.45$, Nitsche's method (quadrature points of the
+  contact boundary).}
   \label{fig:cattaneo}
 \end{figure}
 
@@ -888,10 +947,12 @@ needs at most 18.)
   \item Price of Nitsche's method: a non-symmetric tangent (GMRES), the evaluation of the stress on
     the contact faces (constant material coefficients only), and more damped Newton iterations
     while the active set settles, growing with $\gamma_0$ and the resolution.
-  \item Coulomb friction (Nitsche, $\theta=0$, quasi-static, history = displacement of the previous
-    load step) reproduces the Coulomb law to round-off in the sliding block test and the stick zone
-    of the Cattaneo--Mindlin problem within 1--3\,\%; it requires to limit the total number of
-    non-monotone Newton steps per load step to avoid cycles between stick/slip states.
+  \item Coulomb friction (quasi-static; Nitsche with $\theta=0$ without history at the quadrature
+    points, penalty with return mapping and a traction history) reproduces the Coulomb law to
+    round-off in the sliding block test and the stick zone of the Cattaneo--Mindlin problem within
+    1--3\,\%; it requires to limit the total number of non-monotone Newton steps per load step to
+    avoid cycles between stick/slip states. The penalty method oscillates for a stiff penalty and is
+    most accurate for $\varepsilon h/E\approx20$.
   \item Newton's method: the failures for stiff contact are failures of the line search at kinks of
     the residual, where a quadrature point near the boundary of the contact zone changes its
     status. Non-monotone full steps combined with a finer line search that steps up to the kink

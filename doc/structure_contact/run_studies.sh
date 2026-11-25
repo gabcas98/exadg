@@ -111,4 +111,15 @@ mk sb3d_mg input_sliding_block.json General:Dim:3 SpatialResolution:RefineSpaceM
 for s in 5e-5 1e-4 2e-4 4e-4; do
   mk cat_s$s input_cattaneo.json Application:TangentialShift:$s
 done
+# penalty method with friction
+P="Application:ContactMethod:Penalty"
+mk psb2d_amg input_sliding_block.json $P Application:PenaltyParameter:1e3
+mk psb2d_mg input_sliding_block.json $P Application:PenaltyParameter:1e3 Application:Preconditioner:Multigrid
+mk psb3d_mg input_sliding_block.json $P Application:PenaltyParameter:1e3 General:Dim:3 SpatialResolution:RefineSpaceMin:2 SpatialResolution:RefineSpaceMax:2 Application:Preconditioner:Multigrid
+for s in 5e-5 1e-4 2e-4 4e-4; do
+  mk pcat_s$s input_cattaneo.json $P Application:PenaltyParameter:1e5 Application:TangentialShift:$s
+done
+for e in 1e3 1e4; do
+  mk pcat_e$e input_cattaneo.json $P Application:PenaltyParameter:$e Application:TangentialShift:2e-4
+done
 echo ALL_DONE
