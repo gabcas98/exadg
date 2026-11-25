@@ -123,6 +123,29 @@ MultigridPreconditioner<dim, Number>::update()
         // implementation is used
         this->get_operator_nonlinear(coarse_level)->set_solution_linearization(vector_coarse_level);
       });
+
+    // solution of the previous load step (frictional contact)
+    VectorType const & vector_previous = pde_operator_nonlinear->get_previous_solution();
+    if(vector_previous.size() > 0)
+    {
+      double const time_previous = pde_operator_nonlinear->get_time_previous();
+
+      VectorTypeMG vector_previous_mg;
+      vector_previous_mg = vector_previous;
+      this->get_operator_nonlinear(this->get_number_of_levels() - 1)
+        ->set_previous_solution(vector_previous_mg, time_previous);
+
+      this->transfer_from_fine_to_coarse_levels(
+        [&](unsigned int const fine_level, unsigned int const coarse_level) {
+          auto const & vector_fine_level =
+            this->get_operator_nonlinear(fine_level)->get_previous_solution();
+          auto vector_coarse_level =
+            this->get_operator_nonlinear(coarse_level)->get_previous_solution();
+          this->transfers->interpolate(fine_level, vector_coarse_level, vector_fine_level);
+          this->get_operator_nonlinear(coarse_level)
+            ->set_previous_solution(vector_coarse_level, time_previous);
+        });
+    }
   }
   else // linear problems
   {

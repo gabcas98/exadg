@@ -270,6 +270,14 @@ Operator<dim, Number>::setup_operators()
   operator_data.contact_method      = param.contact_method;
   operator_data.contact_penalty     = param.contact_penalty_parameter;
   operator_data.contact_nitsche_theta = param.contact_nitsche_theta;
+  operator_data.contact_friction_coefficient = param.contact_friction_coefficient;
+
+  AssertThrow(param.contact_friction_coefficient == 0.0 or
+                (param.contact_method == ContactMethod::Nitsche and
+                 param.contact_nitsche_theta == 0.0 and
+                 param.problem_type != ProblemType::Unsteady),
+              dealii::ExcMessage("Frictional contact is only implemented for Nitsche's method with "
+                                 "theta = 0 and quasi-static or steady problems."));
   operator_data.large_deformation   = param.large_deformation;
 
   AssertThrow(boundary_descriptor->contact_bc.empty() or param.large_deformation,
@@ -700,10 +708,26 @@ Operator<dim, Number>::get_dof_index() const
 }
 
 template<int dim, typename Number>
+void
+Operator<dim, Number>::set_previous_solution(VectorType const & displacement,
+                                             double const       time) const
+{
+  if(param.large_deformation)
+    elasticity_operator_nonlinear.set_previous_solution(displacement, time);
+}
+
+template<int dim, typename Number>
 bool
 Operator<dim, Number>::contact_is_active() const
 {
   return (param.large_deformation and elasticity_operator_nonlinear.contact_is_active());
+}
+
+template<int dim, typename Number>
+bool
+Operator<dim, Number>::contact_friction_is_active() const
+{
+  return contact_is_active() and param.contact_friction_coefficient > 0.0;
 }
 
 template<int dim, typename Number>

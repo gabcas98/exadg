@@ -199,6 +199,9 @@ DriverQuasiStatic<dim, Number>::do_solve()
     last_load_increment = load_increment;
     load_factor += load_increment;
 
+    // the converged solution is the history for the next load step (frictional contact)
+    pde_operator->set_previous_solution(solution, load_factor);
+
     // re-init increment for next load step
     if(step_number == 0)
       load_increment = param.load_increment - last_load_increment;
@@ -234,6 +237,9 @@ void
 DriverQuasiStatic<dim, Number>::initialize_solution()
 {
   pde_operator->prescribe_initial_displacement(solution, 0.0 /* time */);
+
+  // history for frictional contact
+  pde_operator->set_previous_solution(solution, 0.0 /* load factor */);
 }
 
 template<int dim, typename Number>

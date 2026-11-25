@@ -19,6 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(
     0, os.path.join(HERE, "..", "..", "applications", "structure", "contact_rigid_obstacle"))
 from hertz_comparison import compare, load  # noqa: E402
+import cattaneo_comparison  # noqa: E402
 
 E, NU, R = 1.0, 0.3, 1.0
 
@@ -289,6 +290,45 @@ def main():
         f.write("theta,gamma0,newton,err_P,err_profile_int,penetration\n")
         for r in rows:
             f.write(",".join(str(v) for v in r) + "\n")
+
+    # friction: sliding block (Coulomb law) and Cattaneo-Mindlin
+    rows = []
+    for name, dim, label in [("sliding_block", 2, "2d AMG"), ("sb2d_mg", 2, "2d multigrid"),
+                             ("sb3d_mg", 3, "3d multigrid")]:
+        last = load(prefix(run_dir, name) + ".txt")[-1]
+        force = last[1:1 + dim]
+        F_N = abs(force[1])
+        F_T = math.sqrt(sum(force[d]**2 for d in range(dim) if d != 1))
+        profile_file = sorted(
+            f for f in os.listdir(os.path.join(run_dir, "output", "contact_rigid_obstacle"))
+            if f.startswith(name + "_contact_profile_"))[-1]
+        ratios = []
+        for row in load(os.path.join(run_dir, "output", "contact_rigid_obstacle", profile_file)):
+            pressure = row[dim + 1]
+            t = math.sqrt(sum(v**2 for v in row[dim + 2:]))
+            if pressure > 0.0:
+                ratios.append(t / pressure)
+        _, newton, _ = log_info(run_dir, name) if os.path.exists(
+            os.path.join(run_dir, name + ".log")) else (0, [0], [])
+        rows.append((label, F_T / F_N, max(abs(r - 0.3) for r in ratios), last[-1], len(ratios)))
+    with open(os.path.join(HERE, "data", "sliding_block.csv"), "w") as f:
+        f.write("case,ratio,max_dev,stick_area,n_points\n")
+        for r in rows:
+            f.write(f"{r[0]},{r[1]:.10f},{r[2]:.1e},{r[3]:.1e},{r[4]}\n")
+
+    rows = []
+    for shift in ["5e-5", "1e-4", "2e-4", "4e-4"]:
+        c = cattaneo_comparison.compare(1.0, 0.49, 1.0, 0.3, prefix(run_dir, "cat_s" + shift))
+        rows.append((shift, c["ratio"], c["c_num"] / c["a"], c["c"] / c["a"],
+                     (c["c_num"] - c["c"]) / c["c"], c["err_l2"]))
+        if shift == "2e-4":
+            write("cattaneo_profile.dat", "x_over_a q_over_mup0 q_analytical",
+                  [(x / c["a"], abs(t) / (0.3 * c["p0"]), c["q_analytical"](x) / (0.3 * c["p0"]))
+                   for x, p, t in c["profile"] if abs(x) < 1.3 * c["a"]])
+    with open(os.path.join(HERE, "data", "cattaneo.csv"), "w") as f:
+        f.write("shift,Q_over_muP,c_over_a,c_over_a_theory,err_c,err_q\n")
+        for r in rows:
+            f.write(f"{r[0]},{r[1]:.4f},{r[2]:.4f},{r[3]:.4f},{r[4]:+.1e},{r[5]:.1e}\n")
 
 
 if __name__ == "__main__":

@@ -94,6 +94,9 @@ DriverSteady<dim, Number>::initialize_solution()
 {
   double time = 0.0;
   pde_operator->prescribe_initial_displacement(solution, time);
+
+  // history for frictional contact (the slip is measured with respect to the initial state)
+  pde_operator->set_previous_solution(solution, time);
 }
 
 template<int dim, typename Number>

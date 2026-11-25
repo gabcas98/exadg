@@ -54,11 +54,18 @@ struct ContactQuantities
   double max_pressure = 0.0;
   double min_gap      = std::numeric_limits<double>::max();
 
+  // frictional contact: maximum magnitude of the tangential traction and reference area of the
+  // stick zone (active points with |t_T| < mu lambda)
+  bool   friction                = false;
+  double max_tangential_traction = 0.0;
+  double stick_area              = 0.0;
+
   // optional point data on the locally owned contact faces: reference position X of the
   // quadrature points, gap g and contact pressure lambda
   std::vector<dealii::Point<dim>> points;
   std::vector<double>             gap;
   std::vector<double>             pressure;
+  std::vector<dealii::Tensor<1, dim>> tangential_traction;
 };
 
 template<int dim, typename Number>
@@ -132,6 +139,19 @@ public:
    */
   ContactQuantities<dim>
   compute_contact_quantities(VectorType const & displacement, bool const collect_point_data) const;
+
+  /**
+   * Frictional contact: sets the solution of the previous converged load step and its time. The
+   * relative tangential slip is measured with respect to this state.
+   */
+  void
+  set_previous_solution(VectorType const & displacement, double const time) const;
+
+  VectorType const &
+  get_previous_solution() const;
+
+  double
+  get_time_previous() const;
 
 private:
   /*
@@ -244,6 +264,16 @@ private:
     // of hyperelastic materials), with Q = delta P[n (x) N] and q = grad(grad(phi)) (P N)
     tensor Q;
     vector q;
+
+    // friction (Nitsche, theta = 0): traction sigma = P N, relative slip Delta g, trial
+    // tangential traction A_T = (I - n (x) n)(sigma - gamma Delta g), tangential traction
+    // t_T = Proj_{|t| <= mu lambda}(A_T) and stick indicator (|A_T| <= mu lambda)
+    vector traction;
+    vector delta_g;
+    vector A_T;
+    scalar norm_A_T;
+    vector traction_tangential;
+    scalar stick;
   };
 
   /*
@@ -253,7 +283,19 @@ private:
   ContactState
   evaluate_contact_state(IntegratorFace const &        integrator,
                          unsigned int const            q,
-                         dealii::Function<dim> const & obstacle) const;
+                         dealii::Function<dim> const & obstacle,
+                         dealii::types::boundary_id const boundary_id) const;
+
+  /*
+   * Frictional contact: relative tangential slip of the body with respect to the obstacle since
+   * the previous load step, Delta g = (x - x_prev) - (u_obs(x, t) - u_obs(x, t_prev)), at
+   * quadrature point q of the current boundary face (the previous displacement is evaluated in
+   * reinit_boundary_face_derived()).
+   */
+  vector
+  calculate_relative_slip(vector const &                     x,
+                          unsigned int const                 q,
+                          dealii::types::boundary_id const & boundary_id) const;
 
   /*
    * Computes the frictionless contact term with a rigid obstacle
@@ -362,6 +404,19 @@ private:
 
   // Nitsche parameter gamma per cell
   dealii::AlignedVector<scalar> nitsche_gamma;
+
+  // frictional contact: solution of the previous load step and its time
+  bool                                    friction_active = false;
+  mutable VectorType                      displacement_previous;
+  mutable double                          time_previous = 0.0;
+
+  // history before the last call of set_previous_solution(): if the history has been updated
+  // after the last evaluation of the residual (e.g. by the quasi-static driver after a converged
+  // load step), the contact quantities of the last solution are evaluated with this history
+  mutable VectorType displacement_before;
+  mutable double     time_before     = 0.0;
+  mutable bool       history_updated = false;
+  mutable std::shared_ptr<IntegratorFace> integrator_previous_face;
 };
 
 } // namespace Structure

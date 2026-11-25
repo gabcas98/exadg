@@ -335,10 +335,17 @@ public:
    * Computation of derived quantities needed for postprocessing.
    */
 
+  // solution of the previous load step for frictional contact, see Interface::Operator
+  void
+  set_previous_solution(VectorType const & displacement, double const time) const final;
+
   // contact quantities (contact force, active area, pressure) of contact boundaries with rigid
   // obstacles, see NonLinearOperator::compute_contact_quantities()
   bool
   contact_is_active() const;
+
+  bool
+  contact_friction_is_active() const;
 
   ContactQuantities<dim>
   compute_contact_quantities(VectorType const & displacement, bool const collect_point_data) const;

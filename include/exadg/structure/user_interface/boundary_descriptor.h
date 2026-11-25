@@ -91,6 +91,14 @@ struct BoundaryDescriptor
   // Contact is only available for the nonlinear operator (large_deformation = true).
   std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>> contact_bc;
 
+  // Optional for contact boundaries with friction: displacement of the material points of the
+  // obstacle (dim components) as a function of the current position x and the time, used to
+  // compute the relative slip between body and obstacle. For a rigid translation c(t) of the
+  // obstacle, the function returns c(t) independently of x. If no function is given for a contact
+  // boundary, the obstacle does not move tangentially.
+  std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>>
+    contact_obstacle_displacement;
+
   inline DEAL_II_ALWAYS_INLINE //
     BoundaryType
     get_boundary_type(dealii::types::boundary_id const & boundary_id) const

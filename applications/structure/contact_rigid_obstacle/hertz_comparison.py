@@ -53,12 +53,14 @@ def compare(dim, E, nu, R, prefix):
     r_center, p_center = float("inf"), 0.0
     for row in load(profile_file):
         r = abs(row[0]) if dim == 2 else math.hypot(row[0], row[2])
-        profile.append((r, row[-1]))
+        # columns: X_0, ..., X_{dim-1}, gap, pressure (, tangential traction)
+        pressure = row[dim + 1]
+        profile.append((r, pressure))
         if r < r_center:
-            r_center, p_center = r, row[-1]
+            r_center, p_center = r, pressure
         if r < 2.0 * a:
             p_hertz = p0 * math.sqrt(1.0 - (r / a)**2) if r < a else 0.0
-            errors.append(row[-1] - p_hertz)
+            errors.append(pressure - p_hertz)
 
     return dict(P=P,
                 a=a,

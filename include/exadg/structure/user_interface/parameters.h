@@ -158,6 +158,13 @@ public:
   // skew-symmetric (stable for any gamma > 0). Only relevant for ContactMethod::Nitsche.
   double contact_nitsche_theta;
 
+  // Coulomb friction coefficient mu of the contact with rigid obstacles (0: frictionless).
+  // Friction is implemented for ContactMethod::Nitsche with theta = 0 and quasi-static or
+  // steady problems: the tangential traction is t_T = Proj_{|t| <= mu lambda}(sigma_T(d) - gamma
+  // Delta g_T) with the tangential traction sigma_T(d) of the first Piola-Kirchhoff stress and the
+  // relative tangential slip Delta g_T with respect to the previous load step.
+  double contact_friction_coefficient;
+
   /**************************************************************************************/
   /*                                                                                    */
   /*                             TEMPORAL DISCRETIZATION                                */

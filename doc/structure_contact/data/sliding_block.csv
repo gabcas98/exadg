@@ -1,0 +1,4 @@
+case,ratio,max_dev,stick_area,n_points
+2d AMG,0.3000000000,1.1e-11,0.0e+00,47
+2d multigrid,0.3000000000,1.1e-11,0.0e+00,47
+3d multigrid,0.2999999648,1.4e-11,0.0e+00,288

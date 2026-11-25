@@ -2,6 +2,9 @@
 # Runs the convergence studies for the contact report (2d Hertz + patch tests).
 # usage: run_studies.sh <build directory of applications/structure/contact_rigid_obstacle>
 B=${1:?build directory of the application}
+# input files and comparison scripts of the application
+SRC=$(dirname "$(readlink -f "$0")")/../../applications/structure/contact_rigid_obstacle
+cp "$SRC"/input_*.json "$SRC"/*_comparison.py "$B"/
 cd $B
 # Settings of the earlier studies (A-H): plain damped Newton method and Chebyshev degree 5, which
 # were the defaults of the application when these studies were run. They are prepended, so that
@@ -16,7 +19,7 @@ for kv in sys.argv[3:]:
 d['Output']['OutputName']=name
 json.dump(d,open(f'in_{name}.json','w'),indent=2)
 PY
-mpirun -np 12 ./solver in_$name.json > $name.log 2>&1 || echo "FAILED $name"; }
+mpirun -np 8 ./solver in_$name.json > $name.log 2>&1 || echo "FAILED $name"; }
 
 # A: indentation study, a/h ~ 16, eps = 100/delta
 for spec in "3e-2 7 0.35" "1e-2 7 0.2" "3e-3 8 0.11" "1e-3 9 0.063" "3e-4 9 0.035" "1e-4 10 0.02"; do
@@ -75,8 +78,8 @@ done
 # and the default of the application (non-monotone with K = 2, factor 1e6, 20 damping steps and 6
 # bisection steps of the line search)
 K0="Application:NonmonotoneSteps:0 Application:LineSearchRefinements:0 Application:MaxIterDamping:10"
-K1="Application:NonmonotoneSteps:1 Application:LineSearchRefinements:0 Application:MaxIterDamping:10"
-V3="Application:NonmonotoneSteps:2 Application:NonmonotoneFactor:1e6 Application:MaxIterDamping:20 Application:LineSearchRefinements:6"
+K1="Application:NonmonotoneSteps:1 Application:NonmonotoneFactor:1e2 Application:LineSearchRefinements:0 Application:MaxIterDamping:10"
+V3="Application:NonmonotoneSteps:3 Application:NonmonotoneFactor:1e6 Application:MaxIterDamping:20 Application:LineSearchRefinements:6"
 H2="Application:ContactMethod:Nitsche Application:Indentation:1e-3 Application:RefinementRadius:0.063"
 for v in K0 K1 V3; do
   opts=${!v}
@@ -90,5 +93,22 @@ for v in K0 K1 V3; do
   mk nw_C_e1e7_$v input_hertz.json Application:ContactMethod:Penalty Application:Indentation:1e-3 Application:RefinementRadius:0.063 Application:LocalRefinements:9 Application:PenaltyParameter:1e7 $opts
   mk nw_y_nit_pj8_$v input_hertz.json $N3 Application:LocalRefinements:7 Application:PenaltyParameter:10 Application:SmootherIterations:8 $opts
   mk nw_y_pen_pj8_$v input_hertz.json $P3 Application:LocalRefinements:7 Application:PenaltyParameter:1e5 Application:SmootherIterations:8 $opts
+done
+# T: Nitsche variants theta = 1, 0, -1 (robust Newton method)
+for th in 1 0 -1; do
+  for g in 0.001 0.01 0.1 1 10 100; do
+    mk T_th${th}_g$g input_hertz.json $V3 Application:ContactMethod:Nitsche Application:Indentation:1e-3 Application:LocalRefinements:9 Application:RefinementRadius:0.063 Application:NitscheTheta:$th Application:PenaltyParameter:$g
+  done
+done
+# reference of the theta study
+mk v3_F_g10 input_hertz.json $V3 Application:ContactMethod:Nitsche Application:Indentation:1e-3 Application:LocalRefinements:9 Application:RefinementRadius:0.063 Application:PenaltyParameter:10
+
+# J: frictional contact (robust Newton method is the default of the application)
+EXTRA=""
+mk sliding_block input_sliding_block.json
+mk sb2d_mg input_sliding_block.json Application:Preconditioner:Multigrid
+mk sb3d_mg input_sliding_block.json General:Dim:3 SpatialResolution:RefineSpaceMin:2 SpatialResolution:RefineSpaceMax:2 Application:Preconditioner:Multigrid
+for s in 5e-5 1e-4 2e-4 4e-4; do
+  mk cat_s$s input_cattaneo.json Application:TangentialShift:$s
 done
 echo ALL_DONE

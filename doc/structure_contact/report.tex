@@ -664,7 +664,8 @@ Three options were added to the Newton solver of ExaDG (\code{Newton::SolverData
 reproduce the previous behaviour exactly:
 \begin{itemize}
   \item \code{n_nonmonotone_steps}, \code{nonmonotone_factor}: a full step is accepted even if the
-    residual grows (by less than the factor), for at most the given number of consecutive steps.
+    residual grows (by less than the factor), for at most the given number of steps per nonlinear
+    solve (i.e.\ per load step).
     The full step moves to the solution for the current active set, and the next linearisation
     corrects the active set (as in a primal-dual active set method).
   \item \code{max_iter_damping}: maximum number of halvings of the damping factor (default 10).
@@ -672,14 +673,20 @@ reproduce the previous behaviour exactly:
     $\omega$ and $2\omega$ for the largest step that further reduces the residual, i.e.\ a step up
     to the kink, after which the point at the kink changes its status in the next linearisation.
 \end{itemize}
-\Cref{tab:newton} compares the plain method (K0), one non-monotone step with factor 100 (K1), and
-the combination used as default by the contact application (V3: two non-monotone steps with factor
-$10^6$, 20 halvings, 6 bisection steps). Every single ingredient helps only partially: K1 saves
-15--40\,\% of the Newton iterations, but leaves the reductions in the stiff cases, and both a larger
-factor alone or more halvings with bisection alone still fail for $\gamma_0E=1000$. With V3, the
-load increment is never reduced in the moderately stiff cases (including the finest mesh $L=11$,
-where the solve time drops from 410\,s to 249\,s), the stiff cases need only 3--9 reductions, and
-$\gamma_0E=1000$ is solved. The solutions agree with those of the plain method up to the solver
+\Cref{tab:newton} compares the plain method (K0), one non-monotone step per load step with factor
+100 (K1), and the combination used as default by the contact application (V3: at most three
+non-monotone steps per load step with factor $10^6$, 20 halvings, 6 bisection steps); all runs
+with 8 MPI processes. Every single ingredient helps only partially: K1 saves 7--40\,\% of the
+Newton iterations, but leaves many reductions in the stiff cases, and in preliminary tests both a
+larger factor alone and more halvings with bisection alone still failed for $\gamma_0E=1000$. With
+V3, the load increment is never reduced in the moderately stiff cases (including the finest mesh
+$L=11$, where the solve time drops from 476\,s to 387\,s), the stiff cases need only 1--4
+reductions, and $\gamma_0E=1000$ is solved; the solve time is reduced by 20--60\,\%.
+
+The number of non-monotone steps is a sensitive parameter. A first version limited the number of
+\emph{consecutive} non-monotone steps (to two); it worked for frictionless contact, but led to
+cycles for frictional contact (\cref{sec:friction}). With a limit on the total number per load
+step, three steps worked for all tests, whereas two or five steps failed for $\gamma_0E=1000$. The solutions agree with those of the plain method up to the solver
 tolerance (relative differences of the contact quantities below $10^{-6}$), and all existing
 regression tests of the structure module are unchanged.
 
@@ -733,6 +740,133 @@ regression tests of the structure module are unchanged.
   \label{tab:newton}
 \end{table}
 
+\section{Frictional contact}\label{sec:friction}
+
+\paragraph{Formulation.}
+Coulomb friction is added to Nitsche's method ($\theta=0$) for quasi-static problems. With the
+traction $\sigma=P(d)N$ of the body, the relative slip since the previous load step
+\begin{equation}
+  \Delta g = (x - x_{\mathrm{prev}}) - (u_{\mathrm{obs}}(x,t)-u_{\mathrm{obs}}(x,t_{\mathrm{prev}})),
+\end{equation}
+where $u_{\mathrm{obs}}$ is the (optional) displacement of the obstacle, and the tangential
+projection $\Pi_T = I - n\otimes n$, the tangential contact traction is
+\begin{equation}
+  t_T = \operatorname{Proj}_{|t|\le\mu\lambda}\bigl(A_T\bigr), \qquad
+  A_T = \Pi_T(\sigma - \gamma\,\Delta g),
+\end{equation}
+i.e.\ $t_T = A_T$ in the stick case $|A_T|\le\mu\lambda$ and $t_T = \mu\lambda A_T/|A_T|$ in the
+slip case, with the normal contact pressure $\lambda = [A]_+$ of Nitsche's method.
+The residual contains $-\int_{\Gamma_C}(\lambda n + t_T)\cdot v\dd A$; since
+$\sigma_T = t_T$ for the exact solution, the formulation is consistent, and in the stick case it
+enforces $\Delta g_T = 0$ weakly. The linearisation contains the derivative of the traction, of
+the normal and of the projection,
+$\delta A_T = \Pi_T(\delta\sigma - \gamma\delta d) - (n\otimes\delta n + \delta n\otimes n)(\sigma-\gamma\Delta g)$,
+and in the slip case
+$\delta t_T = \mu\,\delta\lambda\, s + \mu\lambda/|A_T|\,(I - s\otimes s)\,\delta A_T$ with
+$s = A_T/|A_T|$; it is not symmetric.
+
+No history variables are stored at the quadrature points: the only history is the displacement of
+the previous load step, which the quasi-static driver passes to the operator after every converged
+load step (\code{Interface::Operator::set_previous_solution}) and which the multigrid
+preconditioner transfers to its levels like the linearisation point. The friction coefficient is
+\code{Parameters::contact_friction_coefficient}, the motion of the obstacle
+\code{BoundaryDescriptor::contact_obstacle_displacement}. Since the driver updates the history
+before the postprocessing, the operator keeps the history of the last solution and evaluates the
+contact quantities with it; otherwise the reported tangential tractions would be those of a
+vanishing slip increment.
+
+\paragraph{Newton's method.}
+Friction makes the active set (now stick/slip in addition to contact/no contact) much harder to
+identify. At the beginning of a sliding step, the obstacle has moved by $\Delta s$ but the body not
+yet, so that $|A_T|\approx\gamma\Delta s\gg\mu\lambda$ and all points are predicted to slip: the
+linearisation has no tangential stiffness, the Newton step overshoots by orders of magnitude, and
+the next step slips in the opposite direction. With the non-monotone strategy of
+\cref{sec:newton}, which limited the number of \emph{consecutive} non-monotone steps, Newton's
+method cycled between these states (a cycle of period four) and the first sliding step could not
+be solved. Limiting instead the \emph{total} number of non-monotone steps per load step to three
+removes the cycles; the line search with bisection up to the kink then resolves the stick/slip
+transition. With this setting (now the default of the contact application), all frictional tests
+below and also all frictionless tests of \cref{sec:newton} are solved
+(\cref{tab:newton}).
+
+\paragraph{Sliding block.}
+The block of the patch test is compressed by $\delta=0.05$ against a rigid plane (load factor
+$t\le1/2$), then the plane is translated tangentially by $s=0.2$ while the top face is held fixed
+($\mu=0.3$, $\gamma_0E=10$). At the end the whole contact face slides. \Cref{tab:sliding} shows
+that the Coulomb law holds to round-off at all contact quadrature points, $|t_T| = \mu\lambda$, and
+that the tangential force is exactly $\mu$ times the normal force, in 2d and 3d, with AMG and with
+the matrix-free multigrid (which uses the transferred history on its levels; 9--17 linear
+iterations per Newton step in 3d).
+
+\begin{table}[ht]
+  \centering\small
+  \pgfplotstableread[col sep=comma]{data/sliding_block.csv}\slidingtab
+  \pgfplotstabletypeset[
+    columns={case,ratio,max_dev,stick_area,n_points},
+    columns/case/.style={string type, column name={case}, column type=l},
+    columns/ratio/.style={column name={$F_T/F_N$}, fixed, precision=10},
+    columns/max_dev/.style={string type, column name={$\max\bigl||t_T|/\lambda-\mu\bigr|$}},
+    columns/stick_area/.style={string type, column name={stick area}},
+    columns/n_points/.style={column name={contact points}},
+    every head row/.style={before row=\toprule, after row=\midrule},
+    every last row/.style={after row=\bottomrule},
+  ]{\slidingtab}
+  \caption{Sliding block ($\mu=0.3$) at the end of the sliding phase.}
+  \label{tab:sliding}
+\end{table}
+
+\paragraph{Cattaneo--Mindlin.}
+A rigid cylinder ($R=1$) is pressed by $\delta=10^{-3}$ into the body $[-4,4]\times[-4,0]$ (full
+domain, $\nu=0.49$, so that normal and tangential problems are practically uncoupled; Dundurs
+parameter $\beta\approx0.01$) and then shifted tangentially by $s$ ($\mu=0.3$, $L=8$, matrix-free
+multigrid). For a tangential load $Q<\mu P$, the theory predicts a central stick zone of half-width
+$c = a\sqrt{1-Q/(\mu P)}$ and the tangential traction
+$q(x) = \mu p_0\sqrt{1-x^2/a^2} - \mu p_0 (c/a)\sqrt{1-x^2/c^2}$ (the second term for $|x|<c$).
+\Cref{tab:cattaneo} and \cref{fig:cattaneo} compare the computed stick zone (measured as the area of
+active points with $|A_T|\le\mu\lambda$) and the traction with this solution for the computed loads
+$P$ and $Q$. The stick zone agrees within 1--3\,\% up to $Q/(\mu P)=0.45$; for $Q/(\mu P)=0.87$ it
+is covered by only three elements, and the error grows to 12\,\%. The traction profile agrees
+within 3--7\,\% of $\mu p_0$, with the largest deviations at the edges of the stick zone, where the
+exact traction has a square-root behaviour. (With $\nu\ge0.45$, the matrix-based AMG preconditioner
+of the earlier tests failed to converge within $10^4$ CG iterations; the matrix-free multigrid
+needs at most 18.)
+
+\begin{table}[ht]
+  \centering\small
+  \pgfplotstableread[col sep=comma]{data/cattaneo.csv}\cattaneotab
+  \pgfplotstabletypeset[
+    columns={shift,Q_over_muP,c_over_a,c_over_a_theory,err_c,err_q},
+    columns/shift/.style={string type, column name={shift $s$}},
+    columns/Q_over_muP/.style={column name={$Q/(\mu P)$}, fixed, precision=3},
+    columns/c_over_a/.style={column name={$c/a$ computed}, fixed, precision=3},
+    columns/c_over_a_theory/.style={column name={$c/a$ theory}, fixed, precision=3},
+    columns/err_c/.style={string type, column name={error $c$}},
+    columns/err_q/.style={string type, column name={$\|q-q_{\mathrm{ex}}\|/(\mu p_0)$}},
+    every head row/.style={before row=\toprule, after row=\midrule},
+    every last row/.style={after row=\bottomrule},
+  ]{\cattaneotab}
+  \caption{Cattaneo--Mindlin problem: stick zone and tangential traction ($|x|<0.8a$).}
+  \label{tab:cattaneo}
+\end{table}
+
+\begin{figure}[ht]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[width=0.6\textwidth, height=0.38\textwidth, grid=major, grid style={gray!25},
+        xlabel={$x/a$}, ylabel={$q/(\mu p_0)$}, xmin=-1.3, xmax=1.3, ymin=-0.05, ymax=1.05,
+        legend style={font=\footnotesize}, legend pos=north east,
+        tick label style={font=\footnotesize}, label style={font=\small}]
+      \addplot[black, thick] table[x=x_over_a, y=q_analytical] {data/cattaneo_profile.dat};
+      \addlegendentry{Cattaneo--Mindlin}
+      \addplot[only marks, mark=*, mark size=0.8pt, red] table[x=x_over_a, y=q_over_mup0]
+        {data/cattaneo_profile.dat};
+      \addlegendentry{computed}
+    \end{axis}
+  \end{tikzpicture}
+  \caption{Tangential traction for $Q/(\mu P)=0.45$ (quadrature points of the contact boundary).}
+  \label{fig:cattaneo}
+\end{figure}
+
 \section{Summary and next steps}
 
 \begin{itemize}
@@ -754,6 +888,10 @@ regression tests of the structure module are unchanged.
   \item Price of Nitsche's method: a non-symmetric tangent (GMRES), the evaluation of the stress on
     the contact faces (constant material coefficients only), and more damped Newton iterations
     while the active set settles, growing with $\gamma_0$ and the resolution.
+  \item Coulomb friction (Nitsche, $\theta=0$, quasi-static, history = displacement of the previous
+    load step) reproduces the Coulomb law to round-off in the sliding block test and the stick zone
+    of the Cattaneo--Mindlin problem within 1--3\,\%; it requires to limit the total number of
+    non-monotone Newton steps per load step to avoid cycles between stick/slip states.
   \item Newton's method: the failures for stiff contact are failures of the line search at kinks of
     the residual, where a quadrature point near the boundary of the contact zone changes its
     status. Non-monotone full steps combined with a finer line search that steps up to the kink
@@ -765,7 +903,6 @@ regression tests of the structure module are unchanged.
         did not help, so the cause is still open;
       \item a consistent tangent for $\theta\neq0$ (second derivative of the normal traction),
         which would make $\theta=-1$ usable for small $\gamma_0$;
-      \item frictional contact.
     \end{itemize}
 \end{itemize}
 

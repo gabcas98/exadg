@@ -101,15 +101,35 @@ NonLinearOperator<dim, Number>::initialize_derived()
       if(this->operator_data.contact_nitsche_theta != 0.0)
         this->integrator_flags.face_integrate =
           this->integrator_flags.face_integrate | dealii::EvaluationFlags::gradients;
+
+      // frictional contact: history of the previous load step
+      friction_active = (this->operator_data.contact_friction_coefficient > 0.0);
+      if(friction_active)
+      {
+        AssertThrow(this->operator_data.contact_nitsche_theta == 0.0,
+                    dealii::ExcMessage("Frictional contact requires theta = 0."));
+
+        this->matrix_free->initialize_dof_vector(displacement_previous,
+                                                 this->operator_data.dof_index);
+        displacement_previous.update_ghost_values();
+
+        integrator_previous_face =
+          std::make_shared<IntegratorFace>(*this->matrix_free,
+                                           true,
+                                           this->operator_data.dof_index_inhomogeneous,
+                                           this->operator_data.quad_index);
+      }
     }
   }
 }
 
 template<int dim, typename Number>
 typename NonLinearOperator<dim, Number>::ContactState
-NonLinearOperator<dim, Number>::evaluate_contact_state(IntegratorFace const &        integrator,
-                                                       unsigned int const            q,
-                                                       dealii::Function<dim> const & obstacle) const
+NonLinearOperator<dim, Number>::evaluate_contact_state(
+  IntegratorFace const &           integrator,
+  unsigned int const               q,
+  dealii::Function<dim> const &    obstacle,
+  dealii::types::boundary_id const boundary_id) const
 {
   ContactState state;
 
@@ -139,6 +159,16 @@ NonLinearOperator<dim, Number>::evaluate_contact_state(IntegratorFace const &   
 
     argument = state.normal_traction - state.gamma * state.obstacle.gap;
 
+    if(friction_active)
+    {
+      state.traction = P * state.N;
+      state.delta_g  = calculate_relative_slip(x, q, boundary_id);
+
+      // A_T = (I - n (x) n)(sigma - gamma Delta g)
+      vector const w = state.traction - state.gamma * state.delta_g;
+      state.A_T      = w - (state.obstacle.normal * w) * state.obstacle.normal;
+    }
+
     if(this->operator_data.contact_nitsche_theta != 0.0)
     {
       // Q = delta P[G] = F delta S[G] + G S with G = n (x) N
@@ -165,13 +195,109 @@ NonLinearOperator<dim, Number>::evaluate_contact_state(IntegratorFace const &   
                                                                                    one,
                                                                                    zero);
 
+  if(friction_active)
+  {
+    // projection onto the friction disk |t_T| <= mu lambda
+    scalar const radius =
+      dealii::make_vectorized_array<Number>(this->operator_data.contact_friction_coefficient) *
+      state.pressure;
+    state.norm_A_T = std::sqrt(state.A_T * state.A_T);
+    scalar const safe_norm =
+      std::max(state.norm_A_T,
+               dealii::make_vectorized_array<Number>(std::numeric_limits<Number>::min()));
+    state.stick = dealii::compare_and_apply_mask<dealii::SIMDComparison::less_than_or_equal>(
+      state.norm_A_T, radius, one, zero);
+    scalar const scaling = dealii::compare_and_apply_mask<dealii::SIMDComparison::less_than_or_equal>(
+      state.norm_A_T, radius, one, radius / safe_norm);
+    state.traction_tangential = scaling * state.A_T;
+  }
+
   return state;
+}
+
+template<int dim, typename Number>
+typename NonLinearOperator<dim, Number>::vector
+NonLinearOperator<dim, Number>::calculate_relative_slip(
+  vector const &                     x,
+  unsigned int const                 q,
+  dealii::types::boundary_id const & boundary_id) const
+{
+  // displacement since the previous load step
+  vector delta_g = x - integrator_previous_face->quadrature_point(q) -
+                   integrator_previous_face->get_value(q);
+
+  // displacement of the obstacle since the previous load step
+  auto const it = this->operator_data.bc->contact_obstacle_displacement.find(boundary_id);
+  if(it != this->operator_data.bc->contact_obstacle_displacement.end())
+  {
+    dealii::Function<dim> & obstacle_displacement = *it->second;
+    for(unsigned int v = 0; v < dealii::VectorizedArray<Number>::size(); ++v)
+    {
+      dealii::Point<dim> point;
+      for(unsigned int d = 0; d < dim; ++d)
+        point[d] = x[d][v];
+
+      for(unsigned int d = 0; d < dim; ++d)
+      {
+        obstacle_displacement.set_time(this->time);
+        double const current = obstacle_displacement.value(point, d);
+        obstacle_displacement.set_time(time_previous);
+        double const previous = obstacle_displacement.value(point, d);
+        delta_g[d][v] -= current - previous;
+      }
+    }
+    obstacle_displacement.set_time(this->time);
+  }
+
+  return delta_g;
+}
+
+template<int dim, typename Number>
+void
+NonLinearOperator<dim, Number>::set_previous_solution(VectorType const & displacement,
+                                                      double const       time) const
+{
+  if(not friction_active)
+    time_previous = time;
+
+  if(friction_active)
+  {
+    if(displacement_before.size() != displacement_previous.size())
+      this->matrix_free->initialize_dof_vector(displacement_before, this->operator_data.dof_index);
+    displacement_before.copy_locally_owned_data_from(displacement_previous);
+    displacement_before.update_ghost_values();
+    time_before     = time_previous;
+    time_previous   = time;
+    history_updated = true;
+
+    displacement_previous.copy_locally_owned_data_from(displacement);
+    // the vector may contain inhomogeneous Dirichlet values, which are read with the
+    // dof_index_inhomogeneous as for the linearization vector
+    displacement_previous.update_ghost_values();
+  }
+}
+
+template<int dim, typename Number>
+typename NonLinearOperator<dim, Number>::VectorType const &
+NonLinearOperator<dim, Number>::get_previous_solution() const
+{
+  return displacement_previous;
+}
+
+template<int dim, typename Number>
+double
+NonLinearOperator<dim, Number>::get_time_previous() const
+{
+  return time_previous;
 }
 
 template<int dim, typename Number>
 void
 NonLinearOperator<dim, Number>::evaluate_nonlinear(VectorType & dst, VectorType const & src) const
 {
+  // the current history is used from now on
+  history_updated = false;
+
   this->matrix_free->loop(&This::cell_loop_nonlinear,
                           &This::face_loop_nonlinear,
                           &This::boundary_face_loop_nonlinear,
@@ -245,6 +371,14 @@ NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & di
   src.copy_locally_owned_data_from(displacement);
   src.update_ghost_values();
 
+  // use the history of the last solution (see history_updated)
+  bool const use_history_before = friction_active and history_updated;
+  if(use_history_before)
+  {
+    displacement_previous.swap(displacement_before);
+    std::swap(time_previous, time_before);
+  }
+
   IntegratorFace integrator(*this->matrix_free,
                             true,
                             this->operator_data.dof_index_inhomogeneous,
@@ -263,6 +397,12 @@ NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & di
 
     integrator.reinit(face);
     this->material_handler.reinit_face(*this->matrix_free, face);
+    if(friction_active)
+    {
+      integrator_previous_face->reinit(face);
+      integrator_previous_face->read_dof_values(displacement_previous);
+      integrator_previous_face->evaluate(dealii::EvaluationFlags::values);
+    }
     integrator.gather_evaluate(src,
                                dealii::EvaluationFlags::values |
                                  dealii::EvaluationFlags::gradients);
@@ -273,7 +413,7 @@ NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & di
     {
       vector const X = integrator.quadrature_point(q);
 
-      ContactState const state = evaluate_contact_state(integrator, q, *obstacle);
+      ContactState const state = evaluate_contact_state(integrator, q, *obstacle, boundary_id);
 
       RigidObstacleValues<dim, Number> const & obstacle_values = state.obstacle;
       scalar const                             pressure        = state.pressure;
@@ -285,6 +425,20 @@ NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & di
           result.force[d] += pressure[v] * obstacle_values.normal[d][v] * JxW[v];
         if(pressure[v] > 0.0)
           result.active_area += JxW[v];
+
+        if(friction_active)
+        {
+          double norm_t = 0.0;
+          for(unsigned int d = 0; d < dim; ++d)
+          {
+            result.force[d] += state.traction_tangential[d][v] * JxW[v];
+            norm_t += state.traction_tangential[d][v] * state.traction_tangential[d][v];
+          }
+          result.max_tangential_traction =
+            std::max(result.max_tangential_traction, std::sqrt(norm_t));
+          if(pressure[v] > 0.0 and state.stick[v] > 0.5)
+            result.stick_area += JxW[v];
+        }
         result.max_pressure = std::max(result.max_pressure, (double)pressure[v]);
         result.min_gap      = std::min(result.min_gap, (double)obstacle_values.gap[v]);
 
@@ -296,6 +450,11 @@ NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & di
           result.points.push_back(point);
           result.gap.push_back(obstacle_values.gap[v]);
           result.pressure.push_back(pressure[v]);
+          dealii::Tensor<1, dim> t;
+          if(friction_active)
+            for(unsigned int d = 0; d < dim; ++d)
+              t[d] = state.traction_tangential[d][v];
+          result.tangential_traction.push_back(t);
         }
       }
     }
@@ -308,6 +467,16 @@ NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & di
   result.active_area  = dealii::Utilities::MPI::sum(result.active_area, mpi_comm);
   result.max_pressure = dealii::Utilities::MPI::max(result.max_pressure, mpi_comm);
   result.min_gap      = dealii::Utilities::MPI::min(result.min_gap, mpi_comm);
+  result.friction     = friction_active;
+  result.max_tangential_traction =
+    dealii::Utilities::MPI::max(result.max_tangential_traction, mpi_comm);
+  result.stick_area = dealii::Utilities::MPI::sum(result.stick_area, mpi_comm);
+
+  if(use_history_before)
+  {
+    displacement_previous.swap(displacement_before);
+    std::swap(time_previous, time_before);
+  }
 
   return result;
 }
@@ -550,10 +719,12 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact_nonlinear(
 
   for(unsigned int q = 0; q < integrator.n_q_points; ++q)
   {
-    ContactState const state = evaluate_contact_state(integrator, q, *obstacle);
+    ContactState const state = evaluate_contact_state(integrator, q, *obstacle, boundary_id);
 
-    // the obstacle pushes the body in direction of the normal n, t_0 = lambda * n
+    // the obstacle pushes the body in direction of the normal n, t_0 = lambda * n (+ t_T)
     vector value = -state.pressure * state.obstacle.normal;
+    if(friction_active)
+      value -= state.traction_tangential;
 
     if(this->operator_data.contact_method == ContactMethod::Nitsche and
        this->operator_data.contact_nitsche_theta != 0.0)
@@ -601,6 +772,13 @@ NonLinearOperator<dim, Number>::reinit_boundary_face_derived(IntegratorFace &   
                                     dealii::EvaluationFlags::values |
                                       dealii::EvaluationFlags::gradients :
                                     dealii::EvaluationFlags::values);
+
+    if(friction_active)
+    {
+      integrator_previous_face->reinit(face);
+      integrator_previous_face->read_dof_values(displacement_previous);
+      integrator_previous_face->evaluate(dealii::EvaluationFlags::values);
+    }
   }
 }
 
@@ -695,7 +873,8 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact(
   for(unsigned int q = 0; q < integrator.n_q_points; ++q)
   {
     // contact state at the point of linearization
-    ContactState const state = evaluate_contact_state(*integrator_lin_face, q, *obstacle);
+    ContactState const state =
+      evaluate_contact_state(*integrator_lin_face, q, *obstacle, boundary_id);
 
     vector const & n       = state.obstacle.normal;
     vector const   delta_d = integrator.get_value(q);
@@ -704,6 +883,7 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact(
     vector const delta_n = state.obstacle.hessian * delta_d;
 
     scalar delta_argument;
+    vector delta_sigma; // delta (P N), only computed for Nitsche
     if(nitsche)
     {
       tensor const Grad_delta = integrator.get_gradient(q);
@@ -714,9 +894,10 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact(
                     ->second_piola_kirchhoff_stress_displacement_derivative(
                       Grad_delta, state.F, integrator.get_current_cell_index(), q) +
         Grad_delta * state.S;
+      delta_sigma = delta_P * state.N;
 
       // delta (n . (P N)) - gamma (n . delta d)
-      delta_argument = n * (delta_P * state.N) + delta_n * ((state.F * state.S) * state.N) -
+      delta_argument = n * delta_sigma + delta_n * ((state.F * state.S) * state.N) -
                        state.gamma * (n * delta_d);
     }
     else
@@ -728,6 +909,32 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact(
     vector const delta_t = (state.active * delta_argument) * n + state.pressure * delta_n;
 
     vector value = -delta_t;
+
+    if(friction_active)
+    {
+      // delta A_T = delta ((I - n (x) n) w) with w = sigma - gamma Delta g, delta w = delta sigma -
+      // gamma delta d (the motion of the obstacle does not depend on the displacement)
+      vector const w       = state.traction - state.gamma * state.delta_g;
+      vector const delta_w = delta_sigma - state.gamma * delta_d;
+      vector const delta_A_T =
+        delta_w - (n * delta_w) * n - (delta_n * w) * n - (n * w) * delta_n;
+
+      // delta t_T: stick: delta A_T; slip: mu delta lambda s + mu lambda / |A_T| (I - s (x) s)
+      // delta A_T with s = A_T / |A_T|
+      scalar const mu = dealii::make_vectorized_array<Number>(
+        this->operator_data.contact_friction_coefficient);
+      scalar const tiny = dealii::make_vectorized_array<Number>(std::numeric_limits<Number>::min());
+      scalar const safe_norm = std::max(state.norm_A_T, tiny);
+      vector const s         = state.A_T / safe_norm;
+      scalar const delta_lambda = state.active * delta_argument;
+      vector const delta_t_slip =
+        (mu * delta_lambda) * s +
+        (mu * state.pressure / safe_norm) * (delta_A_T - (s * delta_A_T) * s);
+      scalar const one = dealii::make_vectorized_array<Number>(1.0);
+      vector const delta_t_T = state.stick * delta_A_T + (one - state.stick) * delta_t_slip;
+
+      value -= delta_t_T;
+    }
 
     if(nitsche and this->operator_data.contact_nitsche_theta != 0.0)
     {

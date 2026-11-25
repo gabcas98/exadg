@@ -1,0 +1,36 @@
+{
+    "General": {
+        "Precision": "double",
+        "Dim": "2",
+        "IsTest": "true"
+    },
+    "SpatialResolution": {
+        "DegreeMin": "2",
+        "DegreeMax": "2",
+        "RefineSpaceMin": "2",
+        "RefineSpaceMax": "2"
+    },
+    "TemporalResolution": {
+        "RefineTimeMin": "0",
+        "RefineTimeMax": "0"
+    },
+    "Application": {
+        "Setup": "SlidingBlock",
+        "YoungsModulus": "1.0",
+        "PoissonsRatio": "0.3",
+        "ContactMethod": "Nitsche",
+        "NitscheTheta": "0.0",
+        "PenaltyParameter": "10.0",
+        "FrictionCoefficient": "0.3",
+        "Compression": "0.05",
+        "Slip": "0.2",
+        "LoadIncrement": "0.05",
+        "Preconditioner": "AMG",
+        "UseMatrixBasedOperator": "false"
+    },
+    "Output": {
+        "OutputDirectory": "output/contact_rigid_obstacle/",
+        "OutputName": "sliding_block",
+        "WriteOutput": "false"
+    }
+}

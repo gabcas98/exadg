@@ -90,8 +90,9 @@ struct SolverData
 
   // Non-monotone acceptance of full Newton steps (watchdog): a full step is accepted even if it
   // does not reduce the residual, as long as the residual grows by less than nonmonotone_factor
-  // and at most n_nonmonotone_steps consecutive full steps have been accepted in this way;
-  // otherwise, the backtracking line search is used. For semismooth problems (e.g. contact), the
+  // and at most n_nonmonotone_steps full steps have been accepted in this way in the current
+  // nonlinear solve; otherwise, the backtracking line search is used. (Limiting the total number
+  // rather than the number of consecutive steps avoids cycles between active sets.) For semismooth problems (e.g. contact), the
   // full step yields the solution for the current active set, and the next Newton step corrects
   // the active set (primal-dual active set strategy). The default 0 disables this option.
   unsigned int n_nonmonotone_steps;

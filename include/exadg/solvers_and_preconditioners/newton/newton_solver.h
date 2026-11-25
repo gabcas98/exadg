@@ -108,8 +108,7 @@ public:
 
         if(norm_r_damp < (1.0 - 0.5 * tau) * norm_r)
         {
-          full_step_accepted     = true;
-          n_nonmonotone_accepted = 0;
+          full_step_accepted = true;
         }
         else if(norm_r_damp < solver_data.nonmonotone_factor * norm_r and
                 n_nonmonotone_accepted < solver_data.n_nonmonotone_steps)
@@ -229,7 +228,7 @@ private:
   // auxiliary vectors of the line search refinement
   VectorType best_solution, best_residual;
 
-  // number of consecutive full steps accepted without decrease of the residual
+  // number of full steps accepted without decrease of the residual in the current solve
   unsigned int n_nonmonotone_accepted = 0;
 
   SolverData          solver_data;

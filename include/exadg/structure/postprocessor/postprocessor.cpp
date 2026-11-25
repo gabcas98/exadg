@@ -88,7 +88,10 @@ PostProcessor<dim, Number>::setup(Operator<dim, Number> const & pde_operator_in)
       f << "# time";
       for(unsigned int d = 0; d < dim; ++d)
         f << " force_" << d;
-      f << " active_area max_pressure min_gap" << std::endl;
+      f << " active_area max_pressure min_gap";
+      if(pde_operator->contact_friction_is_active())
+        f << " max_tangential_traction stick_area";
+      f << std::endl;
     }
   }
 }
@@ -120,6 +123,11 @@ PostProcessor<dim, Number>::evaluate_contact(VectorType const & solution) const
         << std::endl
         << "  Min. gap:                  " << std::setprecision(5) << filter(contact.min_gap)
         << std::endl;
+  if(contact.friction)
+    pcout << "  Max. tangential traction:  " << std::setprecision(5)
+          << filter(contact.max_tangential_traction) << std::endl
+          << "  Stick area:                " << std::setprecision(5)
+          << filter(contact.stick_area) << std::endl;
 
   if(rank == 0)
   {
@@ -127,21 +135,27 @@ PostProcessor<dim, Number>::evaluate_contact(VectorType const & solution) const
     f << std::scientific << std::setprecision(10) << contact.time;
     for(unsigned int d = 0; d < dim; ++d)
       f << " " << contact.force[d];
-    f << " " << contact.active_area << " " << contact.max_pressure << " " << contact.min_gap
-      << std::endl;
+    f << " " << contact.active_area << " " << contact.max_pressure << " " << contact.min_gap;
+    if(contact.friction)
+      f << " " << contact.max_tangential_traction << " " << contact.stick_area;
+    f << std::endl;
   }
 
   if(data.write_pressure_profile)
   {
-    // flatten point data: X_0, ..., X_{dim-1}, gap, pressure
+    // flatten point data: X_0, ..., X_{dim-1}, gap, pressure (, t_T_0, ..., t_T_{dim-1})
+    unsigned int const n_values = contact.friction ? 2 * dim + 2 : dim + 2;
     std::vector<double> local;
-    local.reserve(contact.points.size() * (dim + 2));
+    local.reserve(contact.points.size() * n_values);
     for(unsigned int i = 0; i < contact.points.size(); ++i)
     {
       for(unsigned int d = 0; d < dim; ++d)
         local.push_back(contact.points[i][d]);
       local.push_back(contact.gap[i]);
       local.push_back(contact.pressure[i]);
+      if(contact.friction)
+        for(unsigned int d = 0; d < dim; ++d)
+          local.push_back(contact.tangential_traction[i][d]);
     }
 
     std::vector<std::vector<double>> const all = dealii::Utilities::MPI::gather(mpi_comm, local);
@@ -155,13 +169,17 @@ PostProcessor<dim, Number>::evaluate_contact(VectorType const & solution) const
       f << "# time = " << contact.time << std::endl << "#";
       for(unsigned int d = 0; d < dim; ++d)
         f << " X_" << d;
-      f << " gap pressure" << std::endl;
+      f << " gap pressure";
+      if(contact.friction)
+        for(unsigned int d = 0; d < dim; ++d)
+          f << " t_T_" << d;
+      f << std::endl;
       f << std::scientific << std::setprecision(10);
       for(auto const & values : all)
-        for(unsigned int i = 0; i < values.size(); i += dim + 2)
+        for(unsigned int i = 0; i < values.size(); i += n_values)
         {
-          for(unsigned int j = 0; j < dim + 2; ++j)
-            f << values[i + j] << (j + 1 < dim + 2 ? " " : "");
+          for(unsigned int j = 0; j < n_values; ++j)
+            f << values[i + j] << (j + 1 < n_values ? " " : "");
           f << std::endl;
         }
     }

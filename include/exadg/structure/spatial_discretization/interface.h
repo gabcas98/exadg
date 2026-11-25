@@ -79,6 +79,18 @@ public:
   virtual void
   rhs(VectorType & dst, double const time) const = 0;
 
+  /*
+   * Sets the solution of the previous (converged) load step or time step and its time, which is
+   * needed for history-dependent boundary conditions such as frictional contact. The default
+   * implementation does nothing.
+   */
+  virtual void
+  set_previous_solution(VectorType const & displacement, double const time) const
+  {
+    (void)displacement;
+    (void)time;
+  }
+
   virtual unsigned int
   solve_linear(VectorType &       sol,
                VectorType const & rhs,

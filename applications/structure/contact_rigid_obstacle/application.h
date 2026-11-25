@@ -32,6 +32,17 @@
  * and an active area L (W), independently of the mesh, the polynomial degree and the strain
  * magnitude.
  *
+ * Setup "SlidingBlock": the block of the patch test is compressed by a prescribed displacement
+ * -delta of the top face against the rigid plane y = 0 (load factor t <= 1/2), then the plane is
+ * translated tangentially by s while the top face is held fixed (t > 1/2). With Coulomb friction,
+ * the tangential traction satisfies |t_T| = mu lambda at all slipping points; once the whole
+ * contact face slips, the tangential force equals mu times the normal force.
+ *
+ * Setup "Cattaneo" (2d): a rigid cylinder is pressed by delta into the body [-W, W] x [-H, 0]
+ * (t <= 1/2) and then shifted tangentially by s (t > 1/2). For Q < mu P, the contact zone
+ * consists of a central stick zone of half-width c = a sqrt(1 - Q / (mu P)) and two slip zones
+ * (Cattaneo-Mindlin; exact for uncoupled normal and tangential problems, e.g. nu -> 1/2).
+ *
  * Setup "Hertz": a rigid cylinder (2d, plane strain) or sphere (3d) of radius R is pressed by an
  * indentation delta into the elastic body [0,W] x [-H,0] (x [0,W]). Only one half (2d) or one
  * quarter (3d) is computed using symmetry conditions on x = 0 (and z = 0), the bottom y = -H is
@@ -138,6 +149,91 @@ private:
 };
 
 /*
+ * Displacement of a rigid ball that is first pressed into the body by delta (t <= t_press) and
+ * then translated tangentially (x direction) by s (t_press < t <= 1).
+ */
+template<int dim>
+class PressAndShiftDisplacement : public dealii::Function<dim>
+{
+public:
+  PressAndShiftDisplacement(double const delta, double const shift, double const t_press)
+    : dealii::Function<dim>(dim), delta(delta), shift(shift), t_press(t_press)
+  {
+  }
+
+  double
+  value(dealii::Point<dim> const & p, unsigned int const c) const final
+  {
+    (void)p;
+    double const t = this->get_time();
+    if(c == 0)
+      return shift * std::max(t - t_press, 0.0) / (1.0 - t_press);
+    else if(c == 1)
+      return -delta * std::min(t / t_press, 1.0);
+    return 0.0;
+  }
+
+private:
+  double const delta, shift, t_press;
+};
+
+/*
+ * Rigid ball whose center moves with a given displacement function, phi(x) = |x - c(t)| - R.
+ */
+template<int dim>
+class MovingBall : public dealii::Function<dim>
+{
+public:
+  MovingBall(dealii::Point<dim> const &               center,
+             double const                             radius,
+             std::shared_ptr<dealii::Function<dim>> displacement)
+    : dealii::Function<dim>(1), center(center), radius(radius), displacement(displacement)
+  {
+  }
+
+  double
+  value(dealii::Point<dim> const & x, unsigned int const component = 0) const final
+  {
+    (void)component;
+    return (x - current_center()).norm() - radius;
+  }
+
+  dealii::Tensor<1, dim>
+  gradient(dealii::Point<dim> const & x, unsigned int const component = 0) const final
+  {
+    (void)component;
+    dealii::Tensor<1, dim> const r = x - current_center();
+    return r / r.norm();
+  }
+
+  dealii::SymmetricTensor<2, dim>
+  hessian(dealii::Point<dim> const & x, unsigned int const component = 0) const final
+  {
+    (void)component;
+    dealii::Tensor<1, dim> const r      = x - current_center();
+    double const                 norm_r = r.norm();
+    dealii::Tensor<1, dim> const n      = r / norm_r;
+    return (dealii::unit_symmetric_tensor<dim>() - dealii::symmetrize(dealii::outer_product(n, n))) /
+           norm_r;
+  }
+
+private:
+  dealii::Point<dim>
+  current_center() const
+  {
+    displacement->set_time(this->get_time());
+    dealii::Point<dim> c = center;
+    for(unsigned int d = 0; d < dim; ++d)
+      c[d] += displacement->value(center, d);
+    return c;
+  }
+
+  dealii::Point<dim> const               center;
+  double const                           radius;
+  std::shared_ptr<dealii::Function<dim>> displacement;
+};
+
+/*
  * Uniform traction t = (0, -p, 0) scaled by the load factor.
  */
 template<int dim>
@@ -159,10 +255,60 @@ private:
   double const pressure;
 };
 
+/*
+ * SlidingBlock: displacement of the top face, (0, -delta t / t_press) for t <= t_press, then
+ * constant.
+ */
+template<int dim>
+class TopDisplacement : public dealii::Function<dim>
+{
+public:
+  TopDisplacement(double const compression, double const t_press)
+    : dealii::Function<dim>(dim), compression(compression), t_press(t_press)
+  {
+  }
+
+  double
+  value(dealii::Point<dim> const & p, unsigned int const c) const final
+  {
+    (void)p;
+    return (c == 1) ? -compression * std::min(this->get_time() / t_press, 1.0) : 0.0;
+  }
+
+private:
+  double const compression, t_press;
+};
+
+/*
+ * SlidingBlock: tangential translation of the rigid plane, (s (t - t_press) / (1 - t_press), 0)
+ * for t >= t_press.
+ */
+template<int dim>
+class PlaneDisplacement : public dealii::Function<dim>
+{
+public:
+  PlaneDisplacement(double const slip, double const t_press)
+    : dealii::Function<dim>(dim), slip(slip), t_press(t_press)
+  {
+  }
+
+  double
+  value(dealii::Point<dim> const & p, unsigned int const c) const final
+  {
+    (void)p;
+    return (c == 0) ? slip * std::max(this->get_time() - t_press, 0.0) / (1.0 - t_press) : 0.0;
+  }
+
+private:
+  double const slip, t_press;
+};
+
 enum class Setup
 {
   PatchTest,
-  Hertz
+  Hertz,
+  SlidingBlock,
+  Cattaneo
 };
 
 template<int dim, typename Number>
@@ -181,7 +327,11 @@ public:
 
     prm.enter_subsection("Application");
     {
-      prm.add_parameter("Setup", setup, "PatchTest or Hertz.");
+      prm.add_parameter("Setup", setup, "PatchTest, Hertz, SlidingBlock or Cattaneo.");
+      prm.add_parameter("TangentialShift", shift, "Cattaneo: tangential shift of the ball.");
+      prm.add_parameter("FrictionCoefficient", friction_coefficient, "Coulomb coefficient mu.");
+      prm.add_parameter("Compression", compression, "SlidingBlock: compression of the block.");
+      prm.add_parameter("Slip", slip, "SlidingBlock: tangential translation of the plane.");
       prm.add_parameter("YoungsModulus", youngs_modulus, "Young's modulus.");
       prm.add_parameter("PoissonsRatio", poissons_ratio, "Poisson's ratio.");
       prm.add_parameter("ContactMethod", contact_method, "Penalty or Nitsche.");
@@ -241,6 +391,7 @@ private:
 
     this->param.contact_method            = contact_method;
     this->param.contact_nitsche_theta     = nitsche_theta;
+    this->param.contact_friction_coefficient = friction_coefficient;
     this->param.contact_penalty_parameter = penalty_parameter;
 
     this->param.load_increment = load_increment;
@@ -300,7 +451,7 @@ private:
         dealii::Point<dim>        p1, p2;
         std::vector<unsigned int> repetitions(dim, 1);
 
-        if(setup == Setup::PatchTest)
+        if(setup == Setup::PatchTest or setup == Setup::SlidingBlock)
         {
           // [0, 2] x [0, 1] (x [0, 1])
           p2[0]          = length;
@@ -308,6 +459,17 @@ private:
           repetitions[0] = 2;
           if(dim == 3)
             p2[2] = height;
+        }
+        else if(setup == Setup::Cattaneo)
+        {
+          AssertThrow(dim == 2, dealii::ExcMessage("Setup Cattaneo is implemented in 2d."));
+          // [-W, W] x [-H, 0]
+          p1[0] = -domain_size;
+          p1[1] = -domain_size;
+          p2[0] = domain_size;
+          for(unsigned int d = 0; d < dim; ++d)
+            repetitions[d] = 4;
+          repetitions[0] = 8;
         }
         else if(setup == Setup::Hertz)
         {
@@ -352,7 +514,7 @@ private:
         if(global_refinements > 0)
           tria.refine_global(global_refinements);
 
-        if(setup == Setup::Hertz)
+        if(setup == Setup::Hertz or setup == Setup::Cattaneo)
         {
           // refine towards the initial contact point (origin)
           for(unsigned int i = 0; i < n_local_refinements; ++i)
@@ -394,6 +556,48 @@ private:
 
     // traction free
     bc.neumann_bc.insert(pair(0, new dealii::Functions::ZeroFunction<dim>(dim)));
+
+    if(setup == Setup::Cattaneo)
+    {
+      // bottom clamped, sides traction free
+      bc.dirichlet_bc.insert(pair(2, new dealii::Functions::ZeroFunction<dim>(dim)));
+      bc.dirichlet_bc_initial_acceleration.insert(
+        pair(2, new dealii::Functions::ZeroFunction<dim>(dim)));
+      bc.dirichlet_bc_component_mask.insert(pair_mask(2, dealii::ComponentMask(dim, true)));
+
+      // ball touching the body at the origin for t = 0, pressed and then shifted
+      auto const displacement =
+        std::make_shared<PressAndShiftDisplacement<dim>>(indentation, shift, t_press);
+      dealii::Point<dim> center;
+      center[1] = radius;
+      bc.contact_bc.insert(pair(3, new MovingBall<dim>(center, radius, displacement)));
+      bc.contact_obstacle_displacement.insert(
+        pair(3, new PressAndShiftDisplacement<dim>(indentation, shift, t_press)));
+      return;
+    }
+
+    if(setup == Setup::SlidingBlock)
+    {
+      // lateral faces traction free
+      bc.neumann_bc.insert(pair(1, new dealii::Functions::ZeroFunction<dim>(dim)));
+      if(dim == 3)
+        bc.neumann_bc.insert(pair(4, new dealii::Functions::ZeroFunction<dim>(dim)));
+
+      // rigid plane y = 0 translating tangentially
+      dealii::Tensor<1, dim> normal;
+      normal[1] = 1.0;
+      bc.contact_bc.insert(
+        pair(2, new RigidPlane<dim>(dealii::Point<dim>(), normal, dealii::Tensor<1, dim>())));
+      bc.contact_obstacle_displacement.insert(
+        pair(2, new PlaneDisplacement<dim>(slip, t_press)));
+
+      // top face: compression, then held fixed
+      bc.dirichlet_bc.insert(pair(3, new TopDisplacement<dim>(compression, t_press)));
+      bc.dirichlet_bc_initial_acceleration.insert(
+        pair(3, new dealii::Functions::ZeroFunction<dim>(dim)));
+      bc.dirichlet_bc_component_mask.insert(pair_mask(3, dealii::ComponentMask(dim, true)));
+      return;
+    }
 
     // symmetry planes x = 0 and z = 0
     auto const add_symmetry = [&](dealii::types::boundary_id const id, unsigned int const comp) {
@@ -480,6 +684,13 @@ private:
 
   Setup setup = Setup::PatchTest;
 
+  // friction
+  double       friction_coefficient = 0.0;
+  double       compression          = 0.05;
+  double       slip                 = 0.2;
+  double const t_press              = 0.5;
+  double       shift                = 0.0;
+
   double youngs_modulus    = 1.0;
   double poissons_ratio    = 0.3;
   ContactMethod contact_method    = ContactMethod::Penalty;
@@ -500,13 +711,14 @@ private:
 
   double load_increment = 0.1;
 
-  // Newton's method for the semismooth contact problem: non-monotone acceptance of up to two
-  // consecutive full steps (which update the active set), and a line search with up to 20
+  // Newton's method for the semismooth contact problem: non-monotone acceptance of at most three
+  // full steps per load step (which update the active set), and a line search with up to 20
   // halvings and 6 bisection steps that steps up to the next change of the active set
   // (kink of the residual along the Newton direction). This avoids most reductions of the load
-  // increment for stiff contact conditions, see doc/structure_contact/report.pdf.
+  // increment for stiff contact conditions and frictional contact, see
+  // doc/structure_contact/report.pdf.
   unsigned int line_search_refinements = 6;
-  unsigned int nonmonotone_steps       = 2;
+  unsigned int nonmonotone_steps       = 3;
   double       nonmonotone_factor      = 1.e6;
   unsigned int max_iter_damping        = 20;
   double       newton_abs_tol          = 1.e-12;

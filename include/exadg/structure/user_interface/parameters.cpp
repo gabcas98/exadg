@@ -48,6 +48,7 @@ Parameters::Parameters()
     contact_method(ContactMethod::Penalty),
     contact_penalty_parameter(0.0),
     contact_nitsche_theta(0.0),
+    contact_friction_coefficient(0.0),
 
     // TEMPORAL DISCRETIZATION
     start_time(0.0),
@@ -209,6 +210,8 @@ Parameters::print_parameters_physical_quantities(dealii::ConditionalOStream cons
     print_parameter(pcout, "Contact penalty parameter", contact_penalty_parameter);
     if(contact_method == ContactMethod::Nitsche)
       print_parameter(pcout, "Nitsche parameter theta", contact_nitsche_theta);
+    if(contact_friction_coefficient > 0.0)
+      print_parameter(pcout, "Friction coefficient", contact_friction_coefficient);
   }
 }
 
