@@ -21,7 +21,6 @@
 
 // deal.II
 #include <deal.II/dofs/dof_tools.h>
-#include <deal.II/lac/full_matrix.h>
 #include <deal.II/lac/sparse_matrix_tools.h>
 #include <deal.II/lac/sparsity_tools.h>
 #include <deal.II/matrix_free/tools.h>
@@ -686,12 +685,6 @@ void
 OperatorBase<dim, Number, n_components>::apply_inverse_block_diagonal(VectorType &       dst,
                                                                       VectorType const & src) const
 {
-  if(not is_dg)
-  {
-    apply_inverse_nodal_block_diagonal(dst, src);
-    return;
-  }
-
   // matrix-free
   if(this->data.implement_block_diagonal_preconditioner_matrix_free)
   {
@@ -893,13 +886,7 @@ void
 OperatorBase<dim, Number, n_components>::initialize_block_diagonal_preconditioner(
   bool const initialize) const
 {
-  if(not is_dg)
-  {
-    initialize_nodal_block_diagonal();
-    if(initialize)
-      compute_nodal_block_diagonal();
-    return;
-  }
+  AssertThrow(is_dg, dealii::ExcMessage("Block Jacobi only implemented for DG!"));
 
   if(data.implement_block_diagonal_preconditioner_matrix_free)
   {
@@ -915,11 +902,7 @@ template<int dim, typename Number, int n_components>
 void
 OperatorBase<dim, Number, n_components>::update_block_diagonal_preconditioner() const
 {
-  if(not is_dg)
-  {
-    compute_nodal_block_diagonal();
-    return;
-  }
+  AssertThrow(is_dg, dealii::ExcMessage("Block Jacobi only implemented for DG!"));
 
   if(data.implement_block_diagonal_preconditioner_matrix_free)
   {
@@ -2168,203 +2151,6 @@ OperatorBase<dim, Number, n_components>::apply_inverse_additive_schwarz_matrices
   }
 }
 
-
-template<int dim, typename Number, int n_components>
-void
-OperatorBase<dim, Number, n_components>::initialize_nodal_block_diagonal() const
-{
-  AssertThrow(not is_dg, dealii::ExcMessage("Nodal block Jacobi is only implemented for CG."));
-
-  for(auto & vector : nodal_block_inverse)
-    this->initialize_dof_vector(vector);
-
-  auto const &                       partitioner = *nodal_block_inverse[0].get_partitioner();
-  dealii::DoFHandler<dim> const &    dof_handler = matrix_free->get_dof_handler(data.dof_index);
-  dealii::FiniteElement<dim> const & fe          = dof_handler.get_fe();
-  AssertThrow(fe.n_components() == n_components and fe.n_base_elements() == 1,
-              dealii::ExcMessage("Nodal block Jacobi requires an FESystem of n_components "
-                                 "copies of a single scalar element."));
-
-  unsigned int const n_nodes = fe.base_element(0).n_dofs_per_cell();
-
-  nodal_block_dofs.assign(partitioner.locally_owned_size(),
-                          std::array<unsigned int, n_components>());
-  std::vector<bool> found(partitioner.locally_owned_size(), false);
-
-  std::vector<dealii::types::global_dof_index>                    dof_indices(fe.n_dofs_per_cell());
-  std::vector<std::array<dealii::types::global_dof_index, n_components>> node_dofs(n_nodes);
-
-  for(unsigned int cell = 0; cell < matrix_free->n_cell_batches(); ++cell)
-  {
-    for(unsigned int v = 0; v < matrix_free->n_active_entries_per_cell_batch(cell); ++v)
-    {
-      auto const cell_it = matrix_free->get_cell_iterator(cell, v, data.dof_index);
-      cell_it->get_active_or_mg_dof_indices(dof_indices);
-
-      for(unsigned int l = 0; l < dof_indices.size(); ++l)
-      {
-        auto const component_and_node                                     = fe.system_to_component_index(l);
-        node_dofs[component_and_node.second][component_and_node.first] = dof_indices[l];
-      }
-
-      for(auto const & node : node_dofs)
-      {
-        for(unsigned int c = 0; c < n_components; ++c)
-        {
-          if(not partitioner.in_local_range(node[c]))
-            continue;
-
-          unsigned int const i = partitioner.global_to_local(node[c]);
-          if(found[i])
-            continue;
-
-          for(unsigned int d = 0; d < n_components; ++d)
-          {
-            AssertThrow(partitioner.in_local_range(node[d]),
-                        dealii::ExcMessage("All degrees of freedom of a support point have to "
-                                           "be owned by the same process."));
-            nodal_block_dofs[i][d] = partitioner.global_to_local(node[d]);
-          }
-          found[i] = true;
-        }
-      }
-    }
-  }
-
-  for(unsigned int i = 0; i < found.size(); ++i)
-    AssertThrow(found[i], dealii::ExcMessage("Locally owned degree of freedom not found."));
-}
-
-template<int dim, typename Number, int n_components>
-void
-OperatorBase<dim, Number, n_components>::compute_nodal_block_diagonal() const
-{
-  if(nodal_block_dofs.empty() and nodal_block_inverse[0].locally_owned_size() > 0)
-    initialize_nodal_block_diagonal();
-
-  // blocks[d](i) = A_{i, j} with j the degree of freedom of component d at the node of i
-  std::array<VectorType, n_components> blocks;
-  for(auto & vector : blocks)
-    this->initialize_dof_vector(vector);
-
-  // compute the columns of the local matrices and extract the nodal blocks
-  auto const extract = [&](auto & integrator, auto const & compute_column) {
-    unsigned int const dofs_per_cell      = integrator.dofs_per_cell;
-    unsigned int const dofs_per_component = dofs_per_cell / n_components;
-
-    std::array<dealii::AlignedVector<dealii::VectorizedArray<Number>>, n_components> local;
-    for(auto & l : local)
-      l.resize(dofs_per_cell);
-
-    for(unsigned int j = 0; j < dofs_per_cell; ++j)
-    {
-      for(unsigned int i = 0; i < dofs_per_cell; ++i)
-        integrator.begin_dof_values()[i] = dealii::make_vectorized_array<Number>(i == j);
-
-      compute_column(integrator);
-
-      unsigned int const d    = j / dofs_per_component;
-      unsigned int const node = j % dofs_per_component;
-      for(unsigned int c = 0; c < n_components; ++c)
-        local[d][c * dofs_per_component + node] =
-          integrator.begin_dof_values()[c * dofs_per_component + node];
-    }
-
-    for(unsigned int d = 0; d < n_components; ++d)
-    {
-      for(unsigned int i = 0; i < dofs_per_cell; ++i)
-        integrator.begin_dof_values()[i] = local[d][i];
-      integrator.distribute_local_to_global(blocks[d]);
-    }
-  };
-
-  IntegratorCell integrator_cell(*matrix_free, data.dof_index, data.quad_index);
-  for(unsigned int cell = 0; cell < matrix_free->n_cell_batches(); ++cell)
-  {
-    integrator_cell.reinit(cell);
-    extract(integrator_cell, [&](IntegratorCell & integrator) { cell_compute_matrix(integrator); });
-  }
-
-  if(evaluate_face_integrals())
-  {
-    IntegratorFace integrator_face(*matrix_free, true, data.dof_index, data.quad_index);
-    unsigned int const begin = matrix_free->n_inner_face_batches();
-    unsigned int const end   = begin + matrix_free->n_boundary_face_batches();
-    for(unsigned int face = begin; face < end; ++face)
-    {
-      integrator_face.reinit(face);
-      extract(integrator_face,
-              [&](IntegratorFace & integrator) { boundary_face_compute_matrix(integrator); });
-    }
-  }
-
-  for(auto & vector : blocks)
-    vector.compress(dealii::VectorOperation::add);
-
-  // constrained degrees of freedom: identity
-  std::vector<bool> constrained(nodal_block_dofs.size(), false);
-  for(unsigned int const i : matrix_free->get_constrained_dofs(data.dof_index))
-    if(i < constrained.size())
-      constrained[i] = true;
-
-  // invert the nodal blocks
-  for(unsigned int i = 0; i < nodal_block_dofs.size(); ++i)
-  {
-    auto const & dofs = nodal_block_dofs[i];
-
-    // component of degree of freedom i
-    unsigned int component = 0;
-    while(dofs[component] != i)
-      ++component;
-
-    // only compute each node once (for the degree of freedom of component 0)
-    if(component != 0)
-      continue;
-
-    dealii::FullMatrix<double> block(n_components, n_components);
-    for(unsigned int c = 0; c < n_components; ++c)
-      for(unsigned int d = 0; d < n_components; ++d)
-      {
-        if(constrained[dofs[c]] or constrained[dofs[d]])
-          block(c, d) = (c == d) ? 1.0 : 0.0;
-        else
-          block(c, d) = blocks[d].local_element(dofs[c]);
-      }
-
-    block.gauss_jordan();
-
-    for(unsigned int c = 0; c < n_components; ++c)
-      for(unsigned int d = 0; d < n_components; ++d)
-        nodal_block_inverse[d].local_element(dofs[c]) = block(c, d);
-  }
-}
-
-template<int dim, typename Number, int n_components>
-void
-OperatorBase<dim, Number, n_components>::apply_inverse_nodal_block_diagonal(
-  VectorType &       dst,
-  VectorType const & src) const
-{
-  // dst and src may be the same vector
-  std::array<Number, n_components> values;
-  for(unsigned int i = 0; i < nodal_block_dofs.size(); ++i)
-  {
-    auto const & dofs = nodal_block_dofs[i];
-    if(dofs[0] != i)
-      continue;
-
-    for(unsigned int d = 0; d < n_components; ++d)
-      values[d] = src.local_element(dofs[d]);
-
-    for(unsigned int c = 0; c < n_components; ++c)
-    {
-      Number sum = 0.0;
-      for(unsigned int d = 0; d < n_components; ++d)
-        sum += nodal_block_inverse[d].local_element(dofs[c]) * values[d];
-      dst.local_element(dofs[c]) = sum;
-    }
-  }
-}
 
 template class OperatorBase<2, float, 1>;
 template class OperatorBase<2, float, 2>;
