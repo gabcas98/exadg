@@ -40,7 +40,8 @@ enum class BoundaryType
   Dirichlet,
   DirichletCached,
   Neumann,
-  NeumannCached
+  NeumannCached,
+  Contact
 };
 
 template<int dim>
@@ -76,6 +77,20 @@ struct BoundaryDescriptor
   // is required for fluid-structure interaction problems)
   std::set<dealii::types::boundary_id> neumann_cached_bc;
 
+  // Frictionless contact with a rigid obstacle (penalty method, see
+  // Parameters::contact_penalty_parameter). The function describes the obstacle by a signed
+  // distance function phi(x) evaluated in the current configuration x = X + d:
+  //
+  //  - value(x)    : gap g = phi(x), positive if the point x is separated from the obstacle,
+  //                  negative in case of penetration,
+  //  - gradient(x) : unit normal n = grad(phi) pointing from the obstacle towards the body,
+  //  - hessian(x)  : curvature of the obstacle, grad(grad(phi)) (zero for a plane).
+  //
+  // All three functions have to be implemented. The time of the function is set to the current
+  // time (or load factor in case of quasi-static problems), which allows moving obstacles.
+  // Contact is only available for the nonlinear operator (large_deformation = true).
+  std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>> contact_bc;
+
   inline DEAL_II_ALWAYS_INLINE //
     BoundaryType
     get_boundary_type(dealii::types::boundary_id const & boundary_id) const
@@ -88,6 +103,8 @@ struct BoundaryDescriptor
       return BoundaryType::Neumann;
     else if(this->neumann_cached_bc.find(boundary_id) != this->neumann_cached_bc.end())
       return BoundaryType::NeumannCached;
+    else if(this->contact_bc.find(boundary_id) != this->contact_bc.end())
+      return BoundaryType::Contact;
 
     AssertThrow(false,
                 dealii::ExcMessage(
@@ -131,6 +148,9 @@ struct BoundaryDescriptor
       counter++;
 
     if(neumann_cached_bc.find(boundary_id) != neumann_cached_bc.end())
+      counter++;
+
+    if(contact_bc.find(boundary_id) != contact_bc.end())
       counter++;
 
     if(periodic_boundary_ids.find(boundary_id) != periodic_boundary_ids.end())

@@ -21,6 +21,9 @@
 #ifndef EXADG_STRUCTURE_SPATIAL_DISCRETIZATION_OPERATORS_BOUNDARY_CONDITIONS_H_
 #define EXADG_STRUCTURE_SPATIAL_DISCRETIZATION_OPERATORS_BOUNDARY_CONDITIONS_H_
 
+// deal.II
+#include <deal.II/base/function.h>
+
 // ExaDG
 #include <exadg/functions_and_boundary_conditions/evaluate_functions.h>
 #include <exadg/matrix_free/integrators.h>
@@ -65,12 +68,71 @@ inline DEAL_II_ALWAYS_INLINE //
   {
     // do nothing
 
+    // Contact boundaries do not carry a prescribed traction, the contact traction is computed
+    // separately (see evaluate_rigid_obstacle()).
     AssertThrow(boundary_type == BoundaryType::Dirichlet or
-                  boundary_type == BoundaryType::DirichletCached,
+                  boundary_type == BoundaryType::DirichletCached or
+                  boundary_type == BoundaryType::Contact,
                 dealii::ExcMessage("Boundary type of face is invalid or not implemented."));
   }
 
   return traction;
+}
+
+/*
+ * Rigid obstacle described by a signed distance function phi, evaluated at the current
+ * position x = X + d of the quadrature points of a face batch:
+ *
+ *  gap     = phi(x)            (> 0: separated, < 0: penetration),
+ *  normal  = grad(phi)(x)      (unit normal pointing from the obstacle towards the body),
+ *  hessian = grad(grad(phi))(x).
+ */
+template<int dim, typename Number>
+struct RigidObstacleValues
+{
+  dealii::VectorizedArray<Number>                         gap;
+  dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> normal;
+  dealii::Tensor<2, dim, dealii::VectorizedArray<Number>> hessian;
+};
+
+template<int dim, typename Number>
+inline RigidObstacleValues<dim, Number>
+evaluate_rigid_obstacle(dealii::Function<dim> const &                                   obstacle,
+                        dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> const & x)
+{
+  RigidObstacleValues<dim, Number> result;
+
+  for(unsigned int v = 0; v < dealii::VectorizedArray<Number>::size(); ++v)
+  {
+    dealii::Point<dim> point;
+    for(unsigned int d = 0; d < dim; ++d)
+      point[d] = x[d][v];
+
+    result.gap[v] = obstacle.value(point);
+
+    dealii::Tensor<1, dim> const grad = obstacle.gradient(point);
+    dealii::Tensor<2, dim> const hess = obstacle.hessian(point);
+    for(unsigned int d = 0; d < dim; ++d)
+    {
+      result.normal[d][v] = grad[d];
+      for(unsigned int e = 0; e < dim; ++e)
+        result.hessian[d][e][v] = hess[d][e];
+    }
+  }
+
+  return result;
+}
+
+/*
+ * Penalty contact pressure lambda = epsilon * <-g>_+ >= 0 .
+ */
+template<typename Number>
+inline DEAL_II_ALWAYS_INLINE //
+  dealii::VectorizedArray<Number>
+  calculate_contact_pressure(dealii::VectorizedArray<Number> const & gap, double const penalty)
+{
+  return dealii::make_vectorized_array<Number>(penalty) *
+         std::max(-gap, dealii::make_vectorized_array<Number>(0.0));
 }
 
 } // namespace Structure

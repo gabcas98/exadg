@@ -19,7 +19,16 @@
  *  ______________________________________________________________________
  */
 
+// C/C++
+#include <fstream>
+#include <iomanip>
+
+// deal.II
+#include <deal.II/base/conditional_ostream.h>
+
+// ExaDG
 #include <exadg/structure/postprocessor/postprocessor.h>
+#include <exadg/utilities/create_directories.h>
 #include <exadg/utilities/evaluate_convergence_study.h>
 
 namespace ExaDG
@@ -62,6 +71,95 @@ PostProcessor<dim, Number>::setup(Operator<dim, Number> const & pde_operator_in)
   error_calculator.setup(pde_operator->get_dof_handler(),
                          pde_operator->get_mapping(),
                          pp_data.error_data);
+
+  contact_time_control.setup(pp_data.contact_data.time_control_data);
+
+  if(pp_data.contact_data.time_control_data.is_active)
+  {
+    AssertThrow(pde_operator->contact_is_active(),
+                dealii::ExcMessage("Contact output requested, but no contact boundaries exist."));
+
+    create_directories(pp_data.contact_data.directory, mpi_comm);
+
+    if(dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)
+    {
+      std::ofstream f(pp_data.contact_data.directory + pp_data.contact_data.filename + ".txt",
+                      std::ios::trunc);
+      f << "# time";
+      for(unsigned int d = 0; d < dim; ++d)
+        f << " force_" << d;
+      f << " active_area max_pressure min_gap" << std::endl;
+    }
+  }
+}
+
+template<int dim, typename Number>
+void
+PostProcessor<dim, Number>::evaluate_contact(VectorType const & solution) const
+{
+  ContactCalculationData const & data = pp_data.contact_data;
+
+  ContactQuantities<dim> const contact =
+    pde_operator->compute_contact_quantities(solution, data.write_pressure_profile);
+
+  unsigned int const rank = dealii::Utilities::MPI::this_mpi_process(mpi_comm);
+
+  dealii::ConditionalOStream pcout(std::cout, rank == 0);
+  pcout << std::endl << "Contact with rigid obstacles:" << std::endl << std::scientific;
+  pcout << "  Contact force:            ";
+  for(unsigned int d = 0; d < dim; ++d)
+    pcout << " " << std::setprecision(5) << contact.force[d];
+  pcout << std::endl
+        << "  Active contact area:       " << std::setprecision(5) << contact.active_area << std::endl
+        << "  Max. contact pressure:     " << std::setprecision(5) << contact.max_pressure
+        << std::endl
+        << "  Min. gap:                  " << std::setprecision(5) << contact.min_gap << std::endl;
+
+  if(rank == 0)
+  {
+    std::ofstream f(data.directory + data.filename + ".txt", std::ios::app);
+    f << std::scientific << std::setprecision(10) << contact.time;
+    for(unsigned int d = 0; d < dim; ++d)
+      f << " " << contact.force[d];
+    f << " " << contact.active_area << " " << contact.max_pressure << " " << contact.min_gap
+      << std::endl;
+  }
+
+  if(data.write_pressure_profile)
+  {
+    // flatten point data: X_0, ..., X_{dim-1}, gap, pressure
+    std::vector<double> local;
+    local.reserve(contact.points.size() * (dim + 2));
+    for(unsigned int i = 0; i < contact.points.size(); ++i)
+    {
+      for(unsigned int d = 0; d < dim; ++d)
+        local.push_back(contact.points[i][d]);
+      local.push_back(contact.gap[i]);
+      local.push_back(contact.pressure[i]);
+    }
+
+    std::vector<std::vector<double>> const all = dealii::Utilities::MPI::gather(mpi_comm, local);
+
+    if(rank == 0)
+    {
+      std::ofstream f(data.directory + data.filename + "_profile_" +
+                        dealii::Utilities::int_to_string(contact_time_control.get_counter(), 4) +
+                        ".txt",
+                      std::ios::trunc);
+      f << "# time = " << contact.time << std::endl << "#";
+      for(unsigned int d = 0; d < dim; ++d)
+        f << " X_" << d;
+      f << " gap pressure" << std::endl;
+      f << std::scientific << std::setprecision(10);
+      for(auto const & values : all)
+        for(unsigned int i = 0; i < values.size(); i += dim + 2)
+        {
+          for(unsigned int j = 0; j < dim + 2; ++j)
+            f << values[i + j] << (j + 1 < dim + 2 ? " " : "");
+          f << std::endl;
+        }
+    }
+  }
 }
 
 template<int dim, typename Number>
@@ -116,6 +214,12 @@ PostProcessor<dim, Number>::do_postprocessing(VectorType const &     solution,
    */
   if(error_calculator.time_control.needs_evaluation(time, time_step_number))
     error_calculator.evaluate(solution, time, Utilities::is_unsteady_timestep(time_step_number));
+
+  /*
+   *  contact quantities
+   */
+  if(contact_time_control.needs_evaluation(time, time_step_number))
+    evaluate_contact(solution);
 }
 
 template<int dim, typename Number>

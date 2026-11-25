@@ -137,6 +137,13 @@ public:
   bool   weak_damping_active;
   double weak_damping_coefficient;
 
+  // Penalty parameter epsilon (unit: force / area / length) of the frictionless contact with
+  // rigid obstacles prescribed via BoundaryDescriptor::contact_bc. The contact pressure is
+  // lambda = epsilon * <-g>_+ with the gap g, i.e. the penetration is of order lambda / epsilon.
+  // A typical choice is epsilon = c * E / h with Young's modulus E, element size h and c >> 1.
+  // Only relevant if contact boundaries are present.
+  double contact_penalty_parameter;
+
   /**************************************************************************************/
   /*                                                                                    */
   /*                             TEMPORAL DISCRETIZATION                                */

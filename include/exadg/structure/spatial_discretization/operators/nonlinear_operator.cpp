@@ -37,6 +37,23 @@ NonLinearOperator<dim, Number>::initialize_derived()
   // it should not make a difference here whether we use dof_index or dof_index_inhomogeneous
   this->matrix_free->initialize_dof_vector(displacement_lin, this->operator_data.dof_index);
   displacement_lin.update_ghost_values();
+
+  contact_active = not this->operator_data.bc->contact_bc.empty();
+  if(contact_active)
+  {
+    AssertThrow(this->operator_data.contact_penalty > 0.0,
+                dealii::ExcMessage("Contact boundaries require a positive contact penalty "
+                                   "parameter (Parameters::contact_penalty_parameter)."));
+
+    integrator_lin_face = std::make_shared<IntegratorFace>(*this->matrix_free,
+                                                           true,
+                                                           this->operator_data.dof_index_inhomogeneous,
+                                                           this->operator_data.quad_index);
+
+    // the linearized contact term requires the values of the displacement increment on faces
+    this->integrator_flags.face_evaluate =
+      this->integrator_flags.face_evaluate | dealii::EvaluationFlags::values;
+  }
 }
 
 template<int dim, typename Number>
@@ -91,6 +108,94 @@ typename NonLinearOperator<dim, Number>::VectorType const &
 NonLinearOperator<dim, Number>::get_solution_linearization() const
 {
   return displacement_lin;
+}
+
+template<int dim, typename Number>
+bool
+NonLinearOperator<dim, Number>::contact_is_active() const
+{
+  return contact_active;
+}
+
+template<int dim, typename Number>
+ContactQuantities<dim>
+NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & displacement,
+                                                           bool const collect_point_data) const
+{
+  ContactQuantities<dim> result;
+  result.time = this->time;
+
+  if(not contact_active)
+    return result;
+
+  VectorType src;
+  this->matrix_free->initialize_dof_vector(src, this->operator_data.dof_index);
+  src.copy_locally_owned_data_from(displacement);
+  src.update_ghost_values();
+
+  IntegratorFace integrator(*this->matrix_free,
+                            true,
+                            this->operator_data.dof_index_inhomogeneous,
+                            this->operator_data.quad_index);
+
+  unsigned int const begin = this->matrix_free->n_inner_face_batches();
+  unsigned int const end   = begin + this->matrix_free->n_boundary_face_batches();
+  for(unsigned int face = begin; face < end; ++face)
+  {
+    dealii::types::boundary_id const boundary_id = this->matrix_free->get_boundary_id(face);
+    if(this->operator_data.bc->get_boundary_type(boundary_id) != BoundaryType::Contact)
+      continue;
+
+    auto const obstacle = this->operator_data.bc->contact_bc.find(boundary_id)->second;
+    obstacle->set_time(this->time);
+
+    integrator.reinit(face);
+    integrator.gather_evaluate(src, dealii::EvaluationFlags::values);
+
+    unsigned int const n_lanes = this->matrix_free->n_active_entries_per_face_batch(face);
+
+    for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+    {
+      vector const X = integrator.quadrature_point(q);
+      vector const x = X + integrator.get_value(q);
+
+      RigidObstacleValues<dim, Number> const obstacle_values =
+        evaluate_rigid_obstacle<dim, Number>(*obstacle, x);
+      scalar const pressure =
+        calculate_contact_pressure<Number>(obstacle_values.gap, this->operator_data.contact_penalty);
+      scalar const JxW = integrator.JxW(q);
+
+      for(unsigned int v = 0; v < n_lanes; ++v)
+      {
+        for(unsigned int d = 0; d < dim; ++d)
+          result.force[d] += pressure[v] * obstacle_values.normal[d][v] * JxW[v];
+        if(obstacle_values.gap[v] < 0.0)
+          result.active_area += JxW[v];
+        result.max_pressure = std::max(result.max_pressure, (double)pressure[v]);
+        result.min_gap      = std::min(result.min_gap, (double)obstacle_values.gap[v]);
+
+        if(collect_point_data)
+        {
+          dealii::Point<dim> point;
+          for(unsigned int d = 0; d < dim; ++d)
+            point[d] = X[d][v];
+          result.points.push_back(point);
+          result.gap.push_back(obstacle_values.gap[v]);
+          result.pressure.push_back(pressure[v]);
+        }
+      }
+    }
+  }
+
+  MPI_Comm const mpi_comm =
+    this->matrix_free->get_dof_handler(this->operator_data.dof_index).get_mpi_communicator();
+  for(unsigned int d = 0; d < dim; ++d)
+    result.force[d] = dealii::Utilities::MPI::sum(result.force[d], mpi_comm);
+  result.active_area  = dealii::Utilities::MPI::sum(result.active_area, mpi_comm);
+  result.max_pressure = dealii::Utilities::MPI::max(result.max_pressure, mpi_comm);
+  result.min_gap      = dealii::Utilities::MPI::min(result.min_gap, mpi_comm);
+
+  return result;
 }
 
 template<int dim, typename Number>
@@ -213,16 +318,31 @@ NonLinearOperator<dim, Number>::boundary_face_loop_nonlinear(
     this->reinit_boundary_face(integrator_inhom, face);
     integrator.reinit(face);
 
-    // In case of a pull-back of the traction vector, we need to evaluate
-    // the displacement gradient to obtain the surface area ratio da/dA.
-    // We write the integrator flags explicitly in this case since they
-    // depend on the parameter pull_back_traction.
-    if(this->operator_data.pull_back_traction)
-    {
-      integrator_inhom.gather_evaluate(src, dealii::EvaluationFlags::gradients);
-    }
+    dealii::types::boundary_id const boundary_id = matrix_free.get_boundary_id(face);
+    bool const                       is_contact_face =
+      contact_active and
+      (this->operator_data.bc->get_boundary_type(boundary_id) == BoundaryType::Contact);
 
-    do_boundary_integral_continuous_nonlinear(integrator_inhom, matrix_free.get_boundary_id(face));
+    if(is_contact_face)
+    {
+      // the contact term depends on the current position x = X + d
+      integrator_inhom.gather_evaluate(src, dealii::EvaluationFlags::values);
+
+      do_boundary_integral_contact_nonlinear(integrator_inhom, boundary_id);
+    }
+    else
+    {
+      // In case of a pull-back of the traction vector, we need to evaluate
+      // the displacement gradient to obtain the surface area ratio da/dA.
+      // We write the integrator flags explicitly in this case since they
+      // depend on the parameter pull_back_traction.
+      if(this->operator_data.pull_back_traction)
+      {
+        integrator_inhom.gather_evaluate(src, dealii::EvaluationFlags::gradients);
+      }
+
+      do_boundary_integral_continuous_nonlinear(integrator_inhom, boundary_id);
+    }
 
     // make sure that we do not write into Dirichlet degrees of freedom
     integrator_inhom.integrate(this->integrator_flags.face_integrate,
@@ -295,6 +415,31 @@ NonLinearOperator<dim, Number>::do_boundary_integral_continuous_nonlinear(
 
 template<int dim, typename Number>
 void
+NonLinearOperator<dim, Number>::do_boundary_integral_contact_nonlinear(
+  IntegratorFace &                   integrator,
+  dealii::types::boundary_id const & boundary_id) const
+{
+  auto const obstacle = this->operator_data.bc->contact_bc.find(boundary_id)->second;
+  obstacle->set_time(this->time);
+
+  for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+  {
+    // current position
+    vector const x = integrator.quadrature_point(q) + integrator.get_value(q);
+
+    RigidObstacleValues<dim, Number> const obstacle_values =
+      evaluate_rigid_obstacle<dim, Number>(*obstacle, x);
+
+    scalar const pressure =
+      calculate_contact_pressure<Number>(obstacle_values.gap, this->operator_data.contact_penalty);
+
+    // the obstacle pushes the body in direction of the normal n, t_0 = lambda * n
+    integrator.submit_value(-pressure * obstacle_values.normal, q);
+  }
+}
+
+template<int dim, typename Number>
+void
 NonLinearOperator<dim, Number>::reinit_cell_derived(IntegratorCell &   integrator,
                                                     unsigned int const cell) const
 {
@@ -304,6 +449,23 @@ NonLinearOperator<dim, Number>::reinit_cell_derived(IntegratorCell &   integrato
 
   integrator_lin->read_dof_values(displacement_lin);
   integrator_lin->evaluate(dealii::EvaluationFlags::gradients);
+}
+
+template<int dim, typename Number>
+void
+NonLinearOperator<dim, Number>::reinit_boundary_face_derived(IntegratorFace &   integrator,
+                                                             unsigned int const face) const
+{
+  (void)integrator;
+
+  if(contact_active and
+     this->operator_data.bc->get_boundary_type(this->matrix_free->get_boundary_id(face)) ==
+       BoundaryType::Contact)
+  {
+    integrator_lin_face->reinit(face);
+    integrator_lin_face->read_dof_values(displacement_lin);
+    integrator_lin_face->evaluate(dealii::EvaluationFlags::values);
+  }
 }
 
 template<int dim, typename Number>
@@ -354,9 +516,12 @@ NonLinearOperator<dim, Number>::do_boundary_integral_continuous(
   OperatorType const &               operator_type,
   dealii::types::boundary_id const & boundary_id) const
 {
-  (void)boundary_id;
-
-  if(operator_type == OperatorType::homogeneous)
+  if(operator_type == OperatorType::homogeneous and contact_active and
+     this->operator_data.bc->get_boundary_type(boundary_id) == BoundaryType::Contact)
+  {
+    do_boundary_integral_contact(integrator, boundary_id);
+  }
+  else if(operator_type == OperatorType::homogeneous)
   {
     // The derivative with respect to the pull-back of the traction vector is neglected. We still
     // need to submit zeroes for consistency.
@@ -372,6 +537,46 @@ NonLinearOperator<dim, Number>::do_boundary_integral_continuous(
     AssertThrow(false,
                 dealii::ExcMessage("OperatorType not supported in "
                                    "NonLinearOperator::do_boundary_integral_continuous()"));
+  }
+}
+
+template<int dim, typename Number>
+void
+NonLinearOperator<dim, Number>::do_boundary_integral_contact(
+  IntegratorFace &                   integrator,
+  dealii::types::boundary_id const & boundary_id) const
+{
+  auto const obstacle = this->operator_data.bc->contact_bc.find(boundary_id)->second;
+  obstacle->set_time(this->time);
+
+  scalar const penalty = dealii::make_vectorized_array<Number>(this->operator_data.contact_penalty);
+  scalar const zero    = dealii::make_vectorized_array<Number>(0.0);
+  scalar const one     = dealii::make_vectorized_array<Number>(1.0);
+
+  for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+  {
+    // current position at the point of linearization
+    vector const x_lin = integrator_lin_face->quadrature_point(q) + integrator_lin_face->get_value(q);
+
+    RigidObstacleValues<dim, Number> const obstacle_values =
+      evaluate_rigid_obstacle<dim, Number>(*obstacle, x_lin);
+
+    scalar const pressure =
+      calculate_contact_pressure<Number>(obstacle_values.gap, this->operator_data.contact_penalty);
+
+    // Heaviside function H(-g). Points with g = 0 are considered active, which avoids a
+    // singular tangent if the body initially touches the obstacle without any other support.
+    scalar const active = dealii::compare_and_apply_mask<dealii::SIMDComparison::less_than_or_equal>(
+      obstacle_values.gap, zero, one, zero);
+
+    vector const delta_d = integrator.get_value(q);
+
+    vector const n = obstacle_values.normal;
+
+    vector delta_t = (penalty * active * (n * delta_d)) * n;
+    delta_t -= pressure * (obstacle_values.hessian * delta_d);
+
+    integrator.submit_value(delta_t, q);
   }
 }
 

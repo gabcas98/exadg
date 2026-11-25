@@ -22,6 +22,10 @@
 #ifndef EXADG_STRUCTURE_SPATIAL_DISCRETIZATION_OPERATORS_NONLINEAR_OPERATOR_H_
 #define EXADG_STRUCTURE_SPATIAL_DISCRETIZATION_OPERATORS_NONLINEAR_OPERATOR_H_
 
+// C/C++
+#include <limits>
+#include <vector>
+
 // ExaDG
 #include <exadg/structure/spatial_discretization/operators/elasticity_operator_base.h>
 
@@ -29,6 +33,33 @@ namespace ExaDG
 {
 namespace Structure
 {
+/*
+ * Integral quantities of the frictionless contact with rigid obstacles, all measured in the
+ * reference configuration.
+ */
+template<int dim>
+struct ContactQuantities
+{
+  // time (or load factor) at which the obstacles are evaluated
+  double time = 0.0;
+
+  // force exerted by the obstacles on the body, int_{Gamma_C} lambda n dA
+  dealii::Tensor<1, dim> force;
+
+  // reference area of the active contact zone (g < 0)
+  double active_area = 0.0;
+
+  // maximum contact pressure lambda and minimum gap g on the contact boundaries
+  double max_pressure = 0.0;
+  double min_gap      = std::numeric_limits<double>::max();
+
+  // optional point data on the locally owned contact faces: reference position X of the
+  // quadrature points, gap g and contact pressure lambda
+  std::vector<dealii::Point<dim>> points;
+  std::vector<double>             gap;
+  std::vector<double>             pressure;
+};
+
 template<int dim, typename Number>
 class NonLinearOperator : public ElasticityOperatorBase<dim, Number>
 {
@@ -85,6 +116,21 @@ public:
    */
   VectorType const &
   get_solution_linearization() const;
+
+  /**
+   * Returns true if contact boundaries with rigid obstacles are present.
+   */
+  bool
+  contact_is_active() const;
+
+  /**
+   * Evaluates the contact quantities for a given displacement vector (inhomogeneous Dirichlet
+   * degrees of freedom need to be set). The obstacles are evaluated at the time of the operator,
+   * i.e. the time (or load factor) of the last solve. Integral quantities are summed over all
+   * MPI processes, point data (if requested) only contains locally owned faces.
+   */
+  ContactQuantities<dim>
+  compute_contact_quantities(VectorType const & displacement, bool const collect_point_data) const;
 
 private:
   /*
@@ -168,10 +214,29 @@ private:
                                             dealii::types::boundary_id const & boundary_id) const;
 
   /*
+   * Computes the frictionless penalty contact term with a rigid obstacle
+   *
+   *  - (v_h, lambda n)_{Gamma_C} ,  lambda = epsilon * <-g>_+ ,
+   *
+   * with the gap g = phi(x) and normal n = grad(phi)(x) of the obstacle evaluated at the
+   * current position x = X + d_h of the quadrature points. The integral is computed on the
+   * reference configuration, i.e. lambda is a force per undeformed area.
+   */
+  void
+  do_boundary_integral_contact_nonlinear(IntegratorFace &                   integrator,
+                                         dealii::types::boundary_id const & boundary_id) const;
+
+  /*
    * Linearized operator.
    */
   void
   reinit_cell_derived(IntegratorCell & integrator, unsigned int const cell) const final;
+
+  /*
+   * Evaluates the linearization vector on boundary faces (needed for the contact term).
+   */
+  void
+  reinit_boundary_face_derived(IntegratorFace & integrator, unsigned int const face) const final;
 
   /*
    * Calculates the integral
@@ -219,8 +284,24 @@ private:
                                   OperatorType const &               operator_type,
                                   dealii::types::boundary_id const & boundary_id) const final;
 
+  /*
+   * Linearization of the contact term
+   *
+   *  delta (- (v_h, lambda n)_{Gamma_C})
+   *    = (v_h, epsilon H(-g) (n . delta d) n - lambda grad(grad(phi)) delta d)_{Gamma_C} ,
+   *
+   * with the Heaviside function H, evaluated at the point of linearization d_lin.
+   */
+  void
+  do_boundary_integral_contact(IntegratorFace &                   integrator,
+                               dealii::types::boundary_id const & boundary_id) const;
+
   mutable std::shared_ptr<IntegratorCell> integrator_lin;
   mutable VectorType                      displacement_lin;
+
+  // contact with rigid obstacles
+  bool                                    contact_active = false;
+  mutable std::shared_ptr<IntegratorFace> integrator_lin_face;
 };
 
 } // namespace Structure

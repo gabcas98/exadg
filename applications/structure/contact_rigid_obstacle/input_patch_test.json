@@ -1,0 +1,32 @@
+{
+    "General": {
+        "Precision": "double",
+        "Dim": "2",
+        "IsTest": "false"
+    },
+    "SpatialResolution": {
+        "DegreeMin": "2",
+        "DegreeMax": "2",
+        "RefineSpaceMin": "2",
+        "RefineSpaceMax": "2"
+    },
+    "TemporalResolution": {
+        "RefineTimeMin": "0",
+        "RefineTimeMax": "0"
+    },
+    "Application": {
+        "Setup": "PatchTest",
+        "YoungsModulus": "1.0",
+        "PoissonsRatio": "0.3",
+        "PenaltyParameter": "1000.0",
+        "Pressure": "0.1",
+        "LoadIncrement": "0.25",
+        "Preconditioner": "AMG",
+        "UseMatrixBasedOperator": "false"
+    },
+    "Output": {
+        "OutputDirectory": "output/contact_rigid_obstacle/",
+        "OutputName": "patch_test",
+        "WriteOutput": "false"
+    }
+}

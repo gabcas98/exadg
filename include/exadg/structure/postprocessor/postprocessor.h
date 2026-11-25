@@ -35,11 +35,26 @@ namespace ExaDG
 {
 namespace Structure
 {
+/*
+ * Output of contact quantities for contact with rigid obstacles: at every evaluation, a line
+ * with time, contact force, active contact area, maximum pressure and minimum gap is appended to
+ * directory + filename + ".txt". Optionally, the gap and the contact pressure at all quadrature
+ * points of the contact boundaries are written to directory + filename + "_profile_<n>.txt".
+ */
+struct ContactCalculationData
+{
+  TimeControlData time_control_data;
+  std::string     directory              = "output/";
+  std::string     filename               = "contact";
+  bool            write_pressure_profile = false;
+};
+
 template<int dim>
 struct PostProcessorData
 {
   OutputData                output_data;
   ErrorCalculationData<dim> error_data;
+  ContactCalculationData    contact_data;
 };
 
 template<int dim, typename Number>
@@ -73,6 +88,9 @@ private:
   void
   invalidate_derived_fields();
 
+  void
+  evaluate_contact(VectorType const & solution) const;
+
   PostProcessorData<dim> pp_data;
 
   MPI_Comm const mpi_comm;
@@ -89,6 +107,9 @@ private:
 
   // calculate errors for verification purposes for problems with known analytical solution
   ErrorCalculator<dim, Number> error_calculator;
+
+  // contact quantities
+  TimeControl contact_time_control;
 };
 
 } // namespace Structure

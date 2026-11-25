@@ -335,6 +335,14 @@ public:
    * Computation of derived quantities needed for postprocessing.
    */
 
+  // contact quantities (contact force, active area, pressure) of contact boundaries with rigid
+  // obstacles, see NonLinearOperator::compute_contact_quantities()
+  bool
+  contact_is_active() const;
+
+  ContactQuantities<dim>
+  compute_contact_quantities(VectorType const & displacement, bool const collect_point_data) const;
+
   // displacement magnitude
   void
   compute_displacement_magnitude(VectorType &       dst_scalar_valued,

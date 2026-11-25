@@ -267,7 +267,12 @@ Operator<dim, Number>::setup_operators()
   operator_data.material_descriptor = material_descriptor;
   operator_data.unsteady            = (param.problem_type == ProblemType::Unsteady);
   operator_data.density             = param.density;
+  operator_data.contact_penalty     = param.contact_penalty_parameter;
   operator_data.large_deformation   = param.large_deformation;
+
+  AssertThrow(boundary_descriptor->contact_bc.empty() or param.large_deformation,
+              dealii::ExcMessage("Contact boundary conditions are only implemented for the "
+                                 "nonlinear operator, set large_deformation = true."));
   if(param.large_deformation)
   {
     operator_data.pull_back_traction = param.pull_back_traction;
@@ -690,6 +695,25 @@ unsigned int
 Operator<dim, Number>::get_dof_index() const
 {
   return matrix_free_data->get_dof_index(get_dof_name());
+}
+
+template<int dim, typename Number>
+bool
+Operator<dim, Number>::contact_is_active() const
+{
+  return (param.large_deformation and elasticity_operator_nonlinear.contact_is_active());
+}
+
+template<int dim, typename Number>
+ContactQuantities<dim>
+Operator<dim, Number>::compute_contact_quantities(VectorType const & displacement,
+                                                  bool const         collect_point_data) const
+{
+  AssertThrow(param.large_deformation,
+              dealii::ExcMessage("Contact is only implemented for large_deformation = true."));
+
+  return elasticity_operator_nonlinear.compute_contact_quantities(displacement,
+                                                                  collect_point_data);
 }
 
 template<int dim, typename Number>
