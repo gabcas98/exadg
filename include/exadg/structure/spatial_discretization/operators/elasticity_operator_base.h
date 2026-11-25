@@ -43,6 +43,7 @@ struct OperatorData : public OperatorBaseData
       density(1.0),
       contact_method(ContactMethod::Penalty),
       contact_penalty(0.0),
+      contact_nitsche_theta(0.0),
       quad_index_gauss_lobatto(0)
   {
   }
@@ -68,6 +69,7 @@ struct OperatorData : public OperatorBaseData
   // exist), see Parameters::contact_method and Parameters::contact_penalty_parameter
   ContactMethod contact_method;
   double        contact_penalty;
+  double        contact_nitsche_theta;
 
   // for DirichletCached boundary conditions, another quadrature rule
   // is needed to set the constrained DoFs.

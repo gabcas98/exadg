@@ -153,6 +153,11 @@ public:
   // typically sufficient.
   double contact_penalty_parameter;
 
+  // ContactMethod::Nitsche: parameter theta of the Nitsche variant (Chouly and Hild, 2013):
+  // theta = 1: symmetric (the tangent is symmetric), theta = 0: incomplete, theta = -1:
+  // skew-symmetric (stable for any gamma > 0). Only relevant for ContactMethod::Nitsche.
+  double contact_nitsche_theta;
+
   /**************************************************************************************/
   /*                                                                                    */
   /*                             TEMPORAL DISCRETIZATION                                */

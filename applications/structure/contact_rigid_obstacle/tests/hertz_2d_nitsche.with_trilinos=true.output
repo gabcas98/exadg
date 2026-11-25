@@ -32,6 +32,7 @@ Mathematical model:
 Physical quantities:
   Contact method:                            Nitsche
   Contact penalty parameter:                 1.0000e+01
+  Nitsche parameter theta:                   0.0000e+00
 
 Temporal discretization:
   load_increment:                            1.0000e-01

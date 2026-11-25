@@ -95,6 +95,12 @@ NonLinearOperator<dim, Number>::initialize_derived()
       // the normal traction of the displacement increment is needed in the linearized operator
       this->integrator_flags.face_evaluate =
         this->integrator_flags.face_evaluate | dealii::EvaluationFlags::gradients;
+
+      // for theta != 0, the contact term is also tested with the normal traction of the test
+      // function, i.e. with its gradient
+      if(this->operator_data.contact_nitsche_theta != 0.0)
+        this->integrator_flags.face_integrate =
+          this->integrator_flags.face_integrate | dealii::EvaluationFlags::gradients;
     }
   }
 }
@@ -128,9 +134,21 @@ NonLinearOperator<dim, Number>::evaluate_contact_state(IntegratorFace const &   
     state.gamma = integrator.read_cell_data(nitsche_gamma);
 
     // normal traction lambda(d) = n . (P N)
-    scalar const normal_traction = state.obstacle.normal * ((state.F * state.S) * state.N);
+    tensor const P        = state.F * state.S;
+    state.normal_traction = state.obstacle.normal * (P * state.N);
 
-    argument = normal_traction - state.gamma * state.obstacle.gap;
+    argument = state.normal_traction - state.gamma * state.obstacle.gap;
+
+    if(this->operator_data.contact_nitsche_theta != 0.0)
+    {
+      // Q = delta P[G] = F delta S[G] + G S with G = n (x) N
+      tensor const G = dealii::outer_product(state.obstacle.normal, state.N);
+      state.Q        = state.F * this->material_handler.get_material()
+                            ->second_piola_kirchhoff_stress_displacement_derivative(
+                              G, state.F, integrator.get_current_cell_index(), q) +
+                G * state.S;
+      state.q = state.obstacle.hessian * (P * state.N);
+    }
   }
   else
   {
@@ -512,6 +530,12 @@ NonLinearOperator<dim, Number>::do_boundary_integral_continuous_nonlinear(
     }
 
     integrator.submit_value(-traction, q);
+
+    // the contact term of Nitsche's method with theta != 0 also tests with the gradient, which
+    // has to be zero on the other boundaries
+    if((this->integrator_flags.face_integrate & dealii::EvaluationFlags::gradients) !=
+       dealii::EvaluationFlags::nothing)
+      integrator.submit_gradient(tensor(), q);
   }
 }
 
@@ -529,7 +553,19 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact_nonlinear(
     ContactState const state = evaluate_contact_state(integrator, q, *obstacle);
 
     // the obstacle pushes the body in direction of the normal n, t_0 = lambda * n
-    integrator.submit_value(-state.pressure * state.obstacle.normal, q);
+    vector value = -state.pressure * state.obstacle.normal;
+
+    if(this->operator_data.contact_method == ContactMethod::Nitsche and
+       this->operator_data.contact_nitsche_theta != 0.0)
+    {
+      // (theta / gamma) ([A]_+ - lambda(d)) lambda'(d; v)
+      scalar const factor = this->operator_data.contact_nitsche_theta / state.gamma *
+                            (state.pressure - state.normal_traction);
+      value += factor * state.q;
+      integrator.submit_gradient(factor * state.Q, q);
+    }
+
+    integrator.submit_value(value, q);
   }
 }
 
@@ -630,6 +666,11 @@ NonLinearOperator<dim, Number>::do_boundary_integral_continuous(
     for(unsigned int q = 0; q < integrator.n_q_points; ++q)
     {
       integrator.submit_value(zero, q);
+
+      // see do_boundary_integral_continuous_nonlinear()
+      if((this->integrator_flags.face_integrate & dealii::EvaluationFlags::gradients) !=
+         dealii::EvaluationFlags::nothing)
+        integrator.submit_gradient(tensor(), q);
     }
   }
   else
@@ -686,7 +727,23 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact(
     // delta (lambda n) = H(A) delta A n + lambda delta n
     vector const delta_t = (state.active * delta_argument) * n + state.pressure * delta_n;
 
-    integrator.submit_value(-delta_t, q);
+    vector value = -delta_t;
+
+    if(nitsche and this->operator_data.contact_nitsche_theta != 0.0)
+    {
+      // (theta / gamma) ((H(A) - 1) lambda'(d; delta d) - H(A) gamma (n . delta d)) lambda'(d; v)
+      // with lambda'(d; delta d) = delta A + gamma (n . delta d)
+      scalar const n_delta_d     = n * delta_d;
+      scalar const delta_lambda  = delta_argument + state.gamma * n_delta_d;
+      scalar const one           = dealii::make_vectorized_array<Number>(1.0);
+      scalar const factor        = this->operator_data.contact_nitsche_theta / state.gamma *
+                            ((state.active - one) * delta_lambda -
+                             state.active * state.gamma * n_delta_d);
+      value += factor * state.q;
+      integrator.submit_gradient(factor * state.Q, q);
+    }
+
+    integrator.submit_value(value, q);
   }
 }
 

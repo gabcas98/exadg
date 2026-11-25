@@ -1,0 +1,38 @@
+{
+    "General": {
+        "Precision": "double",
+        "Dim": "2",
+        "IsTest": "true"
+    },
+    "SpatialResolution": {
+        "DegreeMin": "2",
+        "DegreeMax": "2",
+        "RefineSpaceMin": "1",
+        "RefineSpaceMax": "1"
+    },
+    "TemporalResolution": {
+        "RefineTimeMin": "0",
+        "RefineTimeMax": "0"
+    },
+    "Application": {
+        "Setup": "Hertz",
+        "YoungsModulus": "1.0",
+        "PoissonsRatio": "0.3",
+        "PenaltyParameter": "10.0",
+        "Radius": "1.0",
+        "Indentation": "0.01",
+        "DomainSize": "4.0",
+        "LocalRefinements": "4",
+        "RefinementRadius": "0.2",
+        "LoadIncrement": "0.1",
+        "Preconditioner": "AMG",
+        "UseMatrixBasedOperator": "false",
+        "ContactMethod": "Nitsche",
+        "NitscheTheta": "1.0"
+    },
+    "Output": {
+        "OutputDirectory": "output/contact_rigid_obstacle/",
+        "OutputName": "hertz",
+        "WriteOutput": "false"
+    }
+}

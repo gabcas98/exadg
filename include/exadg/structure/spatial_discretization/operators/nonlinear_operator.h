@@ -237,6 +237,13 @@ private:
     vector           N;
     tensor           F;
     symmetric_tensor S;
+    scalar           normal_traction; // lambda(d) = n . (P N)
+
+    // Nitsche with theta != 0: derivative of the normal traction in direction of a test
+    // function v, lambda'(d; v) = Grad(v) : Q + v . q (using the major symmetry of the tangent
+    // of hyperelastic materials), with Q = delta P[n (x) N] and q = grad(grad(phi)) (P N)
+    tensor Q;
+    vector q;
   };
 
   /*
@@ -330,7 +337,17 @@ private:
    *  Nitsche: delta A = n . (delta P N) + (grad(grad(phi)) delta d) . (P N) - gamma (n . delta d) ,
    *           delta P = F delta S + Grad(delta d) S .
    *
-   * For Nitsche, the linearized operator is not symmetric.
+   * For Nitsche with theta != 0, the term
+   *
+   *  (theta / gamma) ([A]_+ - lambda(d), lambda'(d; v))_{Gamma_C}
+   *
+   * is added to the residual, and its linearization
+   *
+   *  (theta / gamma) ((H(A) - 1) lambda'(d; delta d) - H(A) gamma (n . delta d), lambda'(d; v))
+   *
+   * to the linearized operator. The second derivative lambda''(d; delta d, v), which is weighted
+   * by [A]_+ - lambda(d) and vanishes for the exact solution, is neglected. With this, the
+   * linearized operator is symmetric for theta = 1 and non-symmetric otherwise.
    */
   void
   do_boundary_integral_contact(IntegratorFace &                   integrator,

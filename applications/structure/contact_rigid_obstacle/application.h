@@ -185,6 +185,9 @@ public:
       prm.add_parameter("YoungsModulus", youngs_modulus, "Young's modulus.");
       prm.add_parameter("PoissonsRatio", poissons_ratio, "Poisson's ratio.");
       prm.add_parameter("ContactMethod", contact_method, "Penalty or Nitsche.");
+      prm.add_parameter("NitscheTheta",
+                        nitsche_theta,
+                        "Nitsche variant: 1 symmetric, 0 incomplete, -1 skew-symmetric.");
       prm.add_parameter("PenaltyParameter",
                         penalty_parameter,
                         "Penalty: epsilon. Nitsche: gamma_0 * E, gamma = gamma_0 E (k+1)^2 / h.");
@@ -237,6 +240,7 @@ private:
     this->param.material_type        = MaterialType::StVenantKirchhoff;
 
     this->param.contact_method            = contact_method;
+    this->param.contact_nitsche_theta     = nitsche_theta;
     this->param.contact_penalty_parameter = penalty_parameter;
 
     this->param.load_increment = load_increment;
@@ -256,9 +260,10 @@ private:
     this->param.newton_solver_data.n_nonmonotone_steps = nonmonotone_steps;
     this->param.newton_solver_data.nonmonotone_factor  = nonmonotone_factor;
     this->param.newton_solver_data.max_iter_damping    = max_iter_damping;
-    // the linearized operator of Nitsche's method (theta = 0) is not symmetric
+    // the linearized operator of Nitsche's method is only symmetric for theta = 1
     LinearSolver const linear_solver =
-      (contact_method == ContactMethod::Nitsche) ? LinearSolver::GMRES : LinearSolver::CG;
+      (contact_method == ContactMethod::Nitsche and nitsche_theta != 1.0) ? LinearSolver::GMRES :
+                                                                            LinearSolver::CG;
     this->param.solver_data = SolverData(1e4, 1.e-14, 1.e-6, linear_solver, 100);
     this->param.preconditioner     = preconditioner;
 
@@ -478,6 +483,7 @@ private:
   double youngs_modulus    = 1.0;
   double poissons_ratio    = 0.3;
   ContactMethod contact_method    = ContactMethod::Penalty;
+  double        nitsche_theta     = 0.0;
   double        penalty_parameter = 1.0e3;
 
   // PatchTest
