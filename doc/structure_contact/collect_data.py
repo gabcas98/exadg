@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""
+Collects the results of the contact studies into data files for the report.
+
+Usage: collect_data.py <run_directory>
+
+where <run_directory> is the build directory of the application structure/contact_rigid_obstacle in
+which the studies A_*, B_*, C_*, D_* were run (see run_studies.sh). The data files are written to
+the subdirectory data/ next to this script.
+"""
+
+import bisect
+import math
+import os
+import re
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(
+    0, os.path.join(HERE, "..", "..", "applications", "structure", "contact_rigid_obstacle"))
+from hertz_comparison import compare, load  # noqa: E402
+
+E, NU, R = 1.0, 0.3, 1.0
+
+
+def log_info(run_dir, name):
+    text = open(os.path.join(run_dir, name + ".log")).read()
+    dofs = int(re.search(r"Degrees of freedom\s*=\s*(\d+)", text).group(1))
+    newton = [int(n) for n in re.findall(r"Nonlinear iterations:\s*(\d+)", text)]
+    linear = [float(n) for n in re.findall(r"Linear iterations \(avg\):\s*([\d.]+)", text)]
+    return dofs, newton, linear
+
+
+def prefix(run_dir, name):
+    return os.path.join(run_dir, "output", "contact_rigid_obstacle", name + "_contact")
+
+
+def interpolate(profile, r):
+    rs = [p[0] for p in profile]
+    i = bisect.bisect_left(rs, r)
+    if i <= 0:
+        return profile[0][1]
+    if i >= len(rs):
+        return profile[-1][1]
+    (r0, p0), (r1, p1) = profile[i - 1], profile[i]
+    return p0 + (p1 - p0) * (r - r0) / (r1 - r0) if r1 > r0 else p0
+
+
+def profile_difference(c, ref, r_max=2.0):
+    """L2 difference of the pressure profiles (r < r_max a_ref), relative to p0 of the reference."""
+    diff = [p - interpolate(ref["profile"], r) for r, p in c["profile"] if r < r_max * ref["a"]]
+    return math.sqrt(sum(d**2 for d in diff) / len(diff)) / ref["p0"]
+
+
+def hertz_interior_error(c, r_max=0.8):
+    """L2 error with respect to the Hertz profile for r < r_max a, relative to p0."""
+    diff = [p - c["p0"] * math.sqrt(1.0 - (r / c["a"])**2) for r, p in c["profile"]
+            if r < r_max * c["a"]]
+    return math.sqrt(sum(d**2 for d in diff) / len(diff)) / c["p0"]
+
+
+def write(filename, header, rows):
+    with open(os.path.join(HERE, "data", filename), "w") as f:
+        f.write(header + "\n")
+        for row in rows:
+            f.write(" ".join(f"{v:.6e}" if isinstance(v, float) else str(v) for v in row) + "\n")
+
+
+def main():
+    run_dir = sys.argv[1]
+    os.makedirs(os.path.join(HERE, "data"), exist_ok=True)
+
+    # A: indentation study
+    rows = []
+    for d, L in [("3e-2", 7), ("1e-2", 7), ("3e-3", 8), ("1e-3", 9), ("3e-4", 9), ("1e-4", 10)]:
+        c = compare(2, E, NU, R, prefix(run_dir, "A_d" + d))
+        dofs, newton, _ = log_info(run_dir, "A_d" + d)
+        rows.append((float(d), c["a"] / R, c["a"] / (0.5 / 2**L),
+                     abs(c["p_center"] - c["p_center_hertz"]) / c["p_center_hertz"],
+                     abs(c["a_num"] - c["a"]) / c["a"], c["err_l2"], hertz_interior_error(c),
+                     c["P"], dofs, sum(newton)))
+    write("indentation.dat",
+          "delta a_over_R a_over_h err_p0 err_a err_l2 err_l2_int P dofs newton", rows)
+
+    # B: mesh study (reference: finest mesh)
+    levels = [5, 6, 7, 8, 9, 10, 11]
+    results = {L: compare(2, E, NU, R, prefix(run_dir, f"B_L{L}")) for L in levels}
+    ref = results[levels[-1]]
+    rows = []
+    for L in levels[:-1]:
+        c = results[L]
+        dofs, newton, _ = log_info(run_dir, f"B_L{L}")
+        h = 0.5 / 2**L
+        rows.append((L, h, h / ref["a"], dofs, abs(c["P"] - ref["P"]) / ref["P"],
+                     profile_difference(c, ref), profile_difference(c, ref, 0.8),
+                     abs(c["a_num"] - ref["a_num"]) / ref["a_num"], c["err_l2"],
+                     hertz_interior_error(c), sum(newton)))
+    write("mesh.dat",
+          "L h h_over_a dofs err_P err_profile err_profile_int err_a err_hertz_l2 "
+          "err_hertz_int newton", rows)
+
+    # pressure profile of the finest mesh and a coarse mesh, normalized with the Hertz solution
+    for L in [6, levels[-1]]:
+        c = results[L]
+        write(f"profile_L{L}.dat", "r_over_a p_over_p0",
+              [(r / c["a"], p / c["p0"]) for r, p in c["profile"] if r < 1.5 * c["a"]])
+
+    # C: penalty study (reference: largest penalty)
+    penalties = ["1e2", "1e3", "1e4", "1e5", "1e6", "1e7"]
+    results = {e: compare(2, E, NU, R, prefix(run_dir, "C_e" + e)) for e in penalties}
+    ref = results[penalties[-1]]
+    rows = []
+    for e in penalties:
+        c = results[e]
+        _, newton, linear = log_info(run_dir, "C_e" + e)
+        err_P = abs(c["P"] - ref["P"]) / ref["P"]
+        err_profile = profile_difference(c, ref)
+        err_profile_int = profile_difference(c, ref, 0.8)
+        rows.append((float(e), -c["min_gap"] / 1e-3, err_P, err_profile, err_profile_int,
+                     hertz_interior_error(c), sum(newton), max(linear)))
+    write("penalty.dat",
+          "eps penetration_over_delta err_P err_profile err_profile_int err_hertz_int newton "
+          "max_linear", rows)
+
+    # D: patch tests (exact: force p L (W), area L (W), pressure p, gap -p / eps)
+    eps = 1000.0
+    rows = []
+    for name, dim, p in [("D_2d_q2_amg", 2, 0.1), ("D_2d_q3_mg", 2, 0.1), ("D_2d_q2_mb", 2, 0.1),
+                         ("D_2d_q2_large", 2, 0.15), ("D_3d_q2_mg", 3, 0.1),
+                         ("D_3d_q3_large", 3, 0.15)]:
+        last = load(prefix(run_dir, name) + ".txt")[-1]
+        area = 2.0
+        exact = [p * area, area, p, -p / eps]
+        computed = [last[2], last[1 + dim], last[2 + dim], last[3 + dim]]
+        err = max(abs(c - x) / abs(x) for c, x in zip(computed, exact))
+        dofs, newton, _ = log_info(run_dir, name)
+        rows.append((name, dim, p, dofs, err, sum(newton)))
+    write("patch.dat", "name dim p dofs max_rel_err newton", rows)
+
+
+if __name__ == "__main__":
+    main()

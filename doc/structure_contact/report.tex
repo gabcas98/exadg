@@ -1,0 +1,334 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{pgfplots}
+\usepackage{pgfplotstable}
+\pgfplotsset{compat=1.17}
+\usepgfplotslibrary{groupplots}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}
+\usepackage{url}
+\DeclareUrlCommand\code{\urlstyle{tt}}
+\emergencystretch=2em
+
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\pos}[1]{\langle #1\rangle_{+}}
+
+
+% slope triangle: \slopetriangle{x0}{y0}{x1}{slope}{label}
+\newcommand{\slopetriangle}[5]{%
+  \draw[gray] (axis cs:#1,#2) -- (axis cs:#3,#2) -- (axis cs:#3,{#2*(#3/#1)^(#4)}) -- cycle;
+  \node[font=\scriptsize, gray, anchor=west] at (axis cs:#3,{#2*(#3/#1)^(#4/2)}) {#5};
+}
+
+\title{Frictionless contact with rigid obstacles in ExaDG:\\
+penalty formulation and validation}
+\author{Branch \code{structure-contact}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+  We summarise the frictionless penalty contact of a hyperelastic body with rigid obstacles that
+  was added to the structure module of ExaDG, and its validation. A contact patch test is
+  reproduced to round-off in two and three dimensions, for several polynomial degrees and all
+  available preconditioners. For the Hertz problem, the discretisation and penalty errors
+  converge, and the remaining deviation from the Hertz solution scales like the square root of
+  the indentation, i.e.\ like the strain: it is the expected difference between the finite-strain
+  model and the linear Hertz theory. Newton's method converges quadratically once the active set
+  is settled.
+\end{abstract}
+
+\section{Formulation}
+
+Let $\Gamma_C$ be the part of the boundary of the reference configuration $\Omega_0$ that may come
+into contact with a rigid obstacle. The obstacle is given by a signed distance function $\phi$:
+for a material point $X\in\Gamma_C$ with current position $x = X + d(X)$,
+\begin{equation}
+  g = \phi(x), \qquad n = \nabla\phi(x), \qquad \kappa = \nabla\nabla\phi(x)
+\end{equation}
+are the gap ($g<0$: penetration), the unit normal pointing from the obstacle towards the body and
+the curvature of the obstacle. The penalty contact pressure and the contact term of the weak form
+(measured per reference area) are
+\begin{equation}
+  \lambda = \varepsilon \pos{-g}, \qquad
+  r_C(d; v) = -\int_{\Gamma_C} \lambda\, n\cdot v \dd A ,
+\end{equation}
+and the consistent linearisation in direction $\delta d$ reads
+\begin{equation}
+  \delta r_C = \int_{\Gamma_C} \Bigl(\varepsilon\, H(-g)\,(n\cdot\delta d)\, n
+  - \lambda\, \kappa\, \delta d\Bigr)\cdot v \dd A ,
+\end{equation}
+with the Heaviside function $H$ (points with $g=0$ are counted as active). The term is symmetric,
+so the conjugate gradient method can still be used for the linearised problems.
+
+\paragraph{Implementation.}
+The obstacle is prescribed per boundary id via \code{BoundaryDescriptor::contact_bc} (a
+\code{dealii::Function} providing value, gradient and Hessian, evaluated at the operator time so
+that obstacles may move), the penalty via \code{Parameters::contact_penalty_parameter}. The
+residual is added in the boundary face loop of \code{NonLinearOperator}; the linearisation is
+hooked into \code{reinit\_boundary\_face\_derived}/\code{do\_boundary\_integral\_continuous}, so
+the matrix-free operator, its diagonal, the matrix-based assembly (AMG) and all multigrid levels
+contain it. Contact force, active area, pressure and gap are available in the postprocessor. All
+results below are computed with the application \code{structure/contact\_rigid\_obstacle},
+St.\,Venant--Kirchhoff material with $E=1$, $\nu=0.3$ (plane strain in 2d), quasi-static load
+stepping and quadratic elements unless stated otherwise.
+
+\section{Contact patch test}
+
+A block $[0,2]\times[0,1]$ ($\times[0,1]$ in 3d) rests on the rigid plane $y=0$ and is loaded by a
+uniform traction $p$ on the top face; symmetry conditions on $x=0$ (and $z=0$) remove the
+tangential rigid body modes. The exact solution of the discrete penalty problem is a homogeneous
+deformation with uniform contact pressure $\lambda=p$, penetration $g=-p/\varepsilon$, contact
+force $p\,|\Gamma_C|$ and active area $|\Gamma_C| = 2$, independently of mesh, degree and strain
+magnitude. \Cref{tab:patch} reports the largest relative error of these four quantities
+($\varepsilon=10^3$): all of them agree with the exact values in all ten printed digits, including
+$p=0.15$, which corresponds to a compressive strain of about $15\,\%$.
+
+\begin{table}[ht]
+  \centering
+  \pgfplotstableread{data/patch.dat}\patchtab
+  \pgfplotstabletypeset[
+    columns={name,dim,p,dofs,max_rel_err,newton},
+    columns/name/.style={string type, column name={case},
+      string replace={D_2d_q2_amg}{2d, $Q_2$, AMG},
+      string replace={D_2d_q3_mg}{2d, $Q_3$, matrix-free multigrid},
+      string replace={D_2d_q2_mb}{2d, $Q_2$, matrix-based multigrid},
+      string replace={D_2d_q2_large}{2d, $Q_2$, multigrid, large strain},
+      string replace={D_3d_q2_mg}{3d, $Q_2$, matrix-free multigrid},
+      string replace={D_3d_q3_large}{3d, $Q_3$, multigrid, large strain},
+      column type=l},
+    columns/dim/.style={column name={$d$}},
+    columns/p/.style={column name={$p$}, fixed, precision=2},
+    columns/dofs/.style={column name={DoFs}},
+    columns/max_rel_err/.style={column name={max.\ rel.\ error}, fixed, precision=0},
+    columns/newton/.style={column name={Newton it.\ (total)}},
+    every head row/.style={before row=\toprule, after row=\midrule},
+    every last row/.style={after row=\bottomrule},
+  ]{\patchtab}
+  \caption{Contact patch test: largest relative error of contact force, active area, pressure and
+  gap with respect to the exact values (0: identical in all ten printed digits).}
+  \label{tab:patch}
+\end{table}
+
+\section{Hertz problem}
+
+A rigid cylinder (2d, plane strain) of radius $R=1$ is pressed by an indentation $\delta$ into the
+elastic body $[0,4]\times[-4,0]$; only one half is computed (symmetry on $x=0$, clamped bottom).
+The mesh is refined locally towards the initial contact point; $h$ denotes the element size in the
+contact zone. For the computed load $P$ (per unit length, full cylinder), the Hertz solution is
+\begin{equation}
+  a = \sqrt{\frac{4PR}{\pi E^*}}, \qquad p_0 = \frac{2P}{\pi a}, \qquad
+  p(r) = p_0\sqrt{1-r^2/a^2}, \qquad E^* = \frac{E}{1-\nu^2}.
+\end{equation}
+Three error sources are present: the discretisation ($h$), the penalty ($\varepsilon$), and the
+modelling difference between the finite-strain hyperelastic problem and the linear Hertz theory.
+They are separated by the three studies in \cref{fig:hertz}.
+
+\begin{figure}[p]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[width=0.48\textwidth, height=0.42\textwidth, xmode=log, ymode=log, grid=major,
+        grid style={gray!25}, legend style={font=\footnotesize, fill=white, fill opacity=0.85,
+        text opacity=1}, tick label style={font=\footnotesize}, label style={font=\small},
+        xlabel={indentation $\delta/R$}, ylabel={relative error},
+        title={\small (a) deviation from Hertz, $\varepsilon=100/\delta$},
+        legend pos=south east, ymin=1e-3, ymax=2e-1]
+      \addplot+[mark=*] table[x=delta, y=err_p0] {data/indentation.dat};
+      \addlegendentry{$p(0)$}
+      \addplot+[mark=triangle*] table[x=delta, y=err_l2_int] {data/indentation.dat};
+      \addlegendentry{$p(r)$, $r<0.8a$}
+      \addplot+[mark=square*] table[x=delta, y=err_a] {data/indentation.dat};
+      \addlegendentry{$a$}
+      \slopetriangle{3e-4}{2.5e-3}{3e-3}{0.5}{$1/2$}
+    \end{axis}
+  \end{tikzpicture}\hfill
+  \begin{tikzpicture}
+    \begin{axis}[width=0.48\textwidth, height=0.42\textwidth, xmode=log, ymode=log, grid=major,
+        grid style={gray!25}, legend style={font=\footnotesize, fill=white, fill opacity=0.85,
+        text opacity=1}, tick label style={font=\footnotesize}, label style={font=\small},
+        xlabel={$h/a$}, ylabel={relative error},
+        title={\small (b) mesh, $\delta=10^{-3}$, $\varepsilon=10^5$},
+        legend pos=north west, ymin=5e-6, ymax=1e2]
+      \addplot+[mark=*] table[x=h_over_a, y=err_P] {data/mesh.dat};
+      \addlegendentry{$P$}
+      \addplot+[mark=triangle*] table[x=h_over_a, y=err_profile_int] {data/mesh.dat};
+      \addlegendentry{$p(r)$, $r<0.8a$}
+      \addplot+[mark=square*] table[x=h_over_a, y=err_profile] {data/mesh.dat};
+      \addlegendentry{$p(r)$, $r<2a$}
+      \addplot+[mark=diamond*, dashed, black] table[x=h_over_a, y=err_hertz_int] {data/mesh.dat};
+      \addlegendentry{$p(r)$, $r<0.8a$, vs.\ Hertz}
+    \end{axis}
+  \end{tikzpicture}
+
+  \vspace{1em}
+  \begin{tikzpicture}
+    \begin{axis}[width=0.48\textwidth, height=0.42\textwidth, xmode=log, ymode=log, grid=major,
+        grid style={gray!25}, legend style={font=\footnotesize, fill=white, fill opacity=0.85,
+        text opacity=1}, tick label style={font=\footnotesize}, label style={font=\small},
+        xlabel={penalty $\varepsilon$}, ylabel={relative error / penetration},
+        title={\small (c) penalty, $\delta=10^{-3}$, $h/a\approx 0.05$},
+        legend pos=north east, ymax=1e2]
+      \addplot+[mark=*] table[x=eps, y=err_P] {data/penalty.dat};
+      \addlegendentry{$P$ vs.\ $\varepsilon=10^7$}
+      \addplot+[mark=triangle*] table[x=eps, y=penetration_over_delta] {data/penalty.dat};
+      \addlegendentry{$\max|g|/\delta$}
+      \addplot+[mark=diamond*, dashed, black] table[x=eps, y=err_hertz_int] {data/penalty.dat};
+      \addlegendentry{$p(r)$, $r<0.8a$, vs.\ Hertz}
+      \slopetriangle{1e5}{1e-5}{1e6}{-1}{$-1$}
+    \end{axis}
+  \end{tikzpicture}\hfill
+  \begin{tikzpicture}
+    \begin{axis}[width=0.48\textwidth, height=0.42\textwidth, grid=major, grid style={gray!25},
+        xlabel={$r/a$}, ylabel={$p/p_0$}, xmin=0, xmax=1.5, ymin=-0.05, ymax=1.15,
+        title={\small (d) pressure profile, $\delta=10^{-3}$},
+        legend style={font=\footnotesize}, legend pos=north east,
+        tick label style={font=\footnotesize}, label style={font=\small}]
+      \addplot[black, thick, domain=0:1, samples=200] {sqrt(max(1-x^2,0))};
+      \addlegendentry{Hertz}
+      \addplot[only marks, mark=o, mark size=1.2pt, blue] table[x=r_over_a, y=p_over_p0]
+        {data/profile_L6.dat};
+      \addlegendentry{$h/a\approx 0.4$}
+      \addplot[only marks, mark=*, mark size=0.6pt, red] table[x=r_over_a, y=p_over_p0]
+        {data/profile_L11.dat};
+      \addlegendentry{$h/a\approx 0.01$}
+    \end{axis}
+  \end{tikzpicture}
+  \caption{Hertz problem (2d). (a) Error with respect to the Hertz solution for decreasing
+  indentation ($a/h$ between 10 and 30): it decays like $\delta^{1/2}$, i.e.\ like the strain
+  $p_0/E^*$. (b) Mesh convergence of load and pressure profile with respect to the finest mesh
+  ($h/a = 0.0135$); the error with respect to Hertz (dashed) saturates at the modelling error
+  of (a). (c) Penalty convergence with respect to $\varepsilon=10^7$: penetration and load error
+  decay like $\varepsilon^{-1}$. (d) Contact pressure at the quadrature points of the contact
+  boundary.}
+  \label{fig:hertz}
+\end{figure}
+
+\paragraph{Indentation (\cref{fig:hertz}a).}
+With $a/h$ between 10 and 30 and a penalty $\varepsilon=100/\delta$ that keeps the penetration
+below $10^{-3}\delta$, the error of the pressure in the centre decreases with slope $1/2$ in
+$\delta$, from $7.6\,\%$ at $\delta=3\cdot10^{-2}$ to $0.36\,\%$ at $\delta=10^{-4}$. Since
+$p_0/E^* \propto \sqrt{\delta/R}$, this is a first-order error in the strain, i.e.\ the expected
+discrepancy between the geometrically nonlinear St.\,Venant--Kirchhoff model and the linear Hertz
+theory, and not a discretisation error, as confirmed by (b) and (c). The interior pressure profile
+follows the same trend down to $\delta = 10^{-3}$; for the two smallest indentations the mesh has
+only $a/h\approx 10$ and the profile error stays at the discretisation level of about $1\,\%$. The
+contact radius is measured through the active area, which is resolved only up to the spacing of
+the quadrature points, and is therefore less regular ($0.9$--$6\,\%$).
+
+\paragraph{Mesh (\cref{fig:hertz}b).}
+The load converges from $1.6\cdot10^{-4}$ to $2\cdot10^{-6}$ with respect to the finest mesh. The
+pressure in the interior of the contact zone ($r<0.8a$) is pre-asymptotic as long as the contact
+zone is covered by fewer than about five elements ($h/a>0.2$), and then converges rapidly, from
+$10^{-3}$ at $h/a=0.11$ to $1.5\cdot10^{-5}$ at $h/a=0.027$. The error of the whole profile
+($r<2a$) is dominated by the elements cut by the boundary of the contact zone, where the pressure
+has a square-root behaviour and the active set is resolved only at quadrature points; it
+decreases irregularly to $5\cdot10^{-3}$. The interior error with respect to Hertz levels off at
+$0.87\,\%$, the modelling error for $\delta=10^{-3}$ (consistent with (a)).
+
+\paragraph{Penalty (\cref{fig:hertz}c).}
+The maximal penetration equals $p_0/\varepsilon$ and the load converges like $\varepsilon^{-1}$
+to the one with the largest penalty, as expected for the penalty method. The interior pressure
+reaches the modelling floor for $\varepsilon\gtrsim10^5$ ($\varepsilon h/E\approx 10^2$). For
+$\varepsilon=10^7$ ($\varepsilon h/E\approx 10^4$) the error increases again slightly
+($0.86\,\%\to0.93\,\%$) and the pressure starts to oscillate between neighbouring quadrature points:
+for $\varepsilon\to\infty$ the penalty enforces $g=0$ at every quadrature point of the face, which
+are more than the displacement degrees of freedom, so the constraint becomes over-determined
+(locking). The penalty must therefore be chosen in a window, here
+$10^4\lesssim\varepsilon\lesssim10^6$.
+
+\paragraph{Three dimensions.}
+For a rigid sphere ($\delta=10^{-3}$, quarter domain, matrix-free multigrid), the computed load
+agrees with the Hertz value $P=\tfrac43 E^*\sqrt{R}\,\delta^{3/2}$ within $0.2\,\%$.
+\Cref{tab:hertz3d} shows that the pressure in the centre is $3\,\%$ below Hertz on both meshes
+(modelling error), while the contact radius and the pressure peak at the edge of the contact zone
+improve with the resolution: on the coarse mesh, the active set boundary cuts only four elements
+across $a$ and a local pressure overshoot of factor two appears at the edge, which vanishes after
+one refinement.
+
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{lrrrrr}
+    \toprule
+    mesh & DoFs & $a/h$ & err.\ $a$ & err.\ $p(0)$ & $\max\lambda / p_0$ \\
+    \midrule
+    $L=6$ & 41\,865 & 4 & $-5.1\,\%$ & $-2.9\,\%$ & 2.10 \\
+    $L=7$ & 72\,315 & 8 & $-1.3\,\%$ & $-3.0\,\%$ & 1.03 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Hertz problem in 3d (sphere), $\delta = 10^{-3}$, $\varepsilon = 10^5$.}
+  \label{tab:hertz3d}
+\end{table}
+
+\section{Nonlinear and linear solvers}
+
+\begin{figure}[ht]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[width=0.48\textwidth, height=0.4\textwidth, ymode=log, grid=major,
+        grid style={gray!25}, xlabel={Newton iteration}, ylabel={$\|r\|$},
+        legend style={font=\footnotesize}, legend pos=south west,
+        tick label style={font=\footnotesize}, label style={font=\small}]
+      \addplot+[mark=*] table[x=it, y=load07] {data/newton.dat};
+      \addlegendentry{load factor 0.7}
+      \addplot+[mark=square*] table[x=it, y=load10] {data/newton.dat};
+      \addlegendentry{load factor 1.0}
+    \end{axis}
+  \end{tikzpicture}
+  \caption{Newton residual (2d Hertz, $\delta=10^{-2}$, $\varepsilon=10^4$). After one or two
+  iterations in which the active set changes (one of them damped), the convergence is quadratic,
+  which confirms the consistency of the linearisation including the curvature term.}
+  \label{fig:newton}
+\end{figure}
+
+\Cref{fig:newton} shows the Newton residual for two load steps of the Hertz problem. Once the
+active set is fixed, the residual decreases quadratically (e.g.\
+$9.4\cdot10^{-6}\to1.9\cdot10^{-8}\to1.1\cdot10^{-13}$). The total number of Newton iterations
+grows with the penalty, from 30 for $\varepsilon=10^2$ to 175 for $\varepsilon=10^7$
+(\cref{tab:penalty}), since the active set reacts more strongly to small displacement changes for
+stiff penalties.
+
+\begin{table}[ht]
+  \centering
+  \pgfplotstableread{data/penalty.dat}\penaltytab
+  \pgfplotstabletypeset[
+    columns={eps,penetration_over_delta,newton,max_linear},
+    columns/eps/.style={column name={$\varepsilon$}, sci, sci zerofill, precision=0},
+    columns/penetration_over_delta/.style={column name={$\max|g|/\delta$}, sci, precision=1},
+    columns/newton/.style={column name={Newton it.\ (total)}},
+    columns/max_linear/.style={column name={max.\ avg.\ CG it.}, fixed, precision=1},
+    every head row/.style={before row=\toprule, after row=\midrule},
+    every last row/.style={after row=\bottomrule},
+  ]{\penaltytab}
+  \caption{Penalty study (2d Hertz, $\delta=10^{-3}$, AMG): penetration and iteration counts.}
+  \label{tab:penalty}
+\end{table}
+
+With AMG (matrix-based) the linear iteration counts stay small. With the matrix-free $hp$-multigrid
+in 3d and $\varepsilon=10^5$, however, the average number of CG iterations grows from 5 in the
+first load step (no contact) to about 130 when the contact zone is fully developed. The penalty
+term adds a stiffness $\varepsilon\gg E/h$ on the contact faces, which the Chebyshev--Jacobi
+smoother and in particular the coarse levels (on which the contact zone is under-resolved)
+represent poorly.
+
+\section{Summary and next steps}
+
+\begin{itemize}
+  \item The penalty contact with rigid obstacles is consistent: exact patch test, convergence in
+    $h$ and $\varepsilon^{-1}$, quadratic Newton convergence; the deviation from Hertz is the
+    expected finite-strain effect and vanishes like $\delta^{1/2}$.
+  \item The method depends on the choice of $\varepsilon$: too small leads to visible
+    penetration, too large to pressure oscillations at the quadrature points, more Newton
+    iterations ($30\to175$ for $\varepsilon=10^2\to10^7$) and growing multigrid iterations.
+  \item Next step: Nitsche's method (consistent, without a user-tuned penalty error and with a
+    penalty of size $\gamma E/h$ only), which should also improve the multigrid performance.
+\end{itemize}
+
+\end{document}

@@ -1,0 +1,9 @@
+# Newton residual history, 2d Hertz, delta = 1e-2, L = 7, eps = 1e4 (EXADG_NEWTON_DEBUG run)
+# columns: Newton iteration, |r| at load factor 0.7, |r| at load factor 1.0
+it load07 load10
+1 2.8651e-05 2.7267e-05
+2 2.0674e-05 2.0261e-05
+3 1.1719e-05 9.4192e-06
+4 2.0664e-06 1.9454e-08
+5 4.8258e-09 1.0835e-13
+6 1.5820e-14 nan
