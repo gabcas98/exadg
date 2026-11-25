@@ -47,4 +47,24 @@ done
 mk G_2d_q2_amg input_patch_test.json Application:ContactMethod:Nitsche Application:PenaltyParameter:10
 mk G_2d_q3_mg input_patch_test.json Application:ContactMethod:Nitsche Application:PenaltyParameter:10 SpatialResolution:DegreeMin:3 SpatialResolution:DegreeMax:3 Application:Preconditioner:Multigrid
 mk G_3d_q3_large input_patch_test.json Application:ContactMethod:Nitsche Application:PenaltyParameter:10 General:Dim:3 SpatialResolution:DegreeMin:3 SpatialResolution:DegreeMax:3 SpatialResolution:RefineSpaceMin:1 SpatialResolution:RefineSpaceMax:1 Application:Preconditioner:Multigrid Application:Pressure:0.15
+# H: 3d Hertz (sphere), multigrid study. The runs h3d_d1e-3_L6 and N_h3d_L6 of the report ("before
+# fix") were computed before passing the time to the multigrid levels and cannot be reproduced with
+# the current code; with it, they coincide with fix_h3d_d1e-3_L6 and fix_N_h3d_L6.
+P3="Application:Indentation:1e-3 Application:RefinementRadius:0.05 Application:Preconditioner:Multigrid General:Dim:3 Application:ContactMethod:Penalty"
+N3="Application:Indentation:1e-3 Application:RefinementRadius:0.05 Application:Preconditioner:Multigrid General:Dim:3 Application:ContactMethod:Nitsche"
+mk fix_h3d_d1e-3_L6 input_hertz.json $P3 Application:LocalRefinements:6 Application:PenaltyParameter:1e5 Application:SmootherIterations:5
+mk fix_N_h3d_L6 input_hertz.json $N3 Application:LocalRefinements:6 Application:PenaltyParameter:10 Application:SmootherIterations:5
+mk amg_Nitsche input_hertz.json $N3 Application:LocalRefinements:6 Application:PenaltyParameter:10 Application:Preconditioner:AMG
+mk m_pen_e1e4 input_hertz.json $P3 Application:LocalRefinements:6 Application:PenaltyParameter:1e4 Application:SmootherIterations:5
+mk m_nit_g100 input_hertz.json $N3 Application:LocalRefinements:6 Application:PenaltyParameter:100 Application:SmootherIterations:5
+for k in 5 8; do
+  mk z_pen_e1e6_pj$k input_hertz.json $P3 Application:LocalRefinements:6 Application:PenaltyParameter:1e6 Application:SmootherIterations:$k
+done
+mk z_pen_e1e5_pj8 input_hertz.json $P3 Application:LocalRefinements:6 Application:PenaltyParameter:1e5 Application:SmootherIterations:8
+mk z_nit_g10_pj8 input_hertz.json $N3 Application:LocalRefinements:6 Application:PenaltyParameter:10 Application:SmootherIterations:8
+mk z_nit_g100_pj8 input_hertz.json $N3 Application:LocalRefinements:6 Application:PenaltyParameter:100 Application:SmootherIterations:8
+for k in 5 8 12; do
+  mk y_pen_pj$k input_hertz.json $P3 Application:LocalRefinements:7 Application:PenaltyParameter:1e5 Application:SmootherIterations:$k
+  mk y_nit_pj$k input_hertz.json $N3 Application:LocalRefinements:7 Application:PenaltyParameter:10 Application:SmootherIterations:$k
+done
 echo ALL_DONE
