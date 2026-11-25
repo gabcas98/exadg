@@ -43,7 +43,8 @@ penalty and Nitsche formulations and their validation}
   converge, and the remaining deviation from the Hertz solution scales like the square root of
   the indentation, i.e.\ like the strain: it is the expected difference between the finite-strain
   model and the linear Hertz theory. Newton's method converges quadratically once the active set
-  is settled. Nitsche's method ($\theta=0$) gives the same accuracy without penetration and
+  is settled; with non-monotone full steps and a line search that steps up to the next change of the
+  active set, also very stiff contact conditions are solved without reductions of the load step. Nitsche's method ($\theta=0$) gives the same accuracy without penetration and
   without dependence on its parameter, at the price of a non-symmetric tangent and more damped
   Newton iterations. After a fix in the multigrid preconditioner (time on the multigrid levels) and
   with a higher smoother degree, the matrix-free multigrid needs a number of iterations that is
@@ -83,7 +84,9 @@ the matrix-free operator, its diagonal, the matrix-based assembly (AMG) and all 
 contain it. Contact force, active area, pressure and gap are available in the postprocessor. All
 results below are computed with the application \code{structure/contact\_rigid\_obstacle},
 St.\,Venant--Kirchhoff material with $E=1$, $\nu=0.3$ (plane strain in 2d), quasi-static load
-stepping and quadratic elements unless stated otherwise.
+stepping and quadratic elements unless stated otherwise. Unless stated otherwise, the plain damped
+Newton method of ExaDG is used (see \cref{sec:newton} for the more robust variant that is now the
+default of the application).
 
 \section{Contact patch test}
 
@@ -464,7 +467,8 @@ the active set changes over several damped iterations: the active set now depend
 traction, which is less smooth at the boundary of the contact zone than the gap. The number of
 Newton iterations therefore grows with $\gamma_0$ (\cref{tab:gamma}) and with the mesh resolution
 (150 iterations in total for $L=10$ compared with 109 for the penalty method; on the finest mesh
-$L=11$ the load increment had to be reduced twice).
+$L=11$ the load increment had to be reduced several times). These counts refer to the plain damped
+Newton method; \cref{sec:newton} analyses this behaviour and removes most of it.
 
 \begin{table}[ht]
   \centering
@@ -577,6 +581,102 @@ matrix-based AMG preconditioner in these tests.
   \label{tab:multigrid}
 \end{table}
 
+\section{Robustness of Newton's method}\label{sec:newton}
+
+The iteration counts of the previous sections were obtained with the plain damped Newton method of
+ExaDG: the full step is accepted if $\|r\|$ decreases by a factor $0.75$, otherwise the step is
+halved up to 10 times, and if this fails, the quasi-static driver halves the load increment and
+starts again. For stiff contact conditions this happens frequently (\cref{tab:newton}, columns
+K0): 27 reductions of the load increment for $\gamma_0E=100$ and $300$, 38 for the penalty method
+with $\varepsilon=10^7$, and no solution at all for $\gamma_0E=1000$. (The counts of Newton
+iterations and the times in the tables include only the successful attempts.)
+
+\paragraph{Diagnosis.}
+All failures are failures of the line search. \Cref{fig:kink} shows the residual along the Newton
+direction for such a case: it decreases like $(1-\omega)\|r\|$, i.e.\ the direction is a descent
+direction, but only up to a kink at $\omega\approx2.5\cdot10^{-4}$, beyond which it grows steeply
+(to $700\|r\|$ for the full step). The kink is a quadrature point close to the boundary of the
+contact zone with $A\approx0$, which is inactive in the linearisation, but is pushed deeply into the
+obstacle by the Newton step. Ten halvings only reach $\omega=2^{-9}\approx2\cdot10^{-3}$, beyond the
+kink, so the line search fails. In less extreme cases the line search does succeed, but it stops
+well before the kink and the residual decreases only by $(1-\omega)$; meanwhile the full step from
+different states leads again and again to the same residual, i.e.\ to the solution for the current
+active set, and Newton's method cycles between two active sets.
+
+\paragraph{Remedies.}
+Three options were added to the Newton solver of ExaDG (\code{Newton::SolverData}); their defaults
+reproduce the previous behaviour exactly:
+\begin{itemize}
+  \item \code{n_nonmonotone_steps}, \code{nonmonotone_factor}: a full step is accepted even if the
+    residual grows (by less than the factor), for at most the given number of consecutive steps.
+    The full step moves to the solution for the current active set, and the next linearisation
+    corrects the active set (as in a primal-dual active set method).
+  \item \code{max_iter_damping}: maximum number of halvings of the damping factor (default 10).
+  \item \code{n_line_search_refinements}: after the backtracking, bisection between the accepted
+    $\omega$ and $2\omega$ for the largest step that further reduces the residual, i.e.\ a step up
+    to the kink, after which the point at the kink changes its status in the next linearisation.
+\end{itemize}
+\Cref{tab:newton} compares the plain method (K0), one non-monotone step with factor 100 (K1), and
+the combination used as default by the contact application (V3: two non-monotone steps with factor
+$10^6$, 20 halvings, 6 bisection steps). Every single ingredient helps only partially: K1 saves
+15--40\,\% of the Newton iterations, but leaves the reductions in the stiff cases, and both a larger
+factor alone or more halvings with bisection alone still fail for $\gamma_0E=1000$. With V3, the
+load increment is never reduced in the moderately stiff cases (including the finest mesh $L=11$,
+where the solve time drops from 410\,s to 249\,s), the stiff cases need only 3--9 reductions, and
+$\gamma_0E=1000$ is solved. The solutions agree with those of the plain method up to the solver
+tolerance (relative differences of the contact quantities below $10^{-6}$), and all existing
+regression tests of the structure module are unchanged.
+
+\begin{figure}[ht]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[width=0.6\textwidth, height=0.4\textwidth, xmode=log, ymode=log, grid=major,
+        grid style={gray!25}, xlabel={damping factor $\omega$},
+        ylabel={$\|r(d+\omega\,\delta d)\| / \|r(d)\|$}, ymin=0.3, ymax=3000,
+        legend style={font=\footnotesize}, legend pos=south east,
+        tick label style={font=\footnotesize}, label style={font=\small}]
+      \addplot+[mark=*, blue] table[x=omega, y=ratio] {data/kink.dat};
+      \addlegendentry{computed}
+      \addplot[black, dashed, domain=2e-4:0.7, samples=50] {1-x};
+      \addlegendentry{$1-\omega$}
+      \draw[red, thick] (axis cs:0.001953125,0.3) -- (axis cs:0.001953125,3000);
+      \node[red, font=\scriptsize, anchor=north west, align=left] at (axis cs:0.0021,2500)
+        {smallest step with\\ 10 halvings};
+    \end{axis}
+  \end{tikzpicture}
+  \caption{Residual along the Newton direction at a failed line search (2d Hertz, Nitsche,
+  $\gamma_0E=300$, first load step, second Newton iteration).}
+  \label{fig:kink}
+\end{figure}
+
+\begin{table}[ht]
+  \centering\footnotesize\setlength{\tabcolsep}{4pt}
+  \pgfplotstableread[col sep=comma]{data/newton_study.csv}\newtontab
+  \pgfplotstabletypeset[
+    columns={dim,method,param,L,newton_K0,red_K0,time_K0,newton_K1,red_K1,time_K1,newton_V3,red_V3,time_V3},
+    columns/dim/.style={string type, column name={}},
+    columns/method/.style={string type, column name={method}, column type=l},
+    columns/param/.style={string type, column name={$\varepsilon$ / $\gamma_0E$}},
+    columns/L/.style={column name={$L$}},
+    columns/newton_K0/.style={string type, column name={Newton}},
+    columns/red_K0/.style={column name={red.}},
+    columns/time_K0/.style={string type, column name={time}},
+    columns/newton_K1/.style={string type, column name={Newton}},
+    columns/red_K1/.style={column name={red.}},
+    columns/time_K1/.style={string type, column name={time}},
+    columns/newton_V3/.style={string type, column name={Newton}},
+    columns/red_V3/.style={column name={red.}},
+    columns/time_V3/.style={string type, column name={time}},
+    every head row/.style={before row={\toprule & & & & \multicolumn{3}{c}{K0 (plain)} &
+      \multicolumn{3}{c}{K1} & \multicolumn{3}{c}{V3 (default)}\\}, after row=\midrule},
+    every last row/.style={after row=\bottomrule},
+  ]{\newtontab}
+  \caption{Newton's method for the Hertz problem ($\delta=10^{-3}$; 2d with AMG, 3d with
+  $hp$-multigrid): total number of Newton iterations of the successful load steps, number of
+  reductions of the load increment, and solve time in seconds.}
+  \label{tab:newton}
+\end{table}
+
 \section{Summary and next steps}
 
 \begin{itemize}
@@ -597,13 +697,16 @@ matrix-based AMG preconditioner in these tests.
   \item Price of Nitsche's method: a non-symmetric tangent (GMRES), the evaluation of the stress on
     the contact faces (constant material coefficients only), and more damped Newton iterations
     while the active set settles, growing with $\gamma_0$ and the resolution.
+  \item Newton's method: the failures for stiff contact are failures of the line search at kinks of
+    the residual, where a quadrature point near the boundary of the contact zone changes its
+    status. Non-monotone full steps combined with a finer line search that steps up to the kink
+    remove almost all reductions of the load increment, solve also $\gamma_0E=1000$ and reduce the
+    solve time by up to 60\,\%; this is the default of the contact application.
   \item Open points:
     \begin{itemize}
       \item for stiff penalties the multigrid iterations still grow, since the point-Jacobi
         smoother does not capture the coupling of the displacement components by the contact
         term; a nodal block-Jacobi smoother would address this;
-      \item a more robust nonlinear solver for the active-set phase (e.g.\ a semismooth Newton
-        method with an active-set based globalisation);
       \item the symmetric variant $\theta=1$ (needs the second derivative of the stress) and
         frictional contact.
     \end{itemize}

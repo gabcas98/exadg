@@ -3,7 +3,11 @@
 # usage: run_studies.sh <build directory of applications/structure/contact_rigid_obstacle>
 B=${1:?build directory of the application}
 cd $B
-mk(){ name=$1; base=$2; shift 2; python3 - "$name" "$base" "$@" <<'PY'
+# Settings of the earlier studies (A-H): plain damped Newton method and Chebyshev degree 5, which
+# were the defaults of the application when these studies were run. They are prepended, so that
+# options given to mk override them.
+EXTRA=${EXTRA-"Application:NonmonotoneSteps:0 Application:LineSearchRefinements:0 Application:MaxIterDamping:10 Application:SmootherIterations:5"}
+mk(){ name=$1; base=$2; shift 2; python3 - "$name" "$base" $EXTRA "$@" <<'PY'
 import json,sys
 name,base=sys.argv[1],sys.argv[2]
 d=json.load(open(base))
@@ -66,5 +70,25 @@ mk z_nit_g100_pj8 input_hertz.json $N3 Application:LocalRefinements:6 Applicatio
 for k in 5 8 12; do
   mk y_pen_pj$k input_hertz.json $P3 Application:LocalRefinements:7 Application:PenaltyParameter:1e5 Application:SmootherIterations:$k
   mk y_nit_pj$k input_hertz.json $N3 Application:LocalRefinements:7 Application:PenaltyParameter:10 Application:SmootherIterations:$k
+done
+# I: Newton's method for stiff contact: plain damped Newton (K0), non-monotone full steps (K1),
+# and the default of the application (non-monotone with K = 2, factor 1e6, 20 damping steps and 6
+# bisection steps of the line search)
+K0="Application:NonmonotoneSteps:0 Application:LineSearchRefinements:0 Application:MaxIterDamping:10"
+K1="Application:NonmonotoneSteps:1 Application:LineSearchRefinements:0 Application:MaxIterDamping:10"
+V3="Application:NonmonotoneSteps:2 Application:NonmonotoneFactor:1e6 Application:MaxIterDamping:20 Application:LineSearchRefinements:6"
+H2="Application:ContactMethod:Nitsche Application:Indentation:1e-3 Application:RefinementRadius:0.063"
+for v in K0 K1 V3; do
+  opts=${!v}
+  mk nw_F_g10_$v input_hertz.json $H2 Application:LocalRefinements:9 Application:PenaltyParameter:10 $opts
+  mk nw_F_g100_$v input_hertz.json $H2 Application:LocalRefinements:9 Application:PenaltyParameter:100 $opts
+  mk nw_F_g300_$v input_hertz.json $H2 Application:LocalRefinements:9 Application:PenaltyParameter:300 $opts
+  mk nw_N_h_g1000_$v input_hertz.json $H2 Application:LocalRefinements:9 Application:PenaltyParameter:1000 $opts
+  mk nw_E_L10_$v input_hertz.json $H2 Application:LocalRefinements:10 Application:PenaltyParameter:10 $opts
+  mk nw_E_L11_$v input_hertz.json $H2 Application:LocalRefinements:11 Application:PenaltyParameter:10 $opts
+  mk nw_C_e1e5_$v input_hertz.json Application:ContactMethod:Penalty Application:Indentation:1e-3 Application:RefinementRadius:0.063 Application:LocalRefinements:9 Application:PenaltyParameter:1e5 $opts
+  mk nw_C_e1e7_$v input_hertz.json Application:ContactMethod:Penalty Application:Indentation:1e-3 Application:RefinementRadius:0.063 Application:LocalRefinements:9 Application:PenaltyParameter:1e7 $opts
+  mk nw_y_nit_pj8_$v input_hertz.json $N3 Application:LocalRefinements:7 Application:PenaltyParameter:10 Application:SmootherIterations:8 $opts
+  mk nw_y_pen_pj8_$v input_hertz.json $P3 Application:LocalRefinements:7 Application:PenaltyParameter:1e5 Application:SmootherIterations:8 $opts
 done
 echo ALL_DONE

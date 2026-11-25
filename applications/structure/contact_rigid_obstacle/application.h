@@ -199,6 +199,17 @@ public:
                         refinement_radius,
                         "Hertz: radius of the locally refined zone around the origin.");
       prm.add_parameter("LoadIncrement", load_increment, "Load increment (quasi-static).");
+      prm.add_parameter("LineSearchRefinements",
+                        line_search_refinements,
+                        "Bisection refinements of the damping factor of Newton's method.");
+      prm.add_parameter("NonmonotoneFactor",
+                        nonmonotone_factor,
+                        "Maximum growth of the residual for a non-monotone full step.");
+      prm.add_parameter("MaxIterDamping", max_iter_damping, "Maximum number of damping steps.");
+      prm.add_parameter("NewtonAbsTol", newton_abs_tol, "Absolute tolerance of Newton's method.");
+      prm.add_parameter("NonmonotoneSteps",
+                        nonmonotone_steps,
+                        "Consecutive full Newton steps accepted without residual decrease.");
       prm.add_parameter("Preconditioner", preconditioner, "Preconditioner for the linear system.");
       prm.add_parameter("MultigridType", multigrid_type, "Multigrid type (e.g. phMG, pMG, hMG).");
       prm.add_parameter("SmootherPreconditioner",
@@ -240,7 +251,11 @@ private:
     this->param.use_matrix_based_operator = use_matrix_based_operator;
     this->param.sparse_matrix_type        = SparseMatrixType::Trilinos;
 
-    this->param.newton_solver_data = Newton::SolverData(50, 1.e-12, 1.e-9);
+    this->param.newton_solver_data =
+      Newton::SolverData(50, newton_abs_tol, 1.e-9, line_search_refinements);
+    this->param.newton_solver_data.n_nonmonotone_steps = nonmonotone_steps;
+    this->param.newton_solver_data.nonmonotone_factor  = nonmonotone_factor;
+    this->param.newton_solver_data.max_iter_damping    = max_iter_damping;
     // the linearized operator of Nitsche's method (theta = 0) is not symmetric
     LinearSolver const linear_solver =
       (contact_method == ContactMethod::Nitsche) ? LinearSolver::GMRES : LinearSolver::CG;
@@ -478,6 +493,17 @@ private:
   double       refinement_radius   = 0.2;
 
   double load_increment = 0.1;
+
+  // Newton's method for the semismooth contact problem: non-monotone acceptance of up to two
+  // consecutive full steps (which update the active set), and a line search with up to 20
+  // halvings and 6 bisection steps that steps up to the next change of the active set
+  // (kink of the residual along the Newton direction). This avoids most reductions of the load
+  // increment for stiff contact conditions, see doc/structure_contact/report.pdf.
+  unsigned int line_search_refinements = 6;
+  unsigned int nonmonotone_steps       = 2;
+  double       nonmonotone_factor      = 1.e6;
+  unsigned int max_iter_damping        = 20;
+  double       newton_abs_tol          = 1.e-12;
 
   Preconditioner preconditioner            = Preconditioner::AMG;
   MultigridType  multigrid_type            = MultigridType::phMG;

@@ -234,6 +234,41 @@ def main():
         for r in rows:
             f.write(",".join(str(v).strip('"') if not isinstance(v, float) else f"{v:.1f}"
                              for v in r) + "\n")
+    # Newton's method: plain damped Newton (K0), non-monotone full steps (K1), robust default (V3)
+    def newton_info(name):
+        text = open(os.path.join(run_dir, name + ".log")).read()
+        failed = "Could not solve quasi static problem" in text
+        newton = sum(int(n) for n in re.findall(r"Nonlinear iterations:\s*(\d+)", text))
+        reductions = text.count("Could not solve non-linear problem")
+        return failed, newton, reductions, solve_time(name)
+
+    cases = [("F_g10", "2d", "Nitsche", "10", 9), ("F_g100", "2d", "Nitsche", "100", 9),
+             ("F_g300", "2d", "Nitsche", "300", 9), ("N_h_g1000", "2d", "Nitsche", "1000", 9),
+             ("E_L10", "2d", "Nitsche", "10", 10), ("E_L11", "2d", "Nitsche", "10", 11),
+             ("C_e1e5", "2d", "penalty", "1e5", 9), ("C_e1e7", "2d", "penalty", "1e7", 9),
+             ("y_nit_pj8", "3d", "Nitsche", "10", 7), ("y_pen_pj8", "3d", "penalty", "1e5", 7)]
+    with open(os.path.join(HERE, "data", "newton_study.csv"), "w") as f:
+        f.write("dim,method,param,L")
+        for v in ["K0", "K1", "V3"]:
+            f.write(f",newton_{v},red_{v},time_{v}")
+        f.write("\n")
+        for case, dim, method, param, level in cases:
+            f.write(f"{dim},{method},{param},{level}")
+            for v in ["K0", "K1", "V3"]:
+                failed, newton, reductions, t = newton_info(f"nw_{case}_{v}")
+                if failed:
+                    f.write(f",failed,{reductions},--")
+                else:
+                    f.write(f",{newton},{reductions},{t:.1f}")
+            f.write("\n")
+
+    # residual along the Newton direction at a failed line search (Nitsche, gamma_0 E = 300)
+    debug_log = os.path.join(run_dir, "dbg_g300.log")
+    if os.path.exists(debug_log):
+        line = next(l for l in open(debug_log) if "NEWTON_FAIL" in l)
+        pairs = [p.split(":") for p in line.split(" : ")[1].split()]
+        write("kink.dat", "omega ratio", [(float(w), float(r)) for w, r in pairs])
+
 
 if __name__ == "__main__":
     main()
