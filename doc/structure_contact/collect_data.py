@@ -269,6 +269,27 @@ def main():
         pairs = [p.split(":") for p in line.split(" : ")[1].split()]
         write("kink.dat", "omega ratio", [(float(w), float(r)) for w, r in pairs])
 
+    # Nitsche variants theta = 1, 0, -1 for gamma_0 E = 1e-3 ... 1e2 (2d Hertz, L = 9)
+    reference = compare(2, E, NU, R, prefix(run_dir, "v3_F_g10"))
+    rows = []
+    for theta in ["1", "0", "-1"]:
+        for g in ["0.001", "0.01", "0.1", "1", "10", "100"]:
+            name = f"T_th{theta}_g{g}"
+            text = open(os.path.join(run_dir, name + ".log")).read()
+            if "Could not solve quasi static problem" in text or not os.path.exists(
+                    prefix(run_dir, name) + ".txt") or len(load(prefix(run_dir, name) + ".txt")) < 2:
+                rows.append((theta, float(g), "failed", "--", "--", "--"))
+                continue
+            c = compare(2, E, NU, R, prefix(run_dir, name))
+            newton = sum(int(n) for n in re.findall(r"Nonlinear iterations:\s*(\d+)", text))
+            rows.append((theta, float(g), newton, f"{abs(c['P'] - reference['P']) / reference['P']:.1e}",
+                         f"{profile_difference(c, reference, 0.8):.1e}",
+                         f"{-c['min_gap'] / 1e-3:.1e}"))
+    with open(os.path.join(HERE, "data", "theta.csv"), "w") as f:
+        f.write("theta,gamma0,newton,err_P,err_profile_int,penetration\n")
+        for r in rows:
+            f.write(",".join(str(v) for v in r) + "\n")
+
 
 if __name__ == "__main__":
     main()

@@ -460,6 +460,53 @@ pressure starts to deviate ($7\cdot10^{-4}$ for $\gamma_0E=100$, $2\cdot10^{-3}$
 $\gamma_0E=300$), as the method then approaches the over-constrained penalty limit. Even
 $\gamma_0E=0.3$ was stable in these tests.
 
+\paragraph{Variants $\theta=1$ and $\theta=-1$.}
+In the general variant of Chouly and Hild, the residual contains the additional term
+$(\theta/\gamma)\int_{\Gamma_C}([A]_+ - \lambda(d))\,\lambda'(d; v)\dd A$, where $\lambda'(d;v)$ is
+the derivative of the normal traction in direction of the test function. Using the major symmetry
+of the tangent $\mathbb{A}=\partial P/\partial F$ of hyperelastic materials, it is evaluated as
+$\lambda'(d;v) = \nabla v : \mathbb{A}[n\otimes N] + v\cdot(\kappa P N)$, i.e.\ with one call of
+the material derivative. Its linearisation
+$(\theta/\gamma)\int((H(A)-1)\lambda'(d;\delta d) - H(A)\gamma\, n\cdot\delta d)\,\lambda'(d;v)\dd A$ is
+added to the tangent; the second derivative $\lambda''$, weighted by $[A]_+-\lambda(d)$ (which
+vanishes for the exact solution), is neglected. With this, the tangent is symmetric for $\theta=1$
+and CG can be used. The patch test is reproduced exactly for $\theta=\pm1$ as well.
+
+\Cref{tab:theta} compares the three variants for $\gamma_0E = 10^{-3},\dots,10^2$. For
+$\gamma_0E\ge0.1$ the three variants agree to within $10^{-4}$ in the interior pressure and need
+the same number of Newton iterations. For small $\gamma_0$ the behaviour differs:
+$\theta=1$ fails for $\gamma_0E\le0.01$, as expected from the stability theory (the symmetric
+variant requires $\gamma$ large enough); $\theta=0$ still converges for $\gamma_0E=10^{-3}$, but to a
+wrong solution (3.6\,\% load error, the pressure profile is useless), i.e.\ the loss of stability
+shows up as a wrong result rather than as a failure; $\theta=-1$ is stable for any $\gamma>0$ in
+theory, but Newton's method fails for $\gamma_0E\le0.01$, most likely because the neglected term
+$\lambda''$ has the weight $\theta/\gamma$ and makes the tangent inconsistent for small $\gamma$.
+In practice, $\gamma_0E\approx1$--$10\,E$ is a safe choice for all variants, and $\theta=1$ is
+attractive because of the symmetric tangent.
+
+\begin{table}[ht]
+  \centering\small
+  \pgfplotstableread[col sep=comma]{data/theta.csv}\thetatab
+  \pgfplotstabletypeset[
+    columns={theta,gamma0,newton,err_P,err_profile_int,penetration},
+    columns/theta/.style={string type, column name={$\theta$}},
+    columns/gamma0/.style={column name={$\gamma_0E$}, sci, precision=0},
+    columns/newton/.style={string type, column name={Newton it.}},
+    columns/err_P/.style={string type, column name={$P$ vs.\ ref.}},
+    columns/err_profile_int/.style={string type, column name={$p(r)$, $r<0.8a$, vs.\ ref.}},
+    columns/penetration/.style={string type, column name={$\max(-g)/\delta$}},
+    every head row/.style={before row=\toprule, after row=\midrule},
+    every row no 6/.style={before row=\midrule},
+    every row no 12/.style={before row=\midrule},
+    every last row/.style={after row=\bottomrule},
+  ]{\thetatab}
+  \caption{Nitsche variants (2d Hertz, $\delta=10^{-3}$, $L=9$, robust Newton method of
+  \cref{sec:newton}); reference: $\theta=0$, $\gamma_0E=10$. ``failed'': the load step could not
+  be solved even after 10 reductions of the load increment. A negative value of $\max(-g)$ means
+  that the body does not touch the obstacle anywhere (wrong solution).}
+  \label{tab:theta}
+\end{table}
+
 \paragraph{Newton's method (\cref{fig:nitsche}c, \cref{tab:gamma}).}
 The final convergence is quadratic (e.g.\ $2.0\cdot10^{-7}\to3.9\cdot10^{-11}\to4.1\cdot10^{-14}$),
 which confirms the linearisation including the stress and curvature terms. Before that, however,
@@ -515,10 +562,19 @@ convergence worse (48 instead of 39 iterations for $L=7$), and the growth is the
 $p$-multigrid that solves the $Q_1$ problem on the fine mesh with AMG; the coarse levels are
 therefore not the bottleneck. Increasing the degree of the Chebyshev smoother, in contrast, removes
 most of the growth: with degree 8 the counts stay between 4 and 6 for Nitsche's method over the whole
-load history ($L=6$; at most 8 for $L=7$), and below 12 for the penalty method with $\varepsilon=10^5$. On curved obstacles, the
-contact term $n\otimes n$ couples the displacement components at a node, which the point-Jacobi
-preconditioner of the smoother does not capture. A Chebyshev--additive-Schwarz smoother did not
+load history ($L=6$; at most 8 for $L=7$), and below 12 for the penalty method with $\varepsilon=10^5$. A Chebyshev--additive-Schwarz smoother did not
 help and was much more expensive.
+
+A natural explanation would be that the point-Jacobi preconditioner of the smoother misses the
+coupling of the displacement components at a node by the contact term $n\otimes n$ on curved
+obstacles. To test this, a nodal block-Jacobi preconditioner for continuous elements was
+implemented (blocks of the $d$ components at a support point, extracted from the local matrices;
+exact without hanging nodes, approximate with them). It reduces the maximal average number of
+iterations only from 84 to 66 (degree 5) and from 45 to 37 (degree 8) for the stiff penalty
+$\varepsilon=10^6$, and not at all on the mesh $L=7$ (26.9 vs.\ 26.2 for Nitsche, 39.1 vs.\ 38.1
+for the penalty method). The coupling of the components is therefore not the main cause of the
+remaining growth, which is still not fully understood; the implementation was not kept (it is
+available in the history of the branch).
 
 The higher smoother degree pays off on the finer mesh ($L=7$: $-30$ to $-40\,\%$ solve time), but
 not on the coarser one ($L=6$), where the growth with degree 5 is still mild. Since the growth
@@ -689,7 +745,8 @@ regression tests of the structure module are unchanged.
   \item Nitsche's method ($\theta=0$) is consistent: exact patch test without penetration, the same
     mesh convergence as the penalty method, and results that are practically independent of
     $\gamma_0$ over three decades. It removes the need to tune the penalty parameter;
-    $\gamma_0 E \approx 1$--$10\,E$ is recommended.
+    $\gamma_0 E \approx 1$--$10\,E$ is recommended. The variants $\theta=1$ (symmetric tangent, CG),
+    $0$ and $-1$ give the same results for $\gamma_0E\ge0.1$.
   \item The matrix-free multigrid now works for contact problems: after passing the load factor
     to the multigrid levels and with Chebyshev degree 8, Nitsche's method needs 4--6 linear
     iterations per Newton step independently of the contact zone, and the multigrid is 6--11 times
@@ -704,11 +761,11 @@ regression tests of the structure module are unchanged.
     solve time by up to 60\,\%; this is the default of the contact application.
   \item Open points:
     \begin{itemize}
-      \item for stiff penalties the multigrid iterations still grow, since the point-Jacobi
-        smoother does not capture the coupling of the displacement components by the contact
-        term; a nodal block-Jacobi smoother would address this;
-      \item the symmetric variant $\theta=1$ (needs the second derivative of the stress) and
-        frictional contact.
+      \item for stiff penalties the multigrid iterations still grow; a nodal block-Jacobi smoother
+        did not help, so the cause is still open;
+      \item a consistent tangent for $\theta\neq0$ (second derivative of the normal traction),
+        which would make $\theta=-1$ usable for small $\gamma_0$;
+      \item frictional contact.
     \end{itemize}
 \end{itemize}
 
