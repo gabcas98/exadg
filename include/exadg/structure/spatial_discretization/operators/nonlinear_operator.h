@@ -62,9 +62,9 @@ struct ContactQuantities
 
   // optional point data on the locally owned contact faces: reference position X of the
   // quadrature points, gap g and contact pressure lambda
-  std::vector<dealii::Point<dim>> points;
-  std::vector<double>             gap;
-  std::vector<double>             pressure;
+  std::vector<dealii::Point<dim>>     points;
+  std::vector<double>                 gap;
+  std::vector<double>                 pressure;
   std::vector<dealii::Tensor<1, dim>> tangential_traction;
 };
 
@@ -281,9 +281,9 @@ private:
    * gradients for ContactMethod::Nitsche), and the material has to be set for the current face.
    */
   ContactState
-  evaluate_contact_state(IntegratorFace const &        integrator,
-                         unsigned int const            q,
-                         dealii::Function<dim> const & obstacle,
+  evaluate_contact_state(IntegratorFace const &           integrator,
+                         unsigned int const               q,
+                         dealii::Function<dim> const &    obstacle,
                          dealii::types::boundary_id const boundary_id) const;
 
   /*
@@ -406,16 +406,16 @@ private:
   dealii::AlignedVector<scalar> nitsche_gamma;
 
   // frictional contact: solution of the previous load step and its time
-  bool                                    friction_active = false;
-  mutable VectorType                      displacement_previous;
-  mutable double                          time_previous = 0.0;
+  bool               friction_active = false;
+  mutable VectorType displacement_previous;
+  mutable double     time_previous = 0.0;
 
   // history before the last call of set_previous_solution(): if the history has been updated
   // after the last evaluation of the residual (e.g. by the quasi-static driver after a converged
   // load step), the contact quantities of the last solution are evaluated with this history
-  mutable VectorType displacement_before;
-  mutable double     time_before     = 0.0;
-  mutable bool       history_updated = false;
+  mutable VectorType                      displacement_before;
+  mutable double                          time_before     = 0.0;
+  mutable bool                            history_updated = false;
   mutable std::shared_ptr<IntegratorFace> integrator_previous_face;
 };
 

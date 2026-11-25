@@ -132,7 +132,8 @@ public:
     dealii::Tensor<1, dim> const r      = x - current_center();
     double const                 norm_r = r.norm();
     dealii::Tensor<1, dim> const n      = r / norm_r;
-    return (dealii::unit_symmetric_tensor<dim>() - dealii::symmetrize(dealii::outer_product(n, n))) /
+    return (dealii::unit_symmetric_tensor<dim>() -
+            dealii::symmetrize(dealii::outer_product(n, n))) /
            norm_r;
   }
 
@@ -184,8 +185,8 @@ template<int dim>
 class MovingBall : public dealii::Function<dim>
 {
 public:
-  MovingBall(dealii::Point<dim> const &               center,
-             double const                             radius,
+  MovingBall(dealii::Point<dim> const &             center,
+             double const                           radius,
              std::shared_ptr<dealii::Function<dim>> displacement)
     : dealii::Function<dim>(1), center(center), radius(radius), displacement(displacement)
   {
@@ -213,7 +214,8 @@ public:
     dealii::Tensor<1, dim> const r      = x - current_center();
     double const                 norm_r = r.norm();
     dealii::Tensor<1, dim> const n      = r / norm_r;
-    return (dealii::unit_symmetric_tensor<dim>() - dealii::symmetrize(dealii::outer_product(n, n))) /
+    return (dealii::unit_symmetric_tensor<dim>() -
+            dealii::symmetrize(dealii::outer_product(n, n))) /
            norm_r;
   }
 
@@ -389,10 +391,10 @@ private:
     this->param.pull_back_traction   = false;
     this->param.material_type        = MaterialType::StVenantKirchhoff;
 
-    this->param.contact_method            = contact_method;
-    this->param.contact_nitsche_theta     = nitsche_theta;
+    this->param.contact_method               = contact_method;
+    this->param.contact_nitsche_theta        = nitsche_theta;
     this->param.contact_friction_coefficient = friction_coefficient;
-    this->param.contact_penalty_parameter = penalty_parameter;
+    this->param.contact_penalty_parameter    = penalty_parameter;
 
     this->param.load_increment = load_increment;
 
@@ -415,8 +417,8 @@ private:
     LinearSolver const linear_solver =
       (contact_method == ContactMethod::Nitsche and nitsche_theta != 1.0) ? LinearSolver::GMRES :
                                                                             LinearSolver::CG;
-    this->param.solver_data = SolverData(1e4, 1.e-14, 1.e-6, linear_solver, 100);
-    this->param.preconditioner     = preconditioner;
+    this->param.solver_data    = SolverData(1e4, 1.e-14, 1.e-6, linear_solver, 100);
+    this->param.preconditioner = preconditioner;
 
     this->param.multigrid_data.type                          = multigrid_type;
     this->param.multigrid_data.p_sequence                    = PSequenceType::DecreaseByOne;
@@ -588,8 +590,7 @@ private:
       normal[1] = 1.0;
       bc.contact_bc.insert(
         pair(2, new RigidPlane<dim>(dealii::Point<dim>(), normal, dealii::Tensor<1, dim>())));
-      bc.contact_obstacle_displacement.insert(
-        pair(2, new PlaneDisplacement<dim>(slip, t_press)));
+      bc.contact_obstacle_displacement.insert(pair(2, new PlaneDisplacement<dim>(slip, t_press)));
 
       // top face: compression, then held fixed
       bc.dirichlet_bc.insert(pair(3, new TopDisplacement<dim>(compression, t_press)));
@@ -664,7 +665,7 @@ private:
   create_postprocessor() final
   {
     PostProcessorData<dim> pp_data;
-    pp_data.output_data.time_control_data.is_active = this->output_parameters.write;
+    pp_data.output_data.time_control_data.is_active  = this->output_parameters.write;
     pp_data.output_data.directory                    = this->output_parameters.directory + "vtu/";
     pp_data.output_data.filename                     = this->output_parameters.filename;
     pp_data.output_data.write_displacement_magnitude = true;
@@ -673,7 +674,7 @@ private:
 
     pp_data.contact_data.time_control_data.is_active = true;
     pp_data.contact_data.directory                   = this->output_parameters.directory;
-    pp_data.contact_data.filename = this->output_parameters.filename + "_contact";
+    pp_data.contact_data.filename               = this->output_parameters.filename + "_contact";
     pp_data.contact_data.write_pressure_profile = true;
 
     std::shared_ptr<PostProcessor<dim, Number>> post(
@@ -691,8 +692,8 @@ private:
   double const t_press              = 0.5;
   double       shift                = 0.0;
 
-  double youngs_modulus    = 1.0;
-  double poissons_ratio    = 0.3;
+  double        youngs_modulus    = 1.0;
+  double        poissons_ratio    = 0.3;
   ContactMethod contact_method    = ContactMethod::Penalty;
   double        nitsche_theta     = 0.0;
   double        penalty_parameter = 1.0e3;
@@ -723,15 +724,15 @@ private:
   unsigned int max_iter_damping        = 20;
   double       newton_abs_tol          = 1.e-12;
 
-  Preconditioner preconditioner            = Preconditioner::AMG;
-  MultigridType  multigrid_type            = MultigridType::phMG;
+  Preconditioner preconditioner = Preconditioner::AMG;
+  MultigridType  multigrid_type = MultigridType::phMG;
   // A Chebyshev degree of 8 instead of the default 5 reduces the multigrid iterations for contact
   // problems substantially (the point-Jacobi preconditioner does not capture the coupling of the
   // displacement components by the contact term n (x) n on curved obstacles).
   unsigned int smoother_iterations = 8;
 
-  PreconditionerSmoother smoother_preconditioner = PreconditionerSmoother::PointJacobi;
-  bool           use_matrix_based_operator = false;
+  PreconditionerSmoother smoother_preconditioner   = PreconditionerSmoother::PointJacobi;
+  bool                   use_matrix_based_operator = false;
 };
 
 } // namespace Structure

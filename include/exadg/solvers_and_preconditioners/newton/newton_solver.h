@@ -171,7 +171,7 @@ public:
         best_residual = residual;
 
         double omega_low = omega_accepted, omega_high = 2.0 * omega_accepted;
-        double norm_low  = norm_r_damp;
+        double norm_low = norm_r_damp;
         for(unsigned int k = 0; k < solver_data.n_line_search_refinements; ++k)
         {
           double const omega_mid = 0.5 * (omega_low + omega_high);

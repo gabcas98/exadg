@@ -129,8 +129,7 @@ public:
 
 #ifdef DEBUG
     for(unsigned int v = 1; v < matrix_free.n_active_entries_per_face_batch(face); v++)
-      AssertThrow(mid ==
-                    matrix_free.get_face_iterator(face, v, true).first->material_id(),
+      AssertThrow(mid == matrix_free.get_face_iterator(face, v, true).first->material_id(),
                   dealii::ExcMessage("You have to categorize cells according to their materials!"));
 #endif
 

@@ -126,8 +126,8 @@ PostProcessor<dim, Number>::evaluate_contact(VectorType const & solution) const
   if(contact.friction)
     pcout << "  Max. tangential traction:  " << std::setprecision(5)
           << filter(contact.max_tangential_traction) << std::endl
-          << "  Stick area:                " << std::setprecision(5)
-          << filter(contact.stick_area) << std::endl;
+          << "  Stick area:                " << std::setprecision(5) << filter(contact.stick_area)
+          << std::endl;
 
   if(rank == 0)
   {
@@ -144,7 +144,7 @@ PostProcessor<dim, Number>::evaluate_contact(VectorType const & solution) const
   if(data.write_pressure_profile)
   {
     // flatten point data: X_0, ..., X_{dim-1}, gap, pressure (, t_T_0, ..., t_T_{dim-1})
-    unsigned int const n_values = contact.friction ? 2 * dim + 2 : dim + 2;
+    unsigned int const  n_values = contact.friction ? 2 * dim + 2 : dim + 2;
     std::vector<double> local;
     local.reserve(contact.points.size() * n_values);
     for(unsigned int i = 0; i < contact.points.size(); ++i)

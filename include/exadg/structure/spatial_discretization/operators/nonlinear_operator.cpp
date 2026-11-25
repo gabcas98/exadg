@@ -46,10 +46,11 @@ NonLinearOperator<dim, Number>::initialize_derived()
                 dealii::ExcMessage("Contact boundaries require a positive contact penalty "
                                    "parameter (Parameters::contact_penalty_parameter)."));
 
-    integrator_lin_face = std::make_shared<IntegratorFace>(*this->matrix_free,
-                                                           true,
-                                                           this->operator_data.dof_index_inhomogeneous,
-                                                           this->operator_data.quad_index);
+    integrator_lin_face =
+      std::make_shared<IntegratorFace>(*this->matrix_free,
+                                       true,
+                                       this->operator_data.dof_index_inhomogeneous,
+                                       this->operator_data.quad_index);
 
     // the linearized contact term requires the values of the displacement increment on faces
     this->integrator_flags.face_evaluate =
@@ -87,8 +88,10 @@ NonLinearOperator<dim, Number>::initialize_derived()
         dof_handler.get_triangulation().all_reference_cells_are_hyper_cube() ?
           ElementType::Hypercube :
           ElementType::Simplex;
-      Number const factor = IP::get_penalty_factor<dim, Number>(
-        dof_handler.get_fe().degree, element_type, this->operator_data.contact_penalty);
+      Number const factor =
+        IP::get_penalty_factor<dim, Number>(dof_handler.get_fe().degree,
+                                            element_type,
+                                            this->operator_data.contact_penalty);
       for(auto & gamma : nitsche_gamma)
         gamma *= factor;
 
@@ -189,11 +192,8 @@ NonLinearOperator<dim, Number>::evaluate_contact_state(
   scalar const one  = dealii::make_vectorized_array<Number>(1.0);
 
   state.pressure = std::max(argument, zero);
-  state.active =
-    dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than_or_equal>(argument,
-                                                                                   zero,
-                                                                                   one,
-                                                                                   zero);
+  state.active   = dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than_or_equal>(
+    argument, zero, one, zero);
 
   if(friction_active)
   {
@@ -207,8 +207,9 @@ NonLinearOperator<dim, Number>::evaluate_contact_state(
                dealii::make_vectorized_array<Number>(std::numeric_limits<Number>::min()));
     state.stick = dealii::compare_and_apply_mask<dealii::SIMDComparison::less_than_or_equal>(
       state.norm_A_T, radius, one, zero);
-    scalar const scaling = dealii::compare_and_apply_mask<dealii::SIMDComparison::less_than_or_equal>(
-      state.norm_A_T, radius, one, radius / safe_norm);
+    scalar const scaling =
+      dealii::compare_and_apply_mask<dealii::SIMDComparison::less_than_or_equal>(
+        state.norm_A_T, radius, one, radius / safe_norm);
     state.traction_tangential = scaling * state.A_T;
   }
 
@@ -223,8 +224,8 @@ NonLinearOperator<dim, Number>::calculate_relative_slip(
   dealii::types::boundary_id const & boundary_id) const
 {
   // displacement since the previous load step
-  vector delta_g = x - integrator_previous_face->quadrature_point(q) -
-                   integrator_previous_face->get_value(q);
+  vector delta_g =
+    x - integrator_previous_face->quadrature_point(q) - integrator_previous_face->get_value(q);
 
   // displacement of the obstacle since the previous load step
   auto const it = this->operator_data.bc->contact_obstacle_displacement.find(boundary_id);
@@ -760,9 +761,8 @@ NonLinearOperator<dim, Number>::reinit_boundary_face_derived(IntegratorFace &   
 {
   (void)integrator;
 
-  if(contact_active and
-     this->operator_data.bc->get_boundary_type(this->matrix_free->get_boundary_id(face)) ==
-       BoundaryType::Contact)
+  if(contact_active and this->operator_data.bc->get_boundary_type(
+                          this->matrix_free->get_boundary_id(face)) == BoundaryType::Contact)
   {
     this->material_handler.reinit_face(*this->matrix_free, face);
 
@@ -897,8 +897,8 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact(
       delta_sigma = delta_P * state.N;
 
       // delta (n . (P N)) - gamma (n . delta d)
-      delta_argument = n * delta_sigma + delta_n * ((state.F * state.S) * state.N) -
-                       state.gamma * (n * delta_d);
+      delta_argument =
+        n * delta_sigma + delta_n * ((state.F * state.S) * state.N) - state.gamma * (n * delta_d);
     }
     else
     {
@@ -914,23 +914,21 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact(
     {
       // delta A_T = delta ((I - n (x) n) w) with w = sigma - gamma Delta g, delta w = delta sigma -
       // gamma delta d (the motion of the obstacle does not depend on the displacement)
-      vector const w       = state.traction - state.gamma * state.delta_g;
-      vector const delta_w = delta_sigma - state.gamma * delta_d;
-      vector const delta_A_T =
-        delta_w - (n * delta_w) * n - (delta_n * w) * n - (n * w) * delta_n;
+      vector const w         = state.traction - state.gamma * state.delta_g;
+      vector const delta_w   = delta_sigma - state.gamma * delta_d;
+      vector const delta_A_T = delta_w - (n * delta_w) * n - (delta_n * w) * n - (n * w) * delta_n;
 
       // delta t_T: stick: delta A_T; slip: mu delta lambda s + mu lambda / |A_T| (I - s (x) s)
       // delta A_T with s = A_T / |A_T|
-      scalar const mu = dealii::make_vectorized_array<Number>(
-        this->operator_data.contact_friction_coefficient);
+      scalar const mu =
+        dealii::make_vectorized_array<Number>(this->operator_data.contact_friction_coefficient);
       scalar const tiny = dealii::make_vectorized_array<Number>(std::numeric_limits<Number>::min());
-      scalar const safe_norm = std::max(state.norm_A_T, tiny);
-      vector const s         = state.A_T / safe_norm;
+      scalar const safe_norm    = std::max(state.norm_A_T, tiny);
+      vector const s            = state.A_T / safe_norm;
       scalar const delta_lambda = state.active * delta_argument;
-      vector const delta_t_slip =
-        (mu * delta_lambda) * s +
-        (mu * state.pressure / safe_norm) * (delta_A_T - (s * delta_A_T) * s);
-      scalar const one = dealii::make_vectorized_array<Number>(1.0);
+      vector const delta_t_slip = (mu * delta_lambda) * s + (mu * state.pressure / safe_norm) *
+                                                              (delta_A_T - (s * delta_A_T) * s);
+      scalar const one       = dealii::make_vectorized_array<Number>(1.0);
       vector const delta_t_T = state.stick * delta_A_T + (one - state.stick) * delta_t_slip;
 
       value -= delta_t_T;
@@ -940,12 +938,12 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact(
     {
       // (theta / gamma) ((H(A) - 1) lambda'(d; delta d) - H(A) gamma (n . delta d)) lambda'(d; v)
       // with lambda'(d; delta d) = delta A + gamma (n . delta d)
-      scalar const n_delta_d     = n * delta_d;
-      scalar const delta_lambda  = delta_argument + state.gamma * n_delta_d;
-      scalar const one           = dealii::make_vectorized_array<Number>(1.0);
-      scalar const factor        = this->operator_data.contact_nitsche_theta / state.gamma *
-                            ((state.active - one) * delta_lambda -
-                             state.active * state.gamma * n_delta_d);
+      scalar const n_delta_d    = n * delta_d;
+      scalar const delta_lambda = delta_argument + state.gamma * n_delta_d;
+      scalar const one          = dealii::make_vectorized_array<Number>(1.0);
+      scalar const factor =
+        this->operator_data.contact_nitsche_theta / state.gamma *
+        ((state.active - one) * delta_lambda - state.active * state.gamma * n_delta_d);
       value += factor * state.q;
       integrator.submit_gradient(factor * state.Q, q);
     }

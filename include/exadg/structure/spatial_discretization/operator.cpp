@@ -263,13 +263,13 @@ Operator<dim, Number>::setup_operators()
 
     operator_data.quad_index_gauss_lobatto = get_quad_index_gauss_lobatto();
   }
-  operator_data.bc                  = boundary_descriptor;
-  operator_data.material_descriptor = material_descriptor;
-  operator_data.unsteady            = (param.problem_type == ProblemType::Unsteady);
-  operator_data.density             = param.density;
-  operator_data.contact_method      = param.contact_method;
-  operator_data.contact_penalty     = param.contact_penalty_parameter;
-  operator_data.contact_nitsche_theta = param.contact_nitsche_theta;
+  operator_data.bc                           = boundary_descriptor;
+  operator_data.material_descriptor          = material_descriptor;
+  operator_data.unsteady                     = (param.problem_type == ProblemType::Unsteady);
+  operator_data.density                      = param.density;
+  operator_data.contact_method               = param.contact_method;
+  operator_data.contact_penalty              = param.contact_penalty_parameter;
+  operator_data.contact_nitsche_theta        = param.contact_nitsche_theta;
   operator_data.contact_friction_coefficient = param.contact_friction_coefficient;
 
   AssertThrow(param.contact_friction_coefficient == 0.0 or
@@ -278,7 +278,7 @@ Operator<dim, Number>::setup_operators()
                  param.problem_type != ProblemType::Unsteady),
               dealii::ExcMessage("Frictional contact is only implemented for Nitsche's method with "
                                  "theta = 0 and quasi-static or steady problems."));
-  operator_data.large_deformation   = param.large_deformation;
+  operator_data.large_deformation = param.large_deformation;
 
   AssertThrow(boundary_descriptor->contact_bc.empty() or param.large_deformation,
               dealii::ExcMessage("Contact boundary conditions are only implemented for the "
@@ -738,8 +738,7 @@ Operator<dim, Number>::compute_contact_quantities(VectorType const & displacemen
   AssertThrow(param.large_deformation,
               dealii::ExcMessage("Contact is only implemented for large_deformation = true."));
 
-  return elasticity_operator_nonlinear.compute_contact_quantities(displacement,
-                                                                  collect_point_data);
+  return elasticity_operator_nonlinear.compute_contact_quantities(displacement, collect_point_data);
 }
 
 template<int dim, typename Number>
