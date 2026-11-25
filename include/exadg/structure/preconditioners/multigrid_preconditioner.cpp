@@ -65,24 +65,25 @@ template<int dim, typename Number>
 void
 MultigridPreconditioner<dim, Number>::update()
 {
-  // update operators for all levels
-  if(data.unsteady)
-  {
-    this->for_all_levels([&](unsigned int const level) {
-      if(nonlinear)
-      {
-        this->get_operator_nonlinear(level)->set_time(pde_operator->get_time());
+  // update operators for all levels: The time is needed in all cases, since the linearized
+  // operator may depend on time-dependent data also for steady and quasi-static problems (e.g.
+  // the position of moving obstacles in contact problems, where the time is the load factor).
+  this->for_all_levels([&](unsigned int const level) {
+    if(nonlinear)
+    {
+      this->get_operator_nonlinear(level)->set_time(pde_operator->get_time());
+      if(data.unsteady)
         this->get_operator_nonlinear(level)->set_scaling_factor_mass_operator(
           pde_operator->get_scaling_factor_mass_operator());
-      }
-      else
-      {
-        this->get_operator_linear(level)->set_time(pde_operator->get_time());
+    }
+    else
+    {
+      this->get_operator_linear(level)->set_time(pde_operator->get_time());
+      if(data.unsteady)
         this->get_operator_linear(level)->set_scaling_factor_mass_operator(
           pde_operator->get_scaling_factor_mass_operator());
-      }
-    });
-  }
+    }
+  });
 
   if(nonlinear)
   {

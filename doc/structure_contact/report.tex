@@ -45,8 +45,9 @@ penalty and Nitsche formulations and their validation}
   model and the linear Hertz theory. Newton's method converges quadratically once the active set
   is settled. Nitsche's method ($\theta=0$) gives the same accuracy without penetration and
   without dependence on its parameter, at the price of a non-symmetric tangent and more damped
-  Newton iterations. For both methods the matrix-free multigrid degrades as the contact zone
-  grows, while AMG does not.
+  Newton iterations. After a fix in the multigrid preconditioner (time on the multigrid levels) and
+  with a higher smoother degree, the matrix-free multigrid needs a number of iterations that is
+  practically independent of the contact zone.
 \end{abstract}
 
 \section{Formulation}
@@ -314,12 +315,8 @@ stiff penalties.
   \label{tab:penalty}
 \end{table}
 
-With AMG (matrix-based) the linear iteration counts stay small. With the matrix-free $hp$-multigrid
-in 3d and $\varepsilon=10^5$, however, the average number of CG iterations grows from 5 in the
-first load step (no contact) to about 130 when the contact zone is fully developed. The penalty
-term adds a stiffness $\varepsilon\gg E/h$ on the contact faces, which the Chebyshev--Jacobi
-smoother and in particular the coarse levels (on which the contact zone is under-resolved)
-represent poorly.
+With AMG (matrix-based) the linear iteration counts stay small. The matrix-free multigrid is
+discussed in \cref{sec:multigrid}.
 
 \section{Nitsche's method}
 
@@ -431,34 +428,13 @@ $g=-p/\varepsilon$ for the penalty method.
       \addplot+[mark=square*] table[x=it, y=load10] {data/newton_nitsche.dat};
       \addlegendentry{load factor 1.0}
     \end{axis}
-  \end{tikzpicture}\hfill
-  \begin{tikzpicture}
-    \begin{axis}[width=0.48\textwidth, height=0.38\textwidth, grid=major, grid style={gray!25},
-        xlabel={load step}, ylabel={avg.\ linear iterations},
-        title={\small (d) 3d Hertz, $L=6$, linear solver},
-        legend style={font=\scriptsize, fill=white, fill opacity=0.85, text opacity=1},
-        legend pos=north west, ymin=0, ymax=130,
-        tick label style={font=\footnotesize}, label style={font=\small}]
-      \addplot+[mark=o, blue, dashed] table[x=step, y=penalty_phmg] {data/mg3d.dat};
-      \addlegendentry{penalty, $hp$-MG, CG}
-      \addplot+[mark=*, blue] table[x=step, y=nitsche_phmg] {data/mg3d.dat};
-      \addlegendentry{Nitsche, $hp$-MG, GMRES}
-      \addplot+[mark=square, red, dashed] table[x=step, y=penalty_pmg] {data/mg3d.dat};
-      \addlegendentry{penalty, $p$-MG, CG}
-      \addplot+[mark=square*, red] table[x=step, y=nitsche_pmg] {data/mg3d.dat};
-      \addlegendentry{Nitsche, $p$-MG, GMRES}
-      \addplot+[mark=diamond*, black] table[x=step, y=nitsche_amg] {data/mg3d.dat};
-      \addlegendentry{Nitsche, AMG, GMRES}
-    \end{axis}
   \end{tikzpicture}
   \caption{Nitsche's method, 2d Hertz problem with $\delta=10^{-3}$ unless stated otherwise.
   (a) Mesh convergence of the load and the interior pressure ($r<0.8a$) with respect to the
   finest mesh ($\gamma_0E=10$), compared with the penalty method ($\varepsilon=10^5$, dashed). (b) Load error with respect to the penalty solution with
   $\varepsilon=10^7$ and maximal penetration, as functions of the boundary stiffness ($\varepsilon$
   for the penalty method; $\gamma\approx 2.3\cdot10^4\,\gamma_0E$ on the contact faces for
-  Nitsche, $\gamma_0E=0.3,\dots,300$), $L=9$. (c) Newton residual and (d) average number of
-  linear iterations per load step for the 3d sphere ($\delta=10^{-3}$, $\varepsilon=10^5$ resp.\
-  $\gamma_0E=10$).}
+  Nitsche, $\gamma_0E=0.3,\dots,300$), $L=9$. (c) Newton residual.}
   \label{fig:nitsche}
 \end{figure}
 
@@ -508,17 +484,98 @@ $L=11$ the load increment had to be reduced twice).
   \label{tab:gamma}
 \end{table}
 
-\paragraph{Linear solver (\cref{fig:nitsche}d).}
-Nitsche's method reduces the multigrid iteration counts by up to 50\,\% in the first half of the
-load history, but the counts still grow with the size of the contact zone (to about 60--70 at the
-end compared with about 90 for the penalty method). Two further experiments locate the cause: with a
-$p$-multigrid that keeps the fine mesh and solves the $Q_1$ problem with AMG the counts grow in the
-same way, whereas a global AMG preconditioner needs 15--20 iterations independently of the load
-step. The linearised contact problem is thus well conditioned, and the growth is specific to the
-matrix-free multigrid. The most likely cause is the rediscretisation of the contact term on the
-coarser levels from the interpolated linearisation point: on a $Q_1$ or coarser level the active
-set and $\gamma$ differ from the fine level, so the coarse-grid correction does not match the fine
-operator near the contact zone.
+\section{Matrix-free multigrid for contact problems}\label{sec:multigrid}
+
+The linearised problems of the 3d Hertz problem ($\delta = 10^{-3}$, $hp$-multigrid with
+Chebyshev--Jacobi smoothing, AMG on the coarsest level) were initially solved with a number of
+iterations that grew with the contact zone, from about 5 to 90 (penalty, $\varepsilon=10^5$) and
+70 (Nitsche, $\gamma_0E=10$), while a global AMG preconditioner needed 15--20 iterations throughout
+(\cref{fig:multigrid}, dashed). Two causes were identified.
+
+\paragraph{Time on the multigrid levels.}
+The structure multigrid passed the time of the operator to its level operators only for unsteady
+problems. In the quasi-static setting, the time is the load factor and determines the position of
+the moving obstacle; all multigrid levels (including the one on the finest mesh, on which the
+smoother acts) therefore saw the obstacle in its initial position, touching the body only at a
+point, and the preconditioner missed most of the contact zone. With the time passed to all levels in
+all cases, the iteration counts drop by a factor of 4--5 and the solve time by a factor of 3--6
+(\cref{tab:multigrid}); the nonlinear iterations, and hence the solutions, are unchanged. Linear and
+nonlinear operators without time-dependent data in the linearisation are not affected by this
+change.
+
+\paragraph{Smoother.}
+After this fix, the counts still grow with the contact zone, with the contact stiffness and with
+the resolution (with Chebyshev degree 5: up to 23 for $\varepsilon=10^5$, 84 for $\varepsilon=10^6$,
+39 on the finer mesh $L=7$). Removing the contact term from the $Q_1$ and coarser levels makes the
+convergence worse (48 instead of 39 iterations for $L=7$), and the growth is the same for a
+$p$-multigrid that solves the $Q_1$ problem on the fine mesh with AMG; the coarse levels are
+therefore not the bottleneck. Increasing the degree of the Chebyshev smoother, in contrast, removes
+most of the growth: with degree 8 the counts stay between 4 and 6 for Nitsche's method over the whole
+load history ($L=6$; at most 8 for $L=7$), and below 12 for the penalty method with $\varepsilon=10^5$. On curved obstacles, the
+contact term $n\otimes n$ couples the displacement components at a node, which the point-Jacobi
+preconditioner of the smoother does not capture. A Chebyshev--additive-Schwarz smoother did not
+help and was much more expensive.
+
+The higher smoother degree pays off on the finer mesh ($L=7$: $-30$ to $-40\,\%$ solve time), but
+not on the coarser one ($L=6$), where the growth with degree 5 is still mild. Since the growth
+increases with the resolution, the application uses degree 8. Nitsche's method with a moderate
+$\gamma_0$ is clearly preferable for the multigrid: for a stiff penalty ($\varepsilon=10^6$) up to
+45 iterations remain even with degree 8. The matrix-free multigrid is 6--11 times faster than the
+matrix-based AMG preconditioner in these tests.
+
+\begin{figure}[ht]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[width=0.7\textwidth, height=0.42\textwidth, grid=major, grid style={gray!25},
+        xlabel={load step}, ylabel={avg.\ linear iterations per Newton step},
+        legend style={font=\scriptsize, fill=white, fill opacity=0.85, text opacity=1},
+        legend pos=outer north east, ymode=log, ymin=3, ymax=120,
+        tick label style={font=\footnotesize}, label style={font=\small}]
+      \addplot+[mark=o, gray, dashed] table[x=step, y=penalty_before] {data/mg3d.dat};
+      \addlegendentry{penalty, before fix}
+      \addplot+[mark=square, gray, dashed] table[x=step, y=nitsche_before] {data/mg3d.dat};
+      \addlegendentry{Nitsche, before fix}
+      \addplot+[mark=o, blue] table[x=step, y=penalty_k5] {data/mg3d.dat};
+      \addlegendentry{penalty, degree 5}
+      \addplot+[mark=square, red] table[x=step, y=nitsche_k5] {data/mg3d.dat};
+      \addlegendentry{Nitsche, degree 5}
+      \addplot+[mark=*, blue] table[x=step, y=penalty_k8] {data/mg3d.dat};
+      \addlegendentry{penalty, degree 8}
+      \addplot+[mark=square*, red] table[x=step, y=nitsche_k8] {data/mg3d.dat};
+      \addlegendentry{Nitsche, degree 8}
+      \addplot+[mark=diamond*, black] table[x=step, y=nitsche_amg] {data/mg3d.dat};
+      \addlegendentry{Nitsche, AMG}
+    \end{axis}
+  \end{tikzpicture}
+  \caption{3d Hertz problem ($L=6$, 41\,865 DoFs, $\varepsilon=10^5$ resp.\ $\gamma_0E=10$): average
+  number of linear iterations per Newton step for each load step, with the $hp$-multigrid before
+  and after passing the time to the multigrid levels, for Chebyshev degrees 5 and 8, and with a
+  global AMG preconditioner.}
+  \label{fig:multigrid}
+\end{figure}
+
+\begin{table}[ht]
+  \centering\small
+  \pgfplotstableread[col sep=comma]{data/mg_table.csv}\mgtab
+  \pgfplotstabletypeset[
+    columns={L,method,param,smoother,newton,linear_total,linear_max,time},
+    columns/L/.style={column name={$L$}},
+    columns/method/.style={string type, column name={method}, column type=l},
+    columns/param/.style={string type, column name={$\varepsilon$ / $\gamma_0E$}},
+    columns/smoother/.style={string type, column name={preconditioner}, column type=l},
+    columns/newton/.style={column name={Newton}},
+    columns/linear_total/.style={column name={lin.\ it.\ (total)}},
+    columns/linear_max/.style={column name={max.\ avg.}, fixed, zerofill, precision=1},
+    columns/time/.style={column name={solve time [s]}, fixed, zerofill, precision=1},
+    every head row/.style={before row=\toprule, after row=\midrule},
+    every row no 12/.style={before row=\midrule},
+    every last row/.style={after row=\bottomrule},
+  ]{\mgtab}
+  \caption{3d Hertz problem ($\delta=10^{-3}$; $L=6$: 41\,865 DoFs, $L=7$: 72\,315 DoFs,
+  14 MPI processes). J$k$: $hp$-multigrid with Chebyshev--Jacobi smoother of degree $k$; ``before
+  fix'': without passing the time to the multigrid levels.}
+  \label{tab:multigrid}
+\end{table}
 
 \section{Summary and next steps}
 
@@ -528,19 +585,23 @@ operator near the contact zone.
     expected finite-strain effect and vanishes like $\delta^{1/2}$.
   \item The method depends on the choice of $\varepsilon$: too small leads to visible
     penetration, too large to pressure oscillations at the quadrature points, more Newton
-    iterations ($30\to175$ for $\varepsilon=10^2\to10^7$) and growing multigrid iterations.
+    iterations ($30\to175$ for $\varepsilon=10^2\to10^7$) and more multigrid iterations.
   \item Nitsche's method ($\theta=0$) is consistent: exact patch test without penetration, the same
     mesh convergence as the penalty method, and results that are practically independent of
     $\gamma_0$ over three decades. It removes the need to tune the penalty parameter;
     $\gamma_0 E \approx 1$--$10\,E$ is recommended.
+  \item The matrix-free multigrid now works for contact problems: after passing the load factor
+    to the multigrid levels and with Chebyshev degree 8, Nitsche's method needs 4--6 linear
+    iterations per Newton step independently of the contact zone, and the multigrid is 6--11 times
+    faster than AMG.
   \item Price of Nitsche's method: a non-symmetric tangent (GMRES), the evaluation of the stress on
     the contact faces (constant material coefficients only), and more damped Newton iterations
     while the active set settles, growing with $\gamma_0$ and the resolution.
   \item Open points:
     \begin{itemize}
-      \item the matrix-free multigrid degrades with the size of the contact zone for both methods
-        (AMG does not); candidates are Galerkin coarse operators or transferring the fine-level
-        active set to the coarse levels;
+      \item for stiff penalties the multigrid iterations still grow, since the point-Jacobi
+        smoother does not capture the coupling of the displacement components by the contact
+        term; a nodal block-Jacobi smoother would address this;
       \item a more robust nonlinear solver for the active-set phase (e.g.\ a semismooth Newton
         method with an active-set based globalisation);
       \item the symmetric variant $\theta=1$ (needs the second derivative of the stress) and

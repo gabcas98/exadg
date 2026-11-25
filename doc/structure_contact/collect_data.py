@@ -187,15 +187,53 @@ def main():
         rows.append((name, dim, p, dofs, err, abs(last[3 + dim]), sum(newton)))
     write("patch_nitsche.dat", "name dim p dofs max_rel_err abs_gap newton", rows)
 
-    # 3d Hertz (delta = 1e-3, L = 6): average linear iterations per load step
-    series = [("h3d_d1e-3_L6", "penalty_phmg"), ("N_h3d_L6", "nitsche_phmg"),
-              ("pmg_Penalty", "penalty_pmg"), ("pmg_Nitsche", "nitsche_pmg"),
+    # 3d Hertz (delta = 1e-3): average linear iterations per load step (L = 6). The runs "before"
+    # were computed before the fix that passes the time (load factor) to the multigrid levels.
+    series = [("h3d_d1e-3_L6", "penalty_before"), ("N_h3d_L6", "nitsche_before"),
+              ("fix_h3d_d1e-3_L6", "penalty_k5"), ("fix_N_h3d_L6", "nitsche_k5"),
+              ("z_pen_e1e5_pj8", "penalty_k8"), ("z_nit_g10_pj8", "nitsche_k8"),
               ("amg_Nitsche", "nitsche_amg")]
     columns = [log_info(run_dir, name)[2] for name, _ in series]
     n = min(len(c) for c in columns)
     write("mg3d.dat", "step " + " ".join(label for _, label in series),
           [(i + 1, *[c[i] for c in columns]) for i in range(n)])
 
+    # 3d Hertz: multigrid performance for different contact stiffnesses and smoother degrees
+    def solve_time(name):
+        text = open(os.path.join(run_dir, name + ".log")).read()
+        return sum(float(t) for t in re.findall(r"Wall time \[s\]:\s*([\d.e+-]+)", text))
+
+    rows = []
+    for name, level, method, param, smoother in [
+        ("h3d_d1e-3_L6", 6, "penalty", "1e5", "J5 (before fix)"),
+        ("m_pen_e1e4", 6, "penalty", "1e4", "J5"),
+        ("fix_h3d_d1e-3_L6", 6, "penalty", "1e5", "J5"),
+        ("z_pen_e1e5_pj8", 6, "penalty", "1e5", "J8"),
+        ("z_pen_e1e6_pj5", 6, "penalty", "1e6", "J5"),
+        ("z_pen_e1e6_pj8", 6, "penalty", "1e6", "J8"),
+        ("N_h3d_L6", 6, "Nitsche", "10", "J5 (before fix)"),
+        ("fix_N_h3d_L6", 6, "Nitsche", "10", "J5"),
+        ("z_nit_g10_pj8", 6, "Nitsche", "10", "J8"),
+        ("m_nit_g100", 6, "Nitsche", "100", "J5"),
+        ("z_nit_g100_pj8", 6, "Nitsche", "100", "J8"),
+        ("amg_Nitsche", 6, "Nitsche", "10", "AMG"),
+        ("y_pen_pj5", 7, "penalty", "1e5", "J5"),
+        ("y_pen_pj8", 7, "penalty", "1e5", "J8"),
+        ("y_pen_pj12", 7, "penalty", "1e5", "J12"),
+        ("y_nit_pj5", 7, "Nitsche", "10", "J5"),
+        ("y_nit_pj8", 7, "Nitsche", "10", "J8"),
+        ("y_nit_pj12", 7, "Nitsche", "10", "J12"),
+    ]:
+        dofs, newton, linear = log_info(run_dir, name)
+        text = open(os.path.join(run_dir, name + ".log")).read()
+        total = sum(int(n) for n in re.findall(r"Linear iterations \(tot\):\s*(\d+)", text))
+        rows.append((level, dofs, method, param, '"' + smoother + '"', sum(newton), total,
+                     max(linear), solve_time(name)))
+    with open(os.path.join(HERE, "data", "mg_table.csv"), "w") as f:
+        f.write("L,dofs,method,param,smoother,newton,linear_total,linear_max,time\n")
+        for r in rows:
+            f.write(",".join(str(v).strip('"') if not isinstance(v, float) else f"{v:.1f}"
+                             for v in r) + "\n")
 
 if __name__ == "__main__":
     main()

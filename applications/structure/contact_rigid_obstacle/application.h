@@ -201,6 +201,12 @@ public:
       prm.add_parameter("LoadIncrement", load_increment, "Load increment (quasi-static).");
       prm.add_parameter("Preconditioner", preconditioner, "Preconditioner for the linear system.");
       prm.add_parameter("MultigridType", multigrid_type, "Multigrid type (e.g. phMG, pMG, hMG).");
+      prm.add_parameter("SmootherPreconditioner",
+                        smoother_preconditioner,
+                        "Preconditioner of the Chebyshev smoother (PointJacobi, AdditiveSchwarz).");
+      prm.add_parameter("SmootherIterations",
+                        smoother_iterations,
+                        "Number of Chebyshev smoothing steps (degree).");
       prm.add_parameter("UseMatrixBasedOperator",
                         use_matrix_based_operator,
                         "Use matrix-based operators in global Krylov solver and Multigrid.");
@@ -244,8 +250,8 @@ private:
     this->param.multigrid_data.type                          = multigrid_type;
     this->param.multigrid_data.p_sequence                    = PSequenceType::DecreaseByOne;
     this->param.multigrid_data.smoother_data.smoother        = MultigridSmoother::Chebyshev;
-    this->param.multigrid_data.smoother_data.preconditioner  = PreconditionerSmoother::PointJacobi;
-    this->param.multigrid_data.smoother_data.iterations      = 5;
+    this->param.multigrid_data.smoother_data.preconditioner  = smoother_preconditioner;
+    this->param.multigrid_data.smoother_data.iterations      = smoother_iterations;
     this->param.multigrid_data.smoother_data.smoothing_range = 20;
     this->param.multigrid_data.coarse_problem.solver         = MultigridCoarseGridSolver::AMG;
     this->param.multigrid_data.coarse_problem.solver_data =
@@ -475,6 +481,12 @@ private:
 
   Preconditioner preconditioner            = Preconditioner::AMG;
   MultigridType  multigrid_type            = MultigridType::phMG;
+  // A Chebyshev degree of 8 instead of the default 5 reduces the multigrid iterations for contact
+  // problems substantially (the point-Jacobi preconditioner does not capture the coupling of the
+  // displacement components by the contact term n (x) n on curved obstacles).
+  unsigned int smoother_iterations = 8;
+
+  PreconditionerSmoother smoother_preconditioner = PreconditionerSmoother::PointJacobi;
   bool           use_matrix_based_operator = false;
 };
 

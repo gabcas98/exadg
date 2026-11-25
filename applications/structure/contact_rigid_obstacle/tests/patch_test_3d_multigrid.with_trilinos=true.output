@@ -64,7 +64,7 @@ Linear solver:
   Min degree matrix-free:                    1
   Smoother:                                  Chebyshev
   Preconditioner smoother:                   PointJacobi
-  Iterations smoother:                       5
+  Iterations smoother:                       8
   Smoothing range:                           2.0000e+01
   Iterations eigenvalue estimation:          20
   Coarse grid solver:                        AMG
