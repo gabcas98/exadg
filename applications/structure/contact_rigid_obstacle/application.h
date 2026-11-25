@@ -23,13 +23,14 @@
 #define STRUCTURE_CONTACT_RIGID_OBSTACLE
 
 /*
- * Frictionless contact of an elastic body with a rigid obstacle (penalty method).
+ * Frictionless contact of an elastic body with a rigid obstacle (penalty or Nitsche method).
  *
  * Setup "PatchTest": a block [0,L] x [0,H] (x [0,W]) rests on the rigid plane y = 0 and is loaded
  * by a uniform traction p on the top face. Symmetry conditions on x = 0 (and z = 0) suppress the
  * rigid body motions in tangential direction. The exact solution has a uniform contact pressure
- * lambda = p, a uniform penetration g = -p / epsilon, a contact force p L (W) and an active area
- * L (W), independently of the mesh, the polynomial degree and the strain magnitude.
+ * lambda = p, a uniform gap g = -p / epsilon (penalty) or g = 0 (Nitsche), a contact force p L (W)
+ * and an active area L (W), independently of the mesh, the polynomial degree and the strain
+ * magnitude.
  *
  * Setup "Hertz": a rigid cylinder (2d, plane strain) or sphere (3d) of radius R is pressed by an
  * indentation delta into the elastic body [0,W] x [-H,0] (x [0,W]). Only one half (2d) or one
@@ -183,7 +184,10 @@ public:
       prm.add_parameter("Setup", setup, "PatchTest or Hertz.");
       prm.add_parameter("YoungsModulus", youngs_modulus, "Young's modulus.");
       prm.add_parameter("PoissonsRatio", poissons_ratio, "Poisson's ratio.");
-      prm.add_parameter("PenaltyParameter", penalty_parameter, "Contact penalty parameter.");
+      prm.add_parameter("ContactMethod", contact_method, "Penalty or Nitsche.");
+      prm.add_parameter("PenaltyParameter",
+                        penalty_parameter,
+                        "Penalty: epsilon. Nitsche: gamma_0 * E, gamma = gamma_0 E (k+1)^2 / h.");
       prm.add_parameter("Pressure", pressure, "PatchTest: traction on the top face.");
       prm.add_parameter("Radius", radius, "Hertz: radius of the rigid cylinder/sphere.");
       prm.add_parameter("Indentation", indentation, "Hertz: indentation of the obstacle.");
@@ -196,6 +200,7 @@ public:
                         "Hertz: radius of the locally refined zone around the origin.");
       prm.add_parameter("LoadIncrement", load_increment, "Load increment (quasi-static).");
       prm.add_parameter("Preconditioner", preconditioner, "Preconditioner for the linear system.");
+      prm.add_parameter("MultigridType", multigrid_type, "Multigrid type (e.g. phMG, pMG, hMG).");
       prm.add_parameter("UseMatrixBasedOperator",
                         use_matrix_based_operator,
                         "Use matrix-based operators in global Krylov solver and Multigrid.");
@@ -214,6 +219,7 @@ private:
     this->param.pull_back_traction   = false;
     this->param.material_type        = MaterialType::StVenantKirchhoff;
 
+    this->param.contact_method            = contact_method;
     this->param.contact_penalty_parameter = penalty_parameter;
 
     this->param.load_increment = load_increment;
@@ -229,10 +235,13 @@ private:
     this->param.sparse_matrix_type        = SparseMatrixType::Trilinos;
 
     this->param.newton_solver_data = Newton::SolverData(50, 1.e-12, 1.e-9);
-    this->param.solver_data        = SolverData(1e4, 1.e-14, 1.e-6, LinearSolver::CG, 100);
+    // the linearized operator of Nitsche's method (theta = 0) is not symmetric
+    LinearSolver const linear_solver =
+      (contact_method == ContactMethod::Nitsche) ? LinearSolver::GMRES : LinearSolver::CG;
+    this->param.solver_data = SolverData(1e4, 1.e-14, 1.e-6, linear_solver, 100);
     this->param.preconditioner     = preconditioner;
 
-    this->param.multigrid_data.type                          = MultigridType::phMG;
+    this->param.multigrid_data.type                          = multigrid_type;
     this->param.multigrid_data.p_sequence                    = PSequenceType::DecreaseByOne;
     this->param.multigrid_data.smoother_data.smoother        = MultigridSmoother::Chebyshev;
     this->param.multigrid_data.smoother_data.preconditioner  = PreconditionerSmoother::PointJacobi;
@@ -447,7 +456,8 @@ private:
 
   double youngs_modulus    = 1.0;
   double poissons_ratio    = 0.3;
-  double penalty_parameter = 1.0e3;
+  ContactMethod contact_method    = ContactMethod::Penalty;
+  double        penalty_parameter = 1.0e3;
 
   // PatchTest
   double const length   = 2.0;
@@ -464,6 +474,7 @@ private:
   double load_increment = 0.1;
 
   Preconditioner preconditioner            = Preconditioner::AMG;
+  MultigridType  multigrid_type            = MultigridType::phMG;
   bool           use_matrix_based_operator = false;
 };
 

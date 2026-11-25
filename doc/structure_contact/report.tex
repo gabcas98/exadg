@@ -28,7 +28,7 @@
 }
 
 \title{Frictionless contact with rigid obstacles in ExaDG:\\
-penalty formulation and validation}
+penalty and Nitsche formulations and their validation}
 \author{Branch \code{structure-contact}}
 \date{\today}
 
@@ -43,7 +43,10 @@ penalty formulation and validation}
   converge, and the remaining deviation from the Hertz solution scales like the square root of
   the indentation, i.e.\ like the strain: it is the expected difference between the finite-strain
   model and the linear Hertz theory. Newton's method converges quadratically once the active set
-  is settled.
+  is settled. Nitsche's method ($\theta=0$) gives the same accuracy without penetration and
+  without dependence on its parameter, at the price of a non-symmetric tangent and more damped
+  Newton iterations. For both methods the matrix-free multigrid degrades as the contact zone
+  grows, while AMG does not.
 \end{abstract}
 
 \section{Formulation}
@@ -233,7 +236,7 @@ has a square-root behaviour and the active set is resolved only at quadrature po
 decreases irregularly to $5\cdot10^{-3}$. The interior error with respect to Hertz levels off at
 $0.87\,\%$, the modelling error for $\delta=10^{-3}$ (consistent with (a)).
 
-\paragraph{Penalty (\cref{fig:hertz}c).}
+\paragraph{Penalty (\cref{fig:hertz}c).}\label{sec:penalty-remark}
 The maximal penetration equals $p_0/\varepsilon$ and the load converges like $\varepsilon^{-1}$
 to the one with the largest penalty, as expected for the penalty method. The interior pressure
 reaches the modelling floor for $\varepsilon\gtrsim10^5$ ($\varepsilon h/E\approx 10^2$). For
@@ -318,6 +321,205 @@ term adds a stiffness $\varepsilon\gg E/h$ on the contact faces, which the Cheby
 smoother and in particular the coarse levels (on which the contact zone is under-resolved)
 represent poorly.
 
+\section{Nitsche's method}
+
+\paragraph{Formulation.}
+Following Chouly and Hild (2013), the contact conditions $g\ge0$, $\lambda\ge0$, $\lambda g=0$ are
+written as $\lambda = [\lambda - \gamma g]_+$ with $\gamma>0$, and the contact pressure is replaced
+by the normal traction of the discrete solution. In the variant $\theta=0$, extended to finite
+strains in the reference configuration, the contact term reads
+\begin{equation}
+  r_C(d; v) = -\int_{\Gamma_C} \lambda_N\, n\cdot v \dd A, \qquad
+  \lambda_N = \bigl[\, n\cdot(P(d)\,N) - \gamma\, g(d)\, \bigr]_+, \qquad
+  \gamma = \gamma_0 E\,(k+1)^2\,\frac{|\partial K|}{|K|},
+\end{equation}
+with the first Piola--Kirchhoff stress $P = FS$, the outward unit normal $N$ of $\Omega_0$, the
+polynomial degree $k$ and the surface-to-volume ratio of the cell $K$ adjacent to the face
+($\approx 2.5/h$ for the boundary cells used here). Since $P(d)N=\lambda n$ for the exact solution,
+the method is consistent: there is no penalty error, and $\gamma$ only has to be large enough for
+stability. The structure is the one of the penalty method with $-\varepsilon g$ replaced by
+$n\cdot(PN)-\gamma g$; the linearisation additionally contains
+$n\cdot(\delta P\, N) + (\kappa\,\delta d)\cdot(PN)$ with $\delta P = F\,\delta S + \nabla\delta d\, S$.
+It is not symmetric, so GMRES is used for the linearised problems. The material is evaluated on the
+boundary faces, which is implemented for spatially constant material coefficients. In ExaDG the
+method is selected with \code{Parameters::contact_method = ContactMethod::Nitsche}, and
+\code{contact_penalty_parameter} is then the stiffness scale $\gamma_0 E$.
+
+\paragraph{Patch test.}
+The patch test of \cref{tab:patch} is reproduced exactly with Nitsche's method as well
+(\cref{tab:patch-nitsche}): contact force, active area and pressure agree in all ten printed digits
+and the gap vanishes up to round-off, i.e.\ there is no penetration, in contrast to
+$g=-p/\varepsilon$ for the penalty method.
+
+\begin{table}[ht]
+  \centering\small
+  \pgfplotstableread{data/patch_nitsche.dat}\patchnitschetab
+  \pgfplotstabletypeset[
+    columns={name,dim,p,dofs,max_rel_err,abs_gap,newton},
+    columns/name/.style={string type, column name={case},
+      string replace={G_2d_q2_amg}{2d, $Q_2$, AMG},
+      string replace={G_2d_q3_mg}{2d, $Q_3$, matrix-free multigrid},
+      string replace={G_3d_q3_large}{3d, $Q_3$, multigrid, large strain},
+      column type=l},
+    columns/dim/.style={column name={$d$}},
+    columns/p/.style={column name={$p$}, fixed, precision=2},
+    columns/dofs/.style={column name={DoFs}},
+    columns/max_rel_err/.style={column name={max.\ rel.\ error}, fixed, precision=0},
+    columns/abs_gap/.style={column name={$\max|g|$}, sci, precision=1},
+    columns/newton/.style={column name={Newton it.\ (total)}},
+    every head row/.style={before row=\toprule, after row=\midrule},
+    every last row/.style={after row=\bottomrule},
+  ]{\patchnitschetab}
+  \caption{Contact patch test with Nitsche's method ($\gamma_0E=10$): largest relative error of
+  contact force, active area and pressure, and largest gap.}
+  \label{tab:patch-nitsche}
+\end{table}
+
+\begin{figure}[p]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[width=0.48\textwidth, height=0.38\textwidth, xmode=log, ymode=log, grid=major,
+        grid style={gray!25}, legend style={font=\footnotesize, fill=white, fill opacity=0.85,
+        text opacity=1}, tick label style={font=\footnotesize}, label style={font=\small},
+        xlabel={$h/a$}, ylabel={relative error},
+        title={\small (a) mesh, $\delta=10^{-3}$}, ymin=1e-6, ymax=1e3,
+        legend style={font=\tiny, fill=white, fill opacity=0.85, text opacity=1},
+        legend pos=north west]
+      \addplot+[mark=*, blue] table[x=h_over_a, y=err_P] {data/mesh_nitsche.dat};
+      \addlegendentry{$P$, Nitsche}
+      \addplot+[mark=triangle*, red] table[x=h_over_a, y=err_profile_int] {data/mesh_nitsche.dat};
+      \addlegendentry{$p(r)$, Nitsche}
+      \addplot+[mark=o, blue, dashed] table[x=h_over_a, y=err_P] {data/mesh.dat};
+      \addlegendentry{$P$, penalty}
+      \addplot+[mark=triangle, red, dashed] table[x=h_over_a, y=err_profile_int] {data/mesh.dat};
+      \addlegendentry{$p(r)$, penalty}
+      \addplot+[mark=diamond*, black] table[x=h_over_a, y=err_hertz_int] {data/mesh_nitsche.dat};
+      \addlegendentry{$p(r)$ vs.\ Hertz, Nitsche}
+    \end{axis}
+  \end{tikzpicture}\hfill
+  \begin{tikzpicture}
+    \begin{axis}[width=0.48\textwidth, height=0.38\textwidth, xmode=log, ymode=log, grid=major,
+        grid style={gray!25}, legend style={font=\footnotesize, fill=white, fill opacity=0.85,
+        text opacity=1}, tick label style={font=\footnotesize}, label style={font=\small},
+        xlabel={boundary stiffness $\varepsilon$ resp.\ $\gamma$},
+        ylabel={relative error / penetration},
+        title={\small (b) dependence on $\varepsilon$ and $\gamma$}, legend pos=north east,
+        ymax=1e3]
+      \addplot+[mark=o, blue, dashed] table[x=eps, y=err_P] {data/penalty.dat};
+      \addlegendentry{$P$, penalty}
+      \addplot+[mark=*, blue] table[x expr=\thisrow{gamma0}*23040, y=err_P_penalty]
+        {data/gamma.dat};
+      \addlegendentry{$P$, Nitsche}
+      \addplot+[mark=triangle, red, dashed] table[x=eps, y=penetration_over_delta]
+        {data/penalty.dat};
+      \addlegendentry{$\max|g|/\delta$, penalty}
+      \addplot+[mark=triangle*, red] table[x expr=\thisrow{gamma0}*23040,
+        y=penetration_over_delta] {data/gamma.dat};
+      \addlegendentry{$\max|g|/\delta$, Nitsche}
+    \end{axis}
+  \end{tikzpicture}
+
+  \vspace{1em}
+  \begin{tikzpicture}
+    \begin{axis}[width=0.48\textwidth, height=0.38\textwidth, ymode=log, grid=major,
+        grid style={gray!25}, xlabel={Newton iteration}, ylabel={$\|r\|$},
+        title={\small (c) Newton, Nitsche, $\gamma_0E=10$},
+        legend style={font=\footnotesize}, legend pos=south west,
+        tick label style={font=\footnotesize}, label style={font=\small}]
+      \addplot+[mark=*] table[x=it, y=load07] {data/newton_nitsche.dat};
+      \addlegendentry{load factor 0.7}
+      \addplot+[mark=square*] table[x=it, y=load10] {data/newton_nitsche.dat};
+      \addlegendentry{load factor 1.0}
+    \end{axis}
+  \end{tikzpicture}\hfill
+  \begin{tikzpicture}
+    \begin{axis}[width=0.48\textwidth, height=0.38\textwidth, grid=major, grid style={gray!25},
+        xlabel={load step}, ylabel={avg.\ linear iterations},
+        title={\small (d) 3d Hertz, $L=6$, linear solver},
+        legend style={font=\scriptsize, fill=white, fill opacity=0.85, text opacity=1},
+        legend pos=north west, ymin=0, ymax=130,
+        tick label style={font=\footnotesize}, label style={font=\small}]
+      \addplot+[mark=o, blue, dashed] table[x=step, y=penalty_phmg] {data/mg3d.dat};
+      \addlegendentry{penalty, $hp$-MG, CG}
+      \addplot+[mark=*, blue] table[x=step, y=nitsche_phmg] {data/mg3d.dat};
+      \addlegendentry{Nitsche, $hp$-MG, GMRES}
+      \addplot+[mark=square, red, dashed] table[x=step, y=penalty_pmg] {data/mg3d.dat};
+      \addlegendentry{penalty, $p$-MG, CG}
+      \addplot+[mark=square*, red] table[x=step, y=nitsche_pmg] {data/mg3d.dat};
+      \addlegendentry{Nitsche, $p$-MG, GMRES}
+      \addplot+[mark=diamond*, black] table[x=step, y=nitsche_amg] {data/mg3d.dat};
+      \addlegendentry{Nitsche, AMG, GMRES}
+    \end{axis}
+  \end{tikzpicture}
+  \caption{Nitsche's method, 2d Hertz problem with $\delta=10^{-3}$ unless stated otherwise.
+  (a) Mesh convergence of the load and the interior pressure ($r<0.8a$) with respect to the
+  finest mesh ($\gamma_0E=10$), compared with the penalty method ($\varepsilon=10^5$, dashed). (b) Load error with respect to the penalty solution with
+  $\varepsilon=10^7$ and maximal penetration, as functions of the boundary stiffness ($\varepsilon$
+  for the penalty method; $\gamma\approx 2.3\cdot10^4\,\gamma_0E$ on the contact faces for
+  Nitsche, $\gamma_0E=0.3,\dots,300$), $L=9$. (c) Newton residual and (d) average number of
+  linear iterations per load step for the 3d sphere ($\delta=10^{-3}$, $\varepsilon=10^5$ resp.\
+  $\gamma_0E=10$).}
+  \label{fig:nitsche}
+\end{figure}
+
+\paragraph{Mesh convergence (\cref{fig:nitsche}a).}
+Nitsche's method converges like the penalty method: the interior pressure error with respect to the
+finest mesh is $10^{-3}$, $9.4\cdot10^{-5}$ and $2.6\cdot10^{-5}$ for $h/a = 0.11, 0.054, 0.027$
+(penalty: $10^{-3}$, $5.3\cdot10^{-5}$, $1.5\cdot10^{-5}$), and the load converges to
+$4.6\cdot10^{-6}$. The error with respect to Hertz levels off at the modelling error, $0.859\,\%$
+(penalty with $\varepsilon=10^5$: $0.872\,\%$, the difference being the penalty error).
+
+\paragraph{Dependence on $\gamma$ (\cref{fig:nitsche}b).}
+This is the main advantage of the method. For the penalty method, the load error and the penetration
+decay like $\varepsilon^{-1}$, so a stiff penalty is needed for accuracy, which in turn causes
+pressure oscillations (\cref{sec:penalty-remark}). With Nitsche's method, over three decades of the
+parameter ($\gamma_0E = 0.3$ to $300$) the load changes by less than $2\cdot10^{-5}$, the interior
+pressure by less than $1.3\cdot10^{-4}$ for $\gamma_0E\le30$, and the penetration stays below
+$4\cdot10^{-5}\delta$; for the smallest of these boundary stiffnesses the penalty method has a load
+error and a penetration of about $10^{-3}$ resp.\ $10^{-3}\delta$, i.e.\ 30--50 times larger. For very large $\gamma_0E$ the interior
+pressure starts to deviate ($7\cdot10^{-4}$ for $\gamma_0E=100$, $2\cdot10^{-3}$ for
+$\gamma_0E=300$), as the method then approaches the over-constrained penalty limit. Even
+$\gamma_0E=0.3$ was stable in these tests.
+
+\paragraph{Newton's method (\cref{fig:nitsche}c, \cref{tab:gamma}).}
+The final convergence is quadratic (e.g.\ $2.0\cdot10^{-7}\to3.9\cdot10^{-11}\to4.1\cdot10^{-14}$),
+which confirms the linearisation including the stress and curvature terms. Before that, however,
+the active set changes over several damped iterations: the active set now depends on the normal
+traction, which is less smooth at the boundary of the contact zone than the gap. The number of
+Newton iterations therefore grows with $\gamma_0$ (\cref{tab:gamma}) and with the mesh resolution
+(150 iterations in total for $L=10$ compared with 109 for the penalty method; on the finest mesh
+$L=11$ the load increment had to be reduced twice).
+
+\begin{table}[ht]
+  \centering
+  \pgfplotstableread{data/gamma.dat}\gammatab
+  \pgfplotstabletypeset[
+    columns={gamma0,err_P,err_profile_int,penetration_over_delta,newton,max_linear},
+    columns/gamma0/.style={column name={$\gamma_0E$}, fixed, precision=1},
+    columns/err_P/.style={column name={$P$ vs.\ $\gamma_0E=10$}, sci, precision=1},
+    columns/err_profile_int/.style={column name={$p(r)$ vs.\ $\gamma_0E=10$}, sci, precision=1},
+    columns/penetration_over_delta/.style={column name={$\max|g|/\delta$}, sci, precision=1},
+    columns/newton/.style={column name={Newton it.}},
+    columns/max_linear/.style={column name={max.\ avg.\ GMRES it.}, fixed, precision=1},
+    every head row/.style={before row=\toprule, after row=\midrule},
+    every last row/.style={after row=\bottomrule},
+  ]{\gammatab}
+  \caption{Nitsche parameter study (2d Hertz, $\delta=10^{-3}$, $L=9$, AMG).}
+  \label{tab:gamma}
+\end{table}
+
+\paragraph{Linear solver (\cref{fig:nitsche}d).}
+Nitsche's method reduces the multigrid iteration counts by up to 50\,\% in the first half of the
+load history, but the counts still grow with the size of the contact zone (to about 60--70 at the
+end compared with about 90 for the penalty method). Two further experiments locate the cause: with a
+$p$-multigrid that keeps the fine mesh and solves the $Q_1$ problem with AMG the counts grow in the
+same way, whereas a global AMG preconditioner needs 15--20 iterations independently of the load
+step. The linearised contact problem is thus well conditioned, and the growth is specific to the
+matrix-free multigrid. The most likely cause is the rediscretisation of the contact term on the
+coarser levels from the interpolated linearisation point: on a $Q_1$ or coarser level the active
+set and $\gamma$ differ from the fine level, so the coarse-grid correction does not match the fine
+operator near the contact zone.
+
 \section{Summary and next steps}
 
 \begin{itemize}
@@ -327,8 +529,23 @@ represent poorly.
   \item The method depends on the choice of $\varepsilon$: too small leads to visible
     penetration, too large to pressure oscillations at the quadrature points, more Newton
     iterations ($30\to175$ for $\varepsilon=10^2\to10^7$) and growing multigrid iterations.
-  \item Next step: Nitsche's method (consistent, without a user-tuned penalty error and with a
-    penalty of size $\gamma E/h$ only), which should also improve the multigrid performance.
+  \item Nitsche's method ($\theta=0$) is consistent: exact patch test without penetration, the same
+    mesh convergence as the penalty method, and results that are practically independent of
+    $\gamma_0$ over three decades. It removes the need to tune the penalty parameter;
+    $\gamma_0 E \approx 1$--$10\,E$ is recommended.
+  \item Price of Nitsche's method: a non-symmetric tangent (GMRES), the evaluation of the stress on
+    the contact faces (constant material coefficients only), and more damped Newton iterations
+    while the active set settles, growing with $\gamma_0$ and the resolution.
+  \item Open points:
+    \begin{itemize}
+      \item the matrix-free multigrid degrades with the size of the contact zone for both methods
+        (AMG does not); candidates are Galerkin coarse operators or transferring the fine-level
+        active set to the coarse levels;
+      \item a more robust nonlinear solver for the active-set phase (e.g.\ a semismooth Newton
+        method with an active-set based globalisation);
+      \item the symmetric variant $\theta=1$ (needs the second derivative of the stress) and
+        frictional contact.
+    \end{itemize}
 \end{itemize}
 
 \end{document}

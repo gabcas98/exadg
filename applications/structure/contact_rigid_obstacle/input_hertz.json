@@ -18,6 +18,7 @@
         "Setup": "Hertz",
         "YoungsModulus": "1.0",
         "PoissonsRatio": "0.3",
+        "ContactMethod": "Penalty",
         "PenaltyParameter": "10000.0",
         "Radius": "1.0",
         "Indentation": "0.01",

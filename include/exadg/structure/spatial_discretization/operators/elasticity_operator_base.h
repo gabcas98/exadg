@@ -41,6 +41,7 @@ struct OperatorData : public OperatorBaseData
       pull_back_traction(false),
       unsteady(false),
       density(1.0),
+      contact_method(ContactMethod::Penalty),
       contact_penalty(0.0),
       quad_index_gauss_lobatto(0)
   {
@@ -63,9 +64,10 @@ struct OperatorData : public OperatorBaseData
   // density
   double density;
 
-  // penalty parameter epsilon of the frictionless contact condition with rigid obstacles,
-  // contact pressure lambda = epsilon * <-g>_+ (only relevant if contact boundaries exist)
-  double contact_penalty;
+  // frictionless contact condition with rigid obstacles (only relevant if contact boundaries
+  // exist), see Parameters::contact_method and Parameters::contact_penalty_parameter
+  ContactMethod contact_method;
+  double        contact_penalty;
 
   // for DirichletCached boundary conditions, another quadrature rule
   // is needed to set the constrained DoFs.

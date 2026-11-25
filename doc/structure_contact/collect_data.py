@@ -137,6 +137,65 @@ def main():
         rows.append((name, dim, p, dofs, err, sum(newton)))
     write("patch.dat", "name dim p dofs max_rel_err newton", rows)
 
+    # E: Nitsche mesh study (reference: finest mesh)
+    results = {L: compare(2, E, NU, R, prefix(run_dir, f"E_L{L}")) for L in levels}
+    ref = results[levels[-1]]
+    rows = []
+    for L in levels[:-1]:
+        c = results[L]
+        dofs, newton, _ = log_info(run_dir, f"E_L{L}")
+        h = 0.5 / 2**L
+        rows.append((L, h, h / ref["a"], dofs, abs(c["P"] - ref["P"]) / ref["P"],
+                     profile_difference(c, ref), profile_difference(c, ref, 0.8),
+                     abs(c["a_num"] - ref["a_num"]) / ref["a_num"], c["err_l2"],
+                     hertz_interior_error(c), sum(newton)))
+    write("mesh_nitsche.dat",
+          "L h h_over_a dofs err_P err_profile err_profile_int err_a err_hertz_l2 "
+          "err_hertz_int newton", rows)
+
+    # F: Nitsche parameter study (reference: gamma_0 E = 10), compared to the penalty solution
+    # with the largest penalty on the same mesh
+    penalty_ref = compare(2, E, NU, R, prefix(run_dir, "C_e1e7"))
+    nitsche_ref = compare(2, E, NU, R, prefix(run_dir, "F_g10"))
+    rows = []
+    for g in ["0.3", "1", "3", "10", "30", "100", "300"]:
+        name = "F_g" + g
+        if "FAILED" in open(os.path.join(run_dir, name + ".log")).read() or \
+                "Could not solve quasi static problem" in open(
+                    os.path.join(run_dir, name + ".log")).read():
+            continue
+        c = compare(2, E, NU, R, prefix(run_dir, name))
+        _, newton, linear = log_info(run_dir, name)
+        rows.append((float(g), abs(c["P"] - nitsche_ref["P"]) / nitsche_ref["P"],
+                     profile_difference(c, nitsche_ref, 0.8),
+                     abs(c["P"] - penalty_ref["P"]) / penalty_ref["P"],
+                     profile_difference(c, penalty_ref, 0.8), hertz_interior_error(c),
+                     -c["min_gap"] / 1e-3, sum(newton), max(linear)))
+    write("gamma.dat",
+          "gamma0 err_P err_profile_int err_P_penalty err_profile_int_penalty err_hertz_int "
+          "penetration_over_delta newton max_linear", rows)
+
+    # G: Nitsche patch tests (exact: force p L (W), area L (W), pressure p, gap 0)
+    rows = []
+    for name, dim, p in [("G_2d_q2_amg", 2, 0.1), ("G_2d_q3_mg", 2, 0.1),
+                         ("G_3d_q3_large", 3, 0.15)]:
+        last = load(prefix(run_dir, name) + ".txt")[-1]
+        exact = [p * 2.0, 2.0, p]
+        computed = [last[2], last[1 + dim], last[2 + dim]]
+        err = max(abs(c - x) / abs(x) for c, x in zip(computed, exact))
+        dofs, newton, _ = log_info(run_dir, name)
+        rows.append((name, dim, p, dofs, err, abs(last[3 + dim]), sum(newton)))
+    write("patch_nitsche.dat", "name dim p dofs max_rel_err abs_gap newton", rows)
+
+    # 3d Hertz (delta = 1e-3, L = 6): average linear iterations per load step
+    series = [("h3d_d1e-3_L6", "penalty_phmg"), ("N_h3d_L6", "nitsche_phmg"),
+              ("pmg_Penalty", "penalty_pmg"), ("pmg_Nitsche", "nitsche_pmg"),
+              ("amg_Nitsche", "nitsche_amg")]
+    columns = [log_info(run_dir, name)[2] for name, _ in series]
+    n = min(len(c) for c in columns)
+    write("mg3d.dat", "step " + " ".join(label for _, label in series),
+          [(i + 1, *[c[i] for c in columns]) for i in range(n)])
+
 
 if __name__ == "__main__":
     main()

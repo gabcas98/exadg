@@ -53,6 +53,19 @@ enum class Type2D
   PlaneStrain
 };
 
+/*
+ * Method to enforce the frictionless contact condition with rigid obstacles:
+ *
+ *  Penalty: contact pressure lambda = epsilon <-g>_+ ,
+ *  Nitsche: contact pressure lambda = [lambda(d) - gamma g]_+ with the normal traction
+ *           lambda(d) = n . (P N) of the first Piola-Kirchhoff stress P (variant theta = 0).
+ */
+enum class ContactMethod
+{
+  Penalty,
+  Nitsche
+};
+
 enum class MaterialType
 {
   Undefined,

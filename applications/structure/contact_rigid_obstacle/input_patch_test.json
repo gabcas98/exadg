@@ -18,6 +18,7 @@
         "Setup": "PatchTest",
         "YoungsModulus": "1.0",
         "PoissonsRatio": "0.3",
+        "ContactMethod": "Penalty",
         "PenaltyParameter": "1000.0",
         "Pressure": "0.1",
         "LoadIncrement": "0.25",

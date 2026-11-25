@@ -19,6 +19,7 @@
  *  ______________________________________________________________________
  */
 
+#include <exadg/operators/interior_penalty_parameter.h>
 #include <exadg/structure/spatial_discretization/operators/boundary_conditions.h>
 #include <exadg/structure/spatial_discretization/operators/continuum_mechanics.h>
 #include <exadg/structure/spatial_discretization/operators/nonlinear_operator.h>
@@ -53,7 +54,100 @@ NonLinearOperator<dim, Number>::initialize_derived()
     // the linearized contact term requires the values of the displacement increment on faces
     this->integrator_flags.face_evaluate =
       this->integrator_flags.face_evaluate | dealii::EvaluationFlags::values;
+
+    if(this->operator_data.contact_method == ContactMethod::Nitsche)
+    {
+      // the normal traction requires the material on boundary faces, which is only implemented
+      // for spatially constant material coefficients
+      for(auto const & material : *this->operator_data.material_descriptor)
+      {
+        bool variable_coefficients = false;
+        if(material.second->type == MaterialType::StVenantKirchhoff)
+          variable_coefficients =
+            std::static_pointer_cast<StVenantKirchhoffData<dim>>(material.second)
+              ->youngs_modulus_function != nullptr;
+        else if(material.second->type == MaterialType::IncompressibleNeoHookean)
+          variable_coefficients =
+            std::static_pointer_cast<IncompressibleNeoHookeanData<dim>>(material.second)
+              ->shear_modulus_function != nullptr;
+
+        AssertThrow(not variable_coefficients,
+                    dealii::ExcMessage("Nitsche contact requires spatially constant material "
+                                       "coefficients."));
+      }
+
+      // gamma = gamma_0 E (k + 1)^2 |dK| / |K|
+      IP::calculate_penalty_parameter(nitsche_gamma,
+                                      *this->matrix_free,
+                                      this->operator_data.dof_index);
+
+      dealii::DoFHandler<dim> const & dof_handler =
+        this->matrix_free->get_dof_handler(this->operator_data.dof_index);
+      ElementType const element_type =
+        dof_handler.get_triangulation().all_reference_cells_are_hyper_cube() ?
+          ElementType::Hypercube :
+          ElementType::Simplex;
+      Number const factor = IP::get_penalty_factor<dim, Number>(
+        dof_handler.get_fe().degree, element_type, this->operator_data.contact_penalty);
+      for(auto & gamma : nitsche_gamma)
+        gamma *= factor;
+
+      // the normal traction of the displacement increment is needed in the linearized operator
+      this->integrator_flags.face_evaluate =
+        this->integrator_flags.face_evaluate | dealii::EvaluationFlags::gradients;
+    }
   }
+}
+
+template<int dim, typename Number>
+typename NonLinearOperator<dim, Number>::ContactState
+NonLinearOperator<dim, Number>::evaluate_contact_state(IntegratorFace const &        integrator,
+                                                       unsigned int const            q,
+                                                       dealii::Function<dim> const & obstacle) const
+{
+  ContactState state;
+
+  // current position
+  vector const x = integrator.quadrature_point(q) + integrator.get_value(q);
+
+  state.obstacle = evaluate_rigid_obstacle<dim, Number>(obstacle, x);
+
+  scalar argument;
+  if(this->operator_data.contact_method == ContactMethod::Penalty)
+  {
+    argument = -this->operator_data.contact_penalty * state.obstacle.gap;
+  }
+  else if(this->operator_data.contact_method == ContactMethod::Nitsche)
+  {
+    tensor const Grad_d = integrator.get_gradient(q);
+
+    state.F = get_F<dim, Number>(Grad_d);
+    state.S = this->material_handler.get_material()->second_piola_kirchhoff_stress(
+      Grad_d, integrator.get_current_cell_index(), q);
+    state.N     = integrator.normal_vector(q);
+    state.gamma = integrator.read_cell_data(nitsche_gamma);
+
+    // normal traction lambda(d) = n . (P N)
+    scalar const normal_traction = state.obstacle.normal * ((state.F * state.S) * state.N);
+
+    argument = normal_traction - state.gamma * state.obstacle.gap;
+  }
+  else
+  {
+    AssertThrow(false, dealii::ExcMessage("ContactMethod not implemented."));
+  }
+
+  scalar const zero = dealii::make_vectorized_array<Number>(0.0);
+  scalar const one  = dealii::make_vectorized_array<Number>(1.0);
+
+  state.pressure = std::max(argument, zero);
+  state.active =
+    dealii::compare_and_apply_mask<dealii::SIMDComparison::greater_than_or_equal>(argument,
+                                                                                   zero,
+                                                                                   one,
+                                                                                   zero);
+
+  return state;
 }
 
 template<int dim, typename Number>
@@ -150,26 +244,28 @@ NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & di
     obstacle->set_time(this->time);
 
     integrator.reinit(face);
-    integrator.gather_evaluate(src, dealii::EvaluationFlags::values);
+    this->material_handler.reinit_face(*this->matrix_free, face);
+    integrator.gather_evaluate(src,
+                               dealii::EvaluationFlags::values |
+                                 dealii::EvaluationFlags::gradients);
 
     unsigned int const n_lanes = this->matrix_free->n_active_entries_per_face_batch(face);
 
     for(unsigned int q = 0; q < integrator.n_q_points; ++q)
     {
       vector const X = integrator.quadrature_point(q);
-      vector const x = X + integrator.get_value(q);
 
-      RigidObstacleValues<dim, Number> const obstacle_values =
-        evaluate_rigid_obstacle<dim, Number>(*obstacle, x);
-      scalar const pressure =
-        calculate_contact_pressure<Number>(obstacle_values.gap, this->operator_data.contact_penalty);
-      scalar const JxW = integrator.JxW(q);
+      ContactState const state = evaluate_contact_state(integrator, q, *obstacle);
+
+      RigidObstacleValues<dim, Number> const & obstacle_values = state.obstacle;
+      scalar const                             pressure        = state.pressure;
+      scalar const                             JxW             = integrator.JxW(q);
 
       for(unsigned int v = 0; v < n_lanes; ++v)
       {
         for(unsigned int d = 0; d < dim; ++d)
           result.force[d] += pressure[v] * obstacle_values.normal[d][v] * JxW[v];
-        if(obstacle_values.gap[v] < 0.0)
+        if(pressure[v] > 0.0)
           result.active_area += JxW[v];
         result.max_pressure = std::max(result.max_pressure, (double)pressure[v]);
         result.min_gap      = std::min(result.min_gap, (double)obstacle_values.gap[v]);
@@ -325,8 +421,14 @@ NonLinearOperator<dim, Number>::boundary_face_loop_nonlinear(
 
     if(is_contact_face)
     {
-      // the contact term depends on the current position x = X + d
-      integrator_inhom.gather_evaluate(src, dealii::EvaluationFlags::values);
+      // the contact term depends on the current position x = X + d (and on the normal traction
+      // for Nitsche's method)
+      integrator_inhom.gather_evaluate(src,
+                                       this->operator_data.contact_method ==
+                                           ContactMethod::Nitsche ?
+                                         dealii::EvaluationFlags::values |
+                                           dealii::EvaluationFlags::gradients :
+                                         dealii::EvaluationFlags::values);
 
       do_boundary_integral_contact_nonlinear(integrator_inhom, boundary_id);
     }
@@ -424,17 +526,10 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact_nonlinear(
 
   for(unsigned int q = 0; q < integrator.n_q_points; ++q)
   {
-    // current position
-    vector const x = integrator.quadrature_point(q) + integrator.get_value(q);
-
-    RigidObstacleValues<dim, Number> const obstacle_values =
-      evaluate_rigid_obstacle<dim, Number>(*obstacle, x);
-
-    scalar const pressure =
-      calculate_contact_pressure<Number>(obstacle_values.gap, this->operator_data.contact_penalty);
+    ContactState const state = evaluate_contact_state(integrator, q, *obstacle);
 
     // the obstacle pushes the body in direction of the normal n, t_0 = lambda * n
-    integrator.submit_value(-pressure * obstacle_values.normal, q);
+    integrator.submit_value(-state.pressure * state.obstacle.normal, q);
   }
 }
 
@@ -462,9 +557,14 @@ NonLinearOperator<dim, Number>::reinit_boundary_face_derived(IntegratorFace &   
      this->operator_data.bc->get_boundary_type(this->matrix_free->get_boundary_id(face)) ==
        BoundaryType::Contact)
   {
+    this->material_handler.reinit_face(*this->matrix_free, face);
+
     integrator_lin_face->reinit(face);
     integrator_lin_face->read_dof_values(displacement_lin);
-    integrator_lin_face->evaluate(dealii::EvaluationFlags::values);
+    integrator_lin_face->evaluate(this->operator_data.contact_method == ContactMethod::Nitsche ?
+                                    dealii::EvaluationFlags::values |
+                                      dealii::EvaluationFlags::gradients :
+                                    dealii::EvaluationFlags::values);
   }
 }
 
@@ -549,34 +649,44 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact(
   auto const obstacle = this->operator_data.bc->contact_bc.find(boundary_id)->second;
   obstacle->set_time(this->time);
 
-  scalar const penalty = dealii::make_vectorized_array<Number>(this->operator_data.contact_penalty);
-  scalar const zero    = dealii::make_vectorized_array<Number>(0.0);
-  scalar const one     = dealii::make_vectorized_array<Number>(1.0);
+  bool const nitsche = (this->operator_data.contact_method == ContactMethod::Nitsche);
 
   for(unsigned int q = 0; q < integrator.n_q_points; ++q)
   {
-    // current position at the point of linearization
-    vector const x_lin = integrator_lin_face->quadrature_point(q) + integrator_lin_face->get_value(q);
+    // contact state at the point of linearization
+    ContactState const state = evaluate_contact_state(*integrator_lin_face, q, *obstacle);
 
-    RigidObstacleValues<dim, Number> const obstacle_values =
-      evaluate_rigid_obstacle<dim, Number>(*obstacle, x_lin);
+    vector const & n       = state.obstacle.normal;
+    vector const   delta_d = integrator.get_value(q);
 
-    scalar const pressure =
-      calculate_contact_pressure<Number>(obstacle_values.gap, this->operator_data.contact_penalty);
+    // derivative of the normal
+    vector const delta_n = state.obstacle.hessian * delta_d;
 
-    // Heaviside function H(-g). Points with g = 0 are considered active, which avoids a
-    // singular tangent if the body initially touches the obstacle without any other support.
-    scalar const active = dealii::compare_and_apply_mask<dealii::SIMDComparison::less_than_or_equal>(
-      obstacle_values.gap, zero, one, zero);
+    scalar delta_argument;
+    if(nitsche)
+    {
+      tensor const Grad_delta = integrator.get_gradient(q);
 
-    vector const delta_d = integrator.get_value(q);
+      // delta P = F delta S + Grad(delta d) S
+      tensor const delta_P =
+        state.F * this->material_handler.get_material()
+                    ->second_piola_kirchhoff_stress_displacement_derivative(
+                      Grad_delta, state.F, integrator.get_current_cell_index(), q) +
+        Grad_delta * state.S;
 
-    vector const n = obstacle_values.normal;
+      // delta (n . (P N)) - gamma (n . delta d)
+      delta_argument = n * (delta_P * state.N) + delta_n * ((state.F * state.S) * state.N) -
+                       state.gamma * (n * delta_d);
+    }
+    else
+    {
+      delta_argument = -this->operator_data.contact_penalty * (n * delta_d);
+    }
 
-    vector delta_t = (penalty * active * (n * delta_d)) * n;
-    delta_t -= pressure * (obstacle_values.hessian * delta_d);
+    // delta (lambda n) = H(A) delta A n + lambda delta n
+    vector const delta_t = (state.active * delta_argument) * n + state.pressure * delta_n;
 
-    integrator.submit_value(delta_t, q);
+    integrator.submit_value(-delta_t, q);
   }
 }
 

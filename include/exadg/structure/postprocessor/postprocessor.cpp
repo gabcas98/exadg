@@ -104,16 +104,22 @@ PostProcessor<dim, Number>::evaluate_contact(VectorType const & solution) const
 
   unsigned int const rank = dealii::Utilities::MPI::this_mpi_process(mpi_comm);
 
+  // values below 1e-12 are printed as zero to keep the screen output free of round-off (the
+  // file output below contains the full values)
+  auto const filter = [](double const value) { return std::abs(value) < 1e-12 ? 0.0 : value; };
+
   dealii::ConditionalOStream pcout(std::cout, rank == 0);
   pcout << std::endl << "Contact with rigid obstacles:" << std::endl << std::scientific;
   pcout << "  Contact force:            ";
   for(unsigned int d = 0; d < dim; ++d)
-    pcout << " " << std::setprecision(5) << contact.force[d];
+    pcout << " " << std::setprecision(5) << filter(contact.force[d]);
   pcout << std::endl
-        << "  Active contact area:       " << std::setprecision(5) << contact.active_area << std::endl
-        << "  Max. contact pressure:     " << std::setprecision(5) << contact.max_pressure
+        << "  Active contact area:       " << std::setprecision(5) << filter(contact.active_area)
         << std::endl
-        << "  Min. gap:                  " << std::setprecision(5) << contact.min_gap << std::endl;
+        << "  Max. contact pressure:     " << std::setprecision(5) << filter(contact.max_pressure)
+        << std::endl
+        << "  Min. gap:                  " << std::setprecision(5) << filter(contact.min_gap)
+        << std::endl;
 
   if(rank == 0)
   {

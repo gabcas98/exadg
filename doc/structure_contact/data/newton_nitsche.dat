@@ -1,0 +1,14 @@
+# Newton residual history, 2d Hertz, Nitsche gamma_0 = 10, delta = 1e-3, L = 9 (EXADG_NEWTON_DEBUG run)
+# columns: Newton iteration, |r| at load factor 0.7, |r| at load factor 1.0, damping factor at 0.7, at 1.0
+it load07 load10 omega07 omega10
+1 2.7019e-06 1.8161e-06 1 1
+2 2.5836e-06 4.2762e-07 6.25e-2 1
+3 9.4638e-07 2.1387e-07 1 0.5
+4 7.1358e-07 1.7872e-07 0.25 0.5
+5 4.6754e-07 7.9911e-11 1 1
+6 2.3378e-07 5.0822e-14 0.5 1
+7 1.1689e-07 nan 0.5 nan
+8 1.0228e-07 nan 0.125 nan
+9 1.0080e-07 nan 1.5625e-2 nan
+10 3.0836e-12 nan 1 nan
+11 4.7707e-14 nan 1 nan

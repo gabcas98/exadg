@@ -123,18 +123,6 @@ evaluate_rigid_obstacle(dealii::Function<dim> const &                           
   return result;
 }
 
-/*
- * Penalty contact pressure lambda = epsilon * <-g>_+ >= 0 .
- */
-template<typename Number>
-inline DEAL_II_ALWAYS_INLINE //
-  dealii::VectorizedArray<Number>
-  calculate_contact_pressure(dealii::VectorizedArray<Number> const & gap, double const penalty)
-{
-  return dealii::make_vectorized_array<Number>(penalty) *
-         std::max(-gap, dealii::make_vectorized_array<Number>(0.0));
-}
-
 } // namespace Structure
 } // namespace ExaDG
 

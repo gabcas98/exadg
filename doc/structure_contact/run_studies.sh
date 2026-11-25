@@ -34,4 +34,17 @@ mk D_2d_q2_mb input_patch_test.json Application:Preconditioner:Multigrid Applica
 mk D_2d_q2_large input_patch_test.json Application:Pressure:0.15 Application:Preconditioner:Multigrid
 mk D_3d_q2_mg input_patch_test.json General:Dim:3 SpatialResolution:RefineSpaceMin:1 SpatialResolution:RefineSpaceMax:1 Application:Preconditioner:Multigrid
 mk D_3d_q3_large input_patch_test.json General:Dim:3 SpatialResolution:DegreeMin:3 SpatialResolution:DegreeMax:3 SpatialResolution:RefineSpaceMin:1 SpatialResolution:RefineSpaceMax:1 Application:Preconditioner:Multigrid Application:Pressure:0.15
+
+# E: Nitsche mesh study at delta = 1e-3, gamma_0 E = 10 (reference: L = 11)
+for L in 5 6 7 8 9 10 11; do
+  mk E_L$L input_hertz.json Application:ContactMethod:Nitsche Application:Indentation:1e-3 Application:LocalRefinements:$L Application:RefinementRadius:0.063 Application:PenaltyParameter:10
+done
+# F: Nitsche parameter study at delta = 1e-3, L = 9
+for g in 0.3 1 3 10 30 100 300; do
+  mk F_g$g input_hertz.json Application:ContactMethod:Nitsche Application:Indentation:1e-3 Application:LocalRefinements:9 Application:RefinementRadius:0.063 Application:PenaltyParameter:$g
+done
+# G: Nitsche patch tests
+mk G_2d_q2_amg input_patch_test.json Application:ContactMethod:Nitsche Application:PenaltyParameter:10
+mk G_2d_q3_mg input_patch_test.json Application:ContactMethod:Nitsche Application:PenaltyParameter:10 SpatialResolution:DegreeMin:3 SpatialResolution:DegreeMax:3 Application:Preconditioner:Multigrid
+mk G_3d_q3_large input_patch_test.json Application:ContactMethod:Nitsche Application:PenaltyParameter:10 General:Dim:3 SpatialResolution:DegreeMin:3 SpatialResolution:DegreeMax:3 SpatialResolution:RefineSpaceMin:1 SpatialResolution:RefineSpaceMax:1 Application:Preconditioner:Multigrid Application:Pressure:0.15
 echo ALL_DONE

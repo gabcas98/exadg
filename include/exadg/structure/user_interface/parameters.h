@@ -137,11 +137,20 @@ public:
   bool   weak_damping_active;
   double weak_damping_coefficient;
 
-  // Penalty parameter epsilon (unit: force / area / length) of the frictionless contact with
-  // rigid obstacles prescribed via BoundaryDescriptor::contact_bc. The contact pressure is
-  // lambda = epsilon * <-g>_+ with the gap g, i.e. the penetration is of order lambda / epsilon.
-  // A typical choice is epsilon = c * E / h with Young's modulus E, element size h and c >> 1.
-  // Only relevant if contact boundaries are present.
+  // Frictionless contact with rigid obstacles prescribed via BoundaryDescriptor::contact_bc
+  // (only relevant if contact boundaries are present), see ContactMethod.
+  ContactMethod contact_method;
+
+  // ContactMethod::Penalty: penalty parameter epsilon (unit: force / area / length). The contact
+  // pressure is lambda = epsilon * <-g>_+ with the gap g, i.e. the penetration is of order
+  // lambda / epsilon. A typical choice is epsilon = c * E / h with Young's modulus E, element size
+  // h and c >> 1.
+  //
+  // ContactMethod::Nitsche: stiffness scale gamma_0 * E (unit: force / area) of the Nitsche
+  // parameter gamma = gamma_0 * E * (k + 1)^2 * |dK| / |K| with the polynomial degree k and the
+  // surface-to-volume ratio |dK| / |K| ~ 1/h of the cell K adjacent to the contact face. The
+  // solution does not depend on gamma up to discretization errors, gamma_0 = O(1) - O(10) is
+  // typically sufficient.
   double contact_penalty_parameter;
 
   /**************************************************************************************/

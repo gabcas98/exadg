@@ -267,6 +267,7 @@ Operator<dim, Number>::setup_operators()
   operator_data.material_descriptor = material_descriptor;
   operator_data.unsteady            = (param.problem_type == ProblemType::Unsteady);
   operator_data.density             = param.density;
+  operator_data.contact_method      = param.contact_method;
   operator_data.contact_penalty     = param.contact_penalty_parameter;
   operator_data.large_deformation   = param.large_deformation;
 

@@ -119,6 +119,24 @@ public:
     material = material_map[mid];
   }
 
+  /*
+   * Sets the material of the cells adjacent (interior side) to a batch of boundary faces.
+   */
+  void
+  reinit_face(dealii::MatrixFree<dim, Number> const & matrix_free, unsigned int const face)
+  {
+    auto mid = matrix_free.get_face_iterator(face, 0, true).first->material_id();
+
+#ifdef DEBUG
+    for(unsigned int v = 1; v < matrix_free.n_active_entries_per_face_batch(face); v++)
+      AssertThrow(mid ==
+                    matrix_free.get_face_iterator(face, v, true).first->material_id(),
+                  dealii::ExcMessage("You have to categorize cells according to their materials!"));
+#endif
+
+    material = material_map[mid];
+  }
+
   std::shared_ptr<Material<dim, Number>>
   get_material() const
   {

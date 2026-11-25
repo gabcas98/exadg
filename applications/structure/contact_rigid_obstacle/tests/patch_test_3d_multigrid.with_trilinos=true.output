@@ -30,6 +30,7 @@ Mathematical model:
   Material type:                             StVenantKirchhoff
 
 Physical quantities:
+  Contact method:                            Penalty
   Contact penalty parameter:                 1.0000e+03
 
 Temporal discretization:

@@ -45,6 +45,7 @@ Parameters::Parameters()
     // WEAK LINEAR DAMPING
     weak_damping_active(false),
     weak_damping_coefficient(0.0),
+    contact_method(ContactMethod::Penalty),
     contact_penalty_parameter(0.0),
 
     // TEMPORAL DISCRETIZATION
@@ -203,6 +204,7 @@ Parameters::print_parameters_physical_quantities(dealii::ConditionalOStream cons
 
   if(contact_penalty_parameter > 0.0)
   {
+    print_parameter(pcout, "Contact method", contact_method);
     print_parameter(pcout, "Contact penalty parameter", contact_penalty_parameter);
   }
 }

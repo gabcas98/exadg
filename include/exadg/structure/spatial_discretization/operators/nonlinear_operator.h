@@ -27,6 +27,7 @@
 #include <vector>
 
 // ExaDG
+#include <exadg/structure/spatial_discretization/operators/boundary_conditions.h>
 #include <exadg/structure/spatial_discretization/operators/elasticity_operator_base.h>
 
 namespace ExaDG
@@ -214,13 +215,46 @@ private:
                                             dealii::types::boundary_id const & boundary_id) const;
 
   /*
-   * Computes the frictionless penalty contact term with a rigid obstacle
+   * State of the frictionless contact with a rigid obstacle at a quadrature point: gap
+   * g = phi(x), normal n = grad(phi)(x) and curvature grad(grad(phi))(x) of the obstacle at the
+   * current position x = X + d_h, and the contact pressure lambda = [A]_+ with
    *
-   *  - (v_h, lambda n)_{Gamma_C} ,  lambda = epsilon * <-g>_+ ,
+   *  Penalty: A = - epsilon g ,
+   *  Nitsche: A = lambda(d_h) - gamma g ,  lambda(d_h) = n . (P(d_h) N) ,
    *
-   * with the gap g = phi(x) and normal n = grad(phi)(x) of the obstacle evaluated at the
-   * current position x = X + d_h of the quadrature points. The integral is computed on the
-   * reference configuration, i.e. lambda is a force per undeformed area.
+   * with the first Piola-Kirchhoff stress P = F S and the outward unit normal N of the reference
+   * configuration. All quantities refer to the reference configuration, i.e. lambda is a force
+   * per undeformed area.
+   */
+  struct ContactState
+  {
+    RigidObstacleValues<dim, Number> obstacle;
+    scalar                           pressure; // lambda = [A]_+
+    scalar                           active;   // H(A), points with A = 0 are active
+
+    // Nitsche only
+    scalar           gamma;
+    vector           N;
+    tensor           F;
+    symmetric_tensor S;
+  };
+
+  /*
+   * Evaluates the contact state. The integrator has to provide values of the displacement (and
+   * gradients for ContactMethod::Nitsche), and the material has to be set for the current face.
+   */
+  ContactState
+  evaluate_contact_state(IntegratorFace const &        integrator,
+                         unsigned int const            q,
+                         dealii::Function<dim> const & obstacle) const;
+
+  /*
+   * Computes the frictionless contact term with a rigid obstacle
+   *
+   *  - (v_h, lambda n)_{Gamma_C} ,
+   *
+   * see ContactState. For ContactMethod::Nitsche, this is the variant theta = 0 of
+   * Chouly and Hild (2013), extended to finite strains.
    */
   void
   do_boundary_integral_contact_nonlinear(IntegratorFace &                   integrator,
@@ -285,12 +319,18 @@ private:
                                   dealii::types::boundary_id const & boundary_id) const final;
 
   /*
-   * Linearization of the contact term
+   * Linearization of the contact term at the point of linearization d_lin
    *
    *  delta (- (v_h, lambda n)_{Gamma_C})
-   *    = (v_h, epsilon H(-g) (n . delta d) n - lambda grad(grad(phi)) delta d)_{Gamma_C} ,
+   *    = - (v_h, H(A) delta A n + lambda grad(grad(phi)) delta d)_{Gamma_C} ,
    *
-   * with the Heaviside function H, evaluated at the point of linearization d_lin.
+   * with the Heaviside function H and
+   *
+   *  Penalty: delta A = - epsilon (n . delta d) ,
+   *  Nitsche: delta A = n . (delta P N) + (grad(grad(phi)) delta d) . (P N) - gamma (n . delta d) ,
+   *           delta P = F delta S + Grad(delta d) S .
+   *
+   * For Nitsche, the linearized operator is not symmetric.
    */
   void
   do_boundary_integral_contact(IntegratorFace &                   integrator,
@@ -302,6 +342,9 @@ private:
   // contact with rigid obstacles
   bool                                    contact_active = false;
   mutable std::shared_ptr<IntegratorFace> integrator_lin_face;
+
+  // Nitsche parameter gamma per cell
+  dealii::AlignedVector<scalar> nitsche_gamma;
 };
 
 } // namespace Structure
