@@ -22,6 +22,9 @@
 #ifndef EXADG_OPERATORS_OPERATOR_BASE_H_
 #define EXADG_OPERATORS_OPERATOR_BASE_H_
 
+// C/C++
+#include <array>
+
 // deal.II
 #include <deal.II/base/subscriptor.h>
 #include <deal.II/dofs/dof_handler.h>
@@ -215,6 +218,11 @@ public:
   /*
    * Initialize block diagonal preconditioner: initialize everything related to block diagonal
    * preconditioner.
+   *
+   * For discontinuous Galerkin discretizations, the blocks are the cell matrices. For continuous
+   * Galerkin discretizations, the blocks are the n_components x n_components blocks of the
+   * degrees of freedom located at the same support point (nodal block Jacobi), which capture the
+   * coupling of the components at a node (e.g. by contact terms n (x) n on curved boundaries).
    */
   void
   initialize_block_diagonal_preconditioner(bool const initialize) const;
@@ -731,6 +739,24 @@ private:
    * Vector of matrices for block-diagonal preconditioners.
    */
   mutable std::vector<LAPACKMatrix> matrices;
+
+  /*
+   * Nodal block Jacobi preconditioner for continuous Galerkin discretizations: for each locally
+   * owned degree of freedom i, the local indices of the degrees of freedom of all components at
+   * the same support point, and the row of the inverse nodal block belonging to i, stored as
+   * nodal_block_inverse[c](i) = (B^{-1})_{c(i), c}.
+   */
+  void
+  initialize_nodal_block_diagonal() const;
+
+  void
+  compute_nodal_block_diagonal() const;
+
+  void
+  apply_inverse_nodal_block_diagonal(VectorType & dst, VectorType const & src) const;
+
+  mutable std::vector<std::array<unsigned int, n_components>> nodal_block_dofs;
+  mutable std::array<VectorType, n_components>                nodal_block_inverse;
 
   /*
    * Vector with weights for additive Schwarz preconditioner.
