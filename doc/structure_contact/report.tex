@@ -468,9 +468,18 @@ of the tangent $\mathbb{A}=\partial P/\partial F$ of hyperelastic materials, it 
 $\lambda'(d;v) = \nabla v : \mathbb{A}[n\otimes N] + v\cdot(\kappa P N)$, i.e.\ with one call of
 the material derivative. Its linearisation
 $(\theta/\gamma)\int((H(A)-1)\lambda'(d;\delta d) - H(A)\gamma\, n\cdot\delta d)\,\lambda'(d;v)\dd A$ is
-added to the tangent; the second derivative $\lambda''$, weighted by $[A]_+-\lambda(d)$ (which
-vanishes for the exact solution), is neglected. With this, the tangent is symmetric for $\theta=1$
-and CG can be used. The patch test is reproduced exactly for $\theta=\pm1$ as well.
+added to the tangent, together with the second derivative
+$(\theta/\gamma)\int([A]_+-\lambda(d))\,\lambda''(d;\delta d, v)\dd A$, where
+$\lambda''(d;\delta d,v) = \nabla v : (D^2P[\nabla\delta d, n\otimes N] + \mathbb{A}[\delta n\otimes N])
++ v\cdot(\delta\kappa\, P N + \kappa\,\delta P\, N)$. The second derivative $D^2P$ of the stress and
+the derivative $\delta\kappa$ of the curvature of the obstacle are not provided by the interfaces of
+the material and of the obstacle; they are computed by central differences of $\mathbb{A}(F)[n\otimes N]$
+in direction $\nabla\delta d$ and of the Hessian of $\phi$ in direction $\delta d$, with step
+$\epsilon_{\mathrm{mach}}^{1/3}$ (for St.\,Venant--Kirchhoff $\mathbb{A}$ is quadratic in $F$, so the
+central difference is exact up to round-off). With this consistent tangent, Newton's method
+converges quadratically also for $\theta=\pm1$ (e.g.\
+$4.3\cdot10^{-7}\to5.2\cdot10^{-10}\to5.7\cdot10^{-15}$), and the tangent is symmetric for
+$\theta=1$, so that CG can be used. The patch test is reproduced exactly for $\theta=\pm1$ as well.
 
 \Cref{tab:theta} compares the three variants for $\gamma_0E = 10^{-3},\dots,10^2$. For
 $\gamma_0E\ge0.1$ the three variants agree to within $10^{-4}$ in the interior pressure and need
@@ -479,8 +488,14 @@ $\theta=1$ fails for $\gamma_0E\le0.01$, as expected from the stability theory (
 variant requires $\gamma$ large enough); $\theta=0$ still converges for $\gamma_0E=10^{-3}$, but to a
 wrong solution (3.6\,\% load error, the pressure profile is useless), i.e.\ the loss of stability
 shows up as a wrong result rather than as a failure; $\theta=-1$ is stable for any $\gamma>0$ in
-theory, but Newton's method fails for $\gamma_0E\le0.01$, most likely because the neglected term
-$\lambda''$ has the weight $\theta/\gamma$ and makes the tangent inconsistent for small $\gamma$.
+theory, but Newton's method fails for $\gamma_0E\le0.01$. A first version of the tangent neglected
+$\lambda''$, but the consistent tangent does not change this (nor the iteration counts for
+$\gamma_0E\ge0.1$): the weight $(\theta/\gamma)([A]_+-\lambda)$ equals $-\theta g$ on active points
+and $-(\theta/\gamma)\lambda\approx0$ on inactive ones, so the term is small near the solution. The
+likely reason is that for small $\gamma$ the sign of $A=\lambda(d)-\gamma g$ on the free part of the
+contact boundary is decided by the discretisation error of the traction $\lambda(d)$, which does not
+vanish exactly there, so that the active set is essentially random (consistent with $\theta=0$
+converging to a solution without contact).
 In practice, $\gamma_0E\approx1$--$10\,E$ is a safe choice for all variants, and $\theta=1$ is
 attractive because of the symmetric tangent.
 
@@ -907,6 +922,50 @@ which is not necessary for Nitsche's method.
   \label{tab:cattaneo-penalty}
 \end{table}
 
+\paragraph{Accuracy of the Cattaneo--Mindlin test.}
+The deviations above have three sources, which a convergence study separates
+(\cref{tab:cattaneo-convergence}, Nitsche's method, $Q/(\mu P)\approx0.45$):
+\begin{itemize}
+  \item the mesh: the stick zone converges from $-7.1\,\%$ ($a/h=4.7$) to $-0.34\,\%$ ($a/h=38$);
+    near $x=\pm c$, where the exact traction has a square-root behaviour, the pointwise error
+    converges slowly;
+  \item the frictional indentation: friction is active already during the indentation, so that the
+    small lateral displacements of the surface under the cylinder (residual compressibility and
+    finite strains) are held by friction. This leaves an odd tangential traction of about 5\,\% of
+    $\mu p_0$, which is physical but not part of the Cattaneo--Mindlin solution (which assumes
+    frictionless indentation, or $\beta=0$); a run without tangential shift confirms it;
+  \item the finite strains: as for the Hertz problem, the deviation of the even part scales with
+    the indentation.
+\end{itemize}
+Comparing only the even part $(q(x)+q(-x))/2$ with the theory, the error in the stick zone drops
+from $3.5\,\%$ to $0.32\,\%$ for $\delta=10^{-3}$ (limited by the finite strains) and to
+$0.04\,\%$ for $\delta=10^{-4}$ and $a/h=22$ (\cref{fig:cattaneo}). The total error of 3--7\,\%
+reported above is thus dominated by the odd part and the region near $x=\pm c$.
+
+\begin{table}[ht]
+  \centering\small
+  \pgfplotstableread[col sep=comma]{data/cattaneo_convergence.csv}\cattaneoconvtab
+  \pgfplotstabletypeset[
+    columns={delta,L,a_over_h,err_c,err_q,err_even,err_even_stick,rms_odd,newton},
+    columns/delta/.style={string type, column name={$\delta$}},
+    columns/L/.style={column name={$L$}},
+    columns/a_over_h/.style={column name={$a/h$}, fixed, precision=1},
+    columns/err_c/.style={string type, column name={error $c$}},
+    columns/err_q/.style={string type, column name={$q$}},
+    columns/err_even/.style={string type, column name={even}},
+    columns/err_even_stick/.style={string type, column name={even, stick}},
+    columns/rms_odd/.style={string type, column name={odd}},
+    columns/newton/.style={column name={Newton it.}},
+    every head row/.style={before row=\toprule, after row=\midrule},
+    every row no 4/.style={before row=\midrule},
+    every last row/.style={after row=\bottomrule},
+  ]{\cattaneoconvtab}
+  \caption{Cattaneo--Mindlin problem, Nitsche's method: relative error of the stick half-width and
+  $L^2$ errors of the tangential traction relative to $\mu p_0$ for $|x|<0.8a$ (total, even part,
+  even part in the stick zone $|x|<0.8c$) and rms of the odd part.}
+  \label{tab:cattaneo-convergence}
+\end{table}
+
 \begin{figure}[ht]
   \centering
   \begin{tikzpicture}
@@ -914,15 +973,18 @@ which is not necessary for Nitsche's method.
         xlabel={$x/a$}, ylabel={$q/(\mu p_0)$}, xmin=-1.3, xmax=1.3, ymin=-0.05, ymax=1.05,
         legend style={font=\footnotesize}, legend pos=north east,
         tick label style={font=\footnotesize}, label style={font=\small}]
-      \addplot[black, thick] table[x=x_over_a, y=q_analytical] {data/cattaneo_profile.dat};
+      \addplot[black, thick] table[x=x_over_a, y=q_analytical] {data/cattaneo_profile_fine.dat};
       \addlegendentry{Cattaneo--Mindlin}
-      \addplot[only marks, mark=*, mark size=0.8pt, red] table[x=x_over_a, y=q_over_mup0]
-        {data/cattaneo_profile.dat};
+      \addplot[only marks, mark=o, mark size=0.6pt, gray] table[x=x_over_a, y=q_over_mup0]
+        {data/cattaneo_profile_fine.dat};
       \addlegendentry{computed}
+      \addplot[only marks, mark=*, mark size=0.6pt, red] table[x=x_over_a, y=q_even]
+        {data/cattaneo_profile_fine.dat};
+      \addlegendentry{even part}
     \end{axis}
   \end{tikzpicture}
-  \caption{Tangential traction for $Q/(\mu P)=0.45$, Nitsche's method (quadrature points of the
-  contact boundary).}
+  \caption{Tangential traction for $Q/(\mu P)=0.47$, Nitsche's method, $\delta=10^{-4}$, $L=11$
+  ($a/h=22$): computed traction and its even part at the quadrature points of the contact boundary.}
   \label{fig:cattaneo}
 \end{figure}
 
@@ -949,8 +1011,9 @@ which is not necessary for Nitsche's method.
     while the active set settles, growing with $\gamma_0$ and the resolution.
   \item Coulomb friction (quasi-static; Nitsche with $\theta=0$ without history at the quadrature
     points, penalty with return mapping and a traction history) reproduces the Coulomb law to
-    round-off in the sliding block test and the stick zone of the Cattaneo--Mindlin problem within
-    1--3\,\%; it requires to limit the total number of non-monotone Newton steps per load step to
+    round-off in the sliding block test; for the Cattaneo--Mindlin problem the stick zone converges
+    to $0.3\,\%$ and the even part of the traction to $0.04\,\%$ (the odd part is the physical
+    residual of the frictional indentation); it requires to limit the total number of non-monotone Newton steps per load step to
     avoid cycles between stick/slip states. The penalty method oscillates for a stiff penalty and is
     most accurate for $\varepsilon h/E\approx20$.
   \item Newton's method: the failures for stiff contact are failures of the line search at kinks of
@@ -962,8 +1025,9 @@ which is not necessary for Nitsche's method.
     \begin{itemize}
       \item for stiff penalties the multigrid iterations still grow; a nodal block-Jacobi smoother
         did not help, so the cause is still open;
-      \item a consistent tangent for $\theta\neq0$ (second derivative of the normal traction),
-        which would make $\theta=-1$ usable for small $\gamma_0$;
+      \item a robust active-set criterion for Nitsche's method with small $\gamma_0$ (the
+        consistent tangent for $\theta\neq0$ did not make $\theta=-1$ usable for
+        $\gamma_0E\le0.01$);
     \end{itemize}
 \end{itemize}
 

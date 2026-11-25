@@ -388,9 +388,15 @@ private:
    *
    *  (theta / gamma) ((H(A) - 1) lambda'(d; delta d) - H(A) gamma (n . delta d), lambda'(d; v))
    *
-   * to the linearized operator. The second derivative lambda''(d; delta d, v), which is weighted
-   * by [A]_+ - lambda(d) and vanishes for the exact solution, is neglected. With this, the
-   * linearized operator is symmetric for theta = 1 and non-symmetric otherwise.
+   * to the linearized operator, together with the second derivative
+   *
+   *  (theta / gamma) ([A]_+ - lambda(d), lambda''(d; delta d, v)) ,
+   *  lambda''(d; delta d, v) = Grad(v) : (D^2 P[Grad(delta d), n (x) N] + T[delta n (x) N])
+   *                            + v . (delta kappa (P N) + kappa (delta P N)) ,
+   *
+   * with the tangent T of P and the curvature kappa of the obstacle; D^2 P and delta kappa are
+   * computed by central differences (exact for St. Venant-Kirchhoff). The linearized operator is
+   * symmetric for theta = 1 and non-symmetric otherwise.
    */
   void
   do_boundary_integral_contact(IntegratorFace &                   integrator,

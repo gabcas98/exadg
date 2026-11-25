@@ -122,4 +122,13 @@ done
 for e in 1e3 1e4; do
   mk pcat_e$e input_cattaneo.json $P Application:PenaltyParameter:$e Application:TangentialShift:2e-4
 done
+# Cattaneo-Mindlin: convergence in the mesh size and smaller indentation (Nitsche)
+for L in 7 8 9 10; do
+  mk catc_d1e-3_L$L input_cattaneo.json Application:TangentialShift:2e-4 Application:LocalRefinements:$L
+done
+for L in 10 11; do
+  mk catc_d1e-4_L$L input_cattaneo.json Application:Indentation:1e-4 Application:TangentialShift:2e-5 Application:LocalRefinements:$L Application:RefinementRadius:0.02
+done
+# indentation only (residual traction of the frictional indentation)
+mk catc_press_only input_cattaneo.json Application:Indentation:1e-4 Application:TangentialShift:0.0 Application:LocalRefinements:11 Application:RefinementRadius:0.02
 echo ALL_DONE

@@ -966,16 +966,16 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact(
 
     scalar delta_argument;
     vector delta_sigma; // delta (P N), only computed for Nitsche
+    tensor delta_P;     // delta P, only computed for Nitsche
     if(nitsche)
     {
       tensor const Grad_delta = integrator.get_gradient(q);
 
       // delta P = F delta S + Grad(delta d) S
-      tensor const delta_P =
-        state.F * this->material_handler.get_material()
-                    ->second_piola_kirchhoff_stress_displacement_derivative(
-                      Grad_delta, state.F, integrator.get_current_cell_index(), q) +
-        Grad_delta * state.S;
+      delta_P = state.F * this->material_handler.get_material()
+                            ->second_piola_kirchhoff_stress_displacement_derivative(
+                              Grad_delta, state.F, integrator.get_current_cell_index(), q) +
+                Grad_delta * state.S;
       delta_sigma = delta_P * state.N;
 
       // delta (n . (P N)) - gamma (n . delta d)
@@ -1029,8 +1029,68 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact(
       scalar const factor =
         this->operator_data.contact_nitsche_theta / state.gamma *
         ((state.active - one) * delta_lambda - state.active * state.gamma * n_delta_d);
-      value += factor * state.q;
-      integrator.submit_gradient(factor * state.Q, q);
+      // second derivative (theta / gamma) ([A]_+ - lambda(d)) lambda''(d; delta d, v) with
+      // lambda''(d; delta d, v) = Grad(v) : delta Q + v . delta q, where
+      //  delta Q = D^2 P[Grad(delta d), n (x) N] + T[delta n (x) N],
+      //  delta q = delta kappa (P N) + kappa (delta P N),
+      // T[H] = F delta S[H] + H S the tangent of P and kappa = grad(grad(phi))
+      scalar const weight = this->operator_data.contact_nitsche_theta / state.gamma *
+                            (state.pressure - state.normal_traction);
+
+      auto const         material   = this->material_handler.get_material();
+      unsigned int const cell       = integrator.get_current_cell_index();
+      tensor const       Grad_delta = integrator.get_gradient(q);
+      tensor const       G          = dealii::outer_product(n, state.N);
+
+      // step size of the central differences (exact for St. Venant-Kirchhoff, for which T is
+      // quadratic in F)
+      Number const step = std::cbrt(std::numeric_limits<Number>::epsilon());
+      scalar const tiny = dealii::make_vectorized_array<Number>(std::numeric_limits<Number>::min());
+
+      // D^2 P[Grad(delta d), G] by a central difference of T(F)[G] in direction Grad(delta d)
+      tensor identity;
+      for(unsigned int d = 0; d < dim; ++d)
+        identity[d][d] = dealii::make_vectorized_array<Number>(1.0);
+      tensor const Grad_d_lin = state.F - identity;
+      scalar const h          = dealii::make_vectorized_array<Number>(step) /
+                       std::max(std::sqrt(dealii::scalar_product(Grad_delta, Grad_delta)), tiny);
+      auto const T_G = [&](tensor const & Grad_d) {
+        tensor const           F_p = get_F<dim, Number>(Grad_d);
+        symmetric_tensor const S_p = material->second_piola_kirchhoff_stress(Grad_d, cell, q);
+        return tensor(
+          F_p * material->second_piola_kirchhoff_stress_displacement_derivative(G, F_p, cell, q) +
+          G * S_p);
+      };
+      tensor const D2P = (T_G(Grad_d_lin + h * Grad_delta) - T_G(Grad_d_lin - h * Grad_delta)) /
+                         (dealii::make_vectorized_array<Number>(2.0) * h);
+
+      // T[delta n (x) N]
+      tensor const delta_n_N = dealii::outer_product(delta_n, state.N);
+      tensor const T_delta_n =
+        state.F * material->second_piola_kirchhoff_stress_displacement_derivative(delta_n_N,
+                                                                                  state.F,
+                                                                                  cell,
+                                                                                  q) +
+        delta_n_N * state.S;
+
+      // delta kappa by a central difference of the Hessian of the obstacle in direction delta d
+      vector const x_lin =
+        integrator_lin_face->quadrature_point(q) + integrator_lin_face->get_value(q);
+      scalar const h_x = dealii::make_vectorized_array<Number>(step) *
+                         (dealii::make_vectorized_array<Number>(1.0) + std::sqrt(x_lin * x_lin)) /
+                         std::max(std::sqrt(delta_d * delta_d), tiny);
+      RigidObstacleValues<dim, Number> const plus =
+        evaluate_rigid_obstacle<dim, Number>(*obstacle, x_lin + h_x * delta_d);
+      RigidObstacleValues<dim, Number> const minus =
+        evaluate_rigid_obstacle<dim, Number>(*obstacle, x_lin - h_x * delta_d);
+      tensor const delta_kappa =
+        (plus.hessian - minus.hessian) / (dealii::make_vectorized_array<Number>(2.0) * h_x);
+
+      vector const P_N     = (state.F * state.S) * state.N;
+      vector const delta_q = delta_kappa * P_N + state.obstacle.hessian * (delta_P * state.N);
+
+      value += factor * state.q + weight * delta_q;
+      integrator.submit_gradient(factor * state.Q + weight * (D2P + T_delta_n), q);
     }
 
     integrator.submit_value(value, q);
