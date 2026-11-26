@@ -923,55 +923,69 @@ which is not necessary for Nitsche's method.
 \end{table}
 
 \paragraph{Accuracy of the Cattaneo--Mindlin test.}
-The deviations above have three sources, which a convergence study separates
+The deviations above have four sources, which a convergence study separates
 (\cref{tab:cattaneo-convergence}, Nitsche's method, $Q/(\mu P)\approx0.45$):
 \begin{itemize}
-  \item the mesh: the stick zone converges from $-7.1\,\%$ ($a/h=4.7$) to $-0.34\,\%$ ($a/h=38$);
-    near $x=\pm c$, where the exact traction has a square-root behaviour, the pointwise error
-    converges slowly;
-  \item the frictional indentation: friction is active already during the indentation, so that the
-    small lateral displacements of the surface under the cylinder (residual compressibility and
-    finite strains) are held by friction. This leaves an odd tangential traction of about 5\,\% of
-    $\mu p_0$, which is physical but not part of the Cattaneo--Mindlin solution (which assumes
-    frictionless indentation, or $\beta=0$); a run without tangential shift confirms it;
-  \item the finite strains: as for the Hertz problem, the deviation of the even part scales with
-    the indentation.
+  \item the frictional indentation: in the runs above, friction is active already during the
+    indentation, so that the small lateral displacements of the surface under the cylinder
+    (residual compressibility and finite strains) are held by friction. This leaves an odd
+    tangential traction of about 5\,\% of $\mu p_0$, which is physical but not part of the
+    Cattaneo--Mindlin solution, which assumes a frictionless indentation. To compare directly, the
+    friction coefficient can be given as a function $\mu(x,t)$ per contact boundary
+    (\code{BoundaryDescriptor::contact_friction_coefficient}); with $\mu=0$ during the indentation
+    and $\mu=0.3$ during the tangential loading (parameter \code{FrictionlessIndentation}), the odd
+    part drops to 0.2--0.3\,\% for $\delta=10^{-3}$;
+  \item the mesh: the stick zone converges from $-7.1\,\%$ ($a/h=4.7$) to $+0.16\,\%$
+    ($a/h=38$, frictionless indentation);
+  \item the kinks of the exact traction at $|x|=c$ and $|x|=a$ (square-root behaviour): single
+    quadrature points next to them deviate by 10--40\,\% of $\mu p_0$ and dominate the $L^2$ error;
+    away from them (excluding bands of width $2h$ around $\pm c$ and $\pm a$), the error is much
+    smaller;
+  \item the finite strains: as for the Hertz problem, the remaining error scales with the
+    indentation.
 \end{itemize}
-Comparing only the even part $(q(x)+q(-x))/2$ with the theory, the error in the stick zone drops
-from $3.5\,\%$ to $0.32\,\%$ for $\delta=10^{-3}$ (limited by the finite strains) and to
-$0.04\,\%$ for $\delta=10^{-4}$ and $a/h=22$ (\cref{fig:cattaneo}). The total error of 3--7\,\%
-reported above is thus dominated by the odd part and the region near $x=\pm c$.
+With frictionless indentation, the total error of the traction for $|x|<0.8a$ is $0.9\,\%$ of
+$\mu p_0$ for $a/h=38$, and away from the kinks $0.45$--$0.6\,\%$ for $\delta=10^{-3}$ and
+$0.16$--$0.34\,\%$ for $\delta=10^{-4}$, i.e.\ about ten times less than with friction during the
+indentation (3--4.5\,\%). With frictional indentation, the even part $(q(x)+q(-x))/2$ agrees with
+the theory as well (0.04\,\% in the stick zone for $\delta=10^{-4}$, \cref{fig:cattaneo}a), which
+confirms that the odd part is the only difference.
 
 \begin{table}[ht]
-  \centering\small
+  \centering\footnotesize\setlength{\tabcolsep}{4pt}
   \pgfplotstableread[col sep=comma]{data/cattaneo_convergence.csv}\cattaneoconvtab
   \pgfplotstabletypeset[
-    columns={delta,L,a_over_h,err_c,err_q,err_even,err_even_stick,rms_odd,newton},
+    columns={indentation,delta,L,a_over_h,err_c,err_q,err_away,err_even_stick,rms_odd,newton},
+    columns/indentation/.style={string type, column name={indentation}, column type=l},
     columns/delta/.style={string type, column name={$\delta$}},
     columns/L/.style={column name={$L$}},
     columns/a_over_h/.style={column name={$a/h$}, fixed, precision=1},
     columns/err_c/.style={string type, column name={error $c$}},
-    columns/err_q/.style={string type, column name={$q$}},
-    columns/err_even/.style={string type, column name={even}},
+    columns/err_q/.style={string type, column name={$q$, total}},
+    columns/err_away/.style={string type, column name={$q$, away from kinks}},
     columns/err_even_stick/.style={string type, column name={even, stick}},
     columns/rms_odd/.style={string type, column name={odd}},
-    columns/newton/.style={column name={Newton it.}},
+    columns/newton/.style={column name={Newton}},
     every head row/.style={before row=\toprule, after row=\midrule},
     every row no 4/.style={before row=\midrule},
+    every row no 6/.style={before row=\midrule},
+    every row no 10/.style={before row=\midrule},
     every last row/.style={after row=\bottomrule},
   ]{\cattaneoconvtab}
-  \caption{Cattaneo--Mindlin problem, Nitsche's method: relative error of the stick half-width and
-  $L^2$ errors of the tangential traction relative to $\mu p_0$ for $|x|<0.8a$ (total, even part,
-  even part in the stick zone $|x|<0.8c$) and rms of the odd part.}
+  \caption{Cattaneo--Mindlin problem, Nitsche's method, with friction during the indentation and
+  with frictionless indentation: relative error of the stick half-width and errors of the
+  tangential traction relative to $\mu p_0$ for $|x|<0.8a$ (total; excluding bands of width $2h$
+  around $|x|=c$ and $|x|=a$; even part in the stick zone $|x|<0.8c$) and rms of the odd part.}
   \label{tab:cattaneo-convergence}
 \end{table}
 
 \begin{figure}[ht]
   \centering
   \begin{tikzpicture}
-    \begin{axis}[width=0.6\textwidth, height=0.38\textwidth, grid=major, grid style={gray!25},
+    \begin{axis}[width=0.48\textwidth, height=0.36\textwidth, grid=major, grid style={gray!25},
         xlabel={$x/a$}, ylabel={$q/(\mu p_0)$}, xmin=-1.3, xmax=1.3, ymin=-0.05, ymax=1.05,
-        legend style={font=\footnotesize}, legend pos=north east,
+        title={\small (a) friction during indentation, $\delta=10^{-4}$, $a/h=22$},
+        legend style={font=\scriptsize}, legend pos=north east,
         tick label style={font=\footnotesize}, label style={font=\small}]
       \addplot[black, thick] table[x=x_over_a, y=q_analytical] {data/cattaneo_profile_fine.dat};
       \addlegendentry{Cattaneo--Mindlin}
@@ -982,9 +996,25 @@ reported above is thus dominated by the odd part and the region near $x=\pm c$.
         {data/cattaneo_profile_fine.dat};
       \addlegendentry{even part}
     \end{axis}
+  \end{tikzpicture}\hfill
+  \begin{tikzpicture}
+    \begin{axis}[width=0.48\textwidth, height=0.36\textwidth, grid=major, grid style={gray!25},
+        xlabel={$x/a$}, ylabel={$q/(\mu p_0)$}, xmin=-1.3, xmax=1.3, ymin=-0.05, ymax=1.05,
+        title={\small (b) frictionless indentation, $\delta=10^{-3}$, $a/h=38$},
+        legend style={font=\scriptsize}, legend pos=north east,
+        tick label style={font=\footnotesize}, label style={font=\small}]
+      \addplot[black, thick] table[x=x_over_a, y=q_analytical]
+        {data/cattaneo_profile_frictionless.dat};
+      \addlegendentry{Cattaneo--Mindlin}
+      \addplot[only marks, mark=*, mark size=0.6pt, red] table[x=x_over_a, y=q_over_mup0]
+        {data/cattaneo_profile_frictionless.dat};
+      \addlegendentry{computed}
+    \end{axis}
   \end{tikzpicture}
-  \caption{Tangential traction for $Q/(\mu P)=0.47$, Nitsche's method, $\delta=10^{-4}$, $L=11$
-  ($a/h=22$): computed traction and its even part at the quadrature points of the contact boundary.}
+  \caption{Tangential traction of the Cattaneo--Mindlin problem at the quadrature points of the
+  contact boundary ($Q/(\mu P)\approx0.45$, Nitsche's method): (a) with friction during the
+  indentation, computed traction and its even part; (b) with frictionless indentation, as assumed
+  by the theory.}
   \label{fig:cattaneo}
 \end{figure}
 
@@ -1011,9 +1041,10 @@ reported above is thus dominated by the odd part and the region near $x=\pm c$.
     while the active set settles, growing with $\gamma_0$ and the resolution.
   \item Coulomb friction (quasi-static; Nitsche with $\theta=0$ without history at the quadrature
     points, penalty with return mapping and a traction history) reproduces the Coulomb law to
-    round-off in the sliding block test; for the Cattaneo--Mindlin problem the stick zone converges
-    to $0.3\,\%$ and the even part of the traction to $0.04\,\%$ (the odd part is the physical
-    residual of the frictional indentation); it requires to limit the total number of non-monotone Newton steps per load step to
+    round-off in the sliding block test; for the Cattaneo--Mindlin problem with frictionless
+    indentation (friction coefficient $\mu(x,t)$), the stick zone converges to $0.2\,\%$ and the
+    traction to $0.9\,\%$ ($0.2$--$0.6\,\%$ away from the kinks at $\pm c$, $\pm a$); with friction
+    during the indentation, the traction contains an additional physical odd part of about 5\,\%; it requires to limit the total number of non-monotone Newton steps per load step to
     avoid cycles between stick/slip states. The penalty method oscillates for a stiff penalty and is
     most accurate for $\varepsilon h/E\approx20$.
   \item Newton's method: the failures for stiff contact are failures of the line search at kinks of

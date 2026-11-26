@@ -99,6 +99,13 @@ struct BoundaryDescriptor
   std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>>
     contact_obstacle_displacement;
 
+  // Optional for contact boundaries with friction: friction coefficient mu(x, t) (scalar function
+  // of the current position and the time), which replaces Parameters::contact_friction_coefficient
+  // on this boundary (friction has to be activated by a positive
+  // Parameters::contact_friction_coefficient). This allows, e.g., a frictionless loading phase.
+  std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>>
+    contact_friction_coefficient;
+
   inline DEAL_II_ALWAYS_INLINE //
     BoundaryType
     get_boundary_type(dealii::types::boundary_id const & boundary_id) const

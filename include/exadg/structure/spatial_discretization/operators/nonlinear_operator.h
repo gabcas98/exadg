@@ -275,6 +275,7 @@ private:
     scalar norm_A_T;
     vector traction_tangential;
     scalar stick;
+    scalar mu; // friction coefficient
   };
 
   /*

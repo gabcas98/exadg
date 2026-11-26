@@ -218,11 +218,25 @@ NonLinearOperator<dim, Number>::evaluate_contact_state(
 
   if(friction_active)
   {
+    // friction coefficient: constant or given as a function mu(x, t) for this boundary
+    state.mu =
+      dealii::make_vectorized_array<Number>(this->operator_data.contact_friction_coefficient);
+    auto const mu_function = this->operator_data.bc->contact_friction_coefficient.find(boundary_id);
+    if(mu_function != this->operator_data.bc->contact_friction_coefficient.end())
+    {
+      mu_function->second->set_time(this->time);
+      for(unsigned int v = 0; v < dealii::VectorizedArray<Number>::size(); ++v)
+      {
+        dealii::Point<dim> point;
+        for(unsigned int d = 0; d < dim; ++d)
+          point[d] = x[d][v];
+        state.mu[v] = mu_function->second->value(point);
+      }
+    }
+
     // projection onto the friction disk |t_T| <= mu lambda
-    scalar const radius =
-      dealii::make_vectorized_array<Number>(this->operator_data.contact_friction_coefficient) *
-      state.pressure;
-    state.norm_A_T = std::sqrt(state.A_T * state.A_T);
+    scalar const radius = state.mu * state.pressure;
+    state.norm_A_T      = std::sqrt(state.A_T * state.A_T);
     scalar const safe_norm =
       std::max(state.norm_A_T,
                dealii::make_vectorized_array<Number>(std::numeric_limits<Number>::min()));
@@ -1005,8 +1019,7 @@ NonLinearOperator<dim, Number>::do_boundary_integral_contact(
 
       // delta t_T: stick: delta A_T; slip: mu delta lambda s + mu lambda / |A_T| (I - s (x) s)
       // delta A_T with s = A_T / |A_T|
-      scalar const mu =
-        dealii::make_vectorized_array<Number>(this->operator_data.contact_friction_coefficient);
+      scalar const & mu = state.mu;
       scalar const tiny = dealii::make_vectorized_array<Number>(std::numeric_limits<Number>::min());
       scalar const safe_norm    = std::max(state.norm_A_T, tiny);
       vector const s            = state.A_T / safe_norm;

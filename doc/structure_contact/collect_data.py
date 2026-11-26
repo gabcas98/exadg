@@ -362,27 +362,34 @@ def main():
 
     # Cattaneo-Mindlin: convergence in the mesh size and effect of the finite strains
     rows = []
-    for delta, levels_cat in [("1e-3", [7, 8, 9, 10]), ("1e-4", [10, 11])]:
+    for variant, delta, levels_cat in [("catc", "1e-3", [7, 8, 9, 10]), ("catc", "1e-4", [10, 11]),
+                                       ("catf", "1e-3", [7, 8, 9, 10]), ("catf", "1e-4", [10, 11])]:
         for L in levels_cat:
-            name = f"catc_d{delta}_L{L}"
+            name = f"{variant}_d{delta}_L{L}"
             if not os.path.exists(prefix(run_dir, name) + ".txt"):
                 continue
-            c = cattaneo_comparison.compare(1.0, 0.49, 1.0, 0.3, prefix(run_dir, name))
             h = 0.5 / 2**L
-            rows.append((delta, L, c["a"] / h, c["ratio"], (c["c_num"] - c["c"]) / c["c"],
-                         c["err_l2"], c["err_even"], c["err_even_stick"], c["rms_odd"],
-                         newton_total(name)))
-            if delta == "1e-4" and L == 11:
+            c = cattaneo_comparison.compare(1.0, 0.49, 1.0, 0.3, prefix(run_dir, name), h)
+            label = "with friction" if variant == "catc" else "frictionless"
+            rows.append((label, delta, L, c["a"] / h, c["ratio"], (c["c_num"] - c["c"]) / c["c"],
+                         c["err_l2"], c["err_away"], c["err_even"], c["err_even_stick"],
+                         c["rms_odd"], newton_total(name)))
+            if variant == "catf" and delta == "1e-3" and L == 10:
+                write("cattaneo_profile_frictionless.dat", "x_over_a q_over_mup0 q_analytical",
+                      [(x / c["a"], abs(t) / (0.3 * c["p0"]), c["q_analytical"](x) / (0.3 * c["p0"]))
+                       for x, p, t in c["profile"] if abs(x) < 1.3 * c["a"]])
+            if variant == "catc" and delta == "1e-4" and L == 11:
                 write("cattaneo_profile_fine.dat", "x_over_a q_over_mup0 q_even q_analytical",
                       [(x / c["a"], abs(t) / (0.3 * c["p0"]),
                         next((te for xe, te in c["even"] if abs(xe - abs(x)) < 1e-12), float("nan"))
                         / (0.3 * c["p0"]), c["q_analytical"](x) / (0.3 * c["p0"]))
                        for x, p, t in c["profile"] if abs(x) < 1.3 * c["a"]])
     with open(os.path.join(HERE, "data", "cattaneo_convergence.csv"), "w") as f:
-        f.write("delta,L,a_over_h,Q_over_muP,err_c,err_q,err_even,err_even_stick,rms_odd,newton\n")
+        f.write("indentation,delta,L,a_over_h,Q_over_muP,err_c,err_q,err_away,err_even,"
+                "err_even_stick,rms_odd,newton\n")
         for r in rows:
-            f.write(f"{r[0]},{r[1]},{r[2]:.1f},{r[3]:.3f},{r[4]:+.1e},{r[5]:.1e},{r[6]:.1e},"
-                    f"{r[7]:.1e},{r[8]:.1e},{r[9]}\n")
+            f.write(f"{r[0]},{r[1]},{r[2]},{r[3]:.1f},{r[4]:.3f},{r[5]:+.1e},{r[6]:.1e},{r[7]:.1e},"
+                    f"{r[8]:.1e},{r[9]:.1e},{r[10]:.1e},{r[11]}\n")
 
 
 if __name__ == "__main__":

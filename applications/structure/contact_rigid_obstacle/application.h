@@ -41,7 +41,8 @@
  * Setup "Cattaneo" (2d): a rigid cylinder is pressed by delta into the body [-W, W] x [-H, 0]
  * (t <= 1/2) and then shifted tangentially by s (t > 1/2). For Q < mu P, the contact zone
  * consists of a central stick zone of half-width c = a sqrt(1 - Q / (mu P)) and two slip zones
- * (Cattaneo-Mindlin; exact for uncoupled normal and tangential problems, e.g. nu -> 1/2).
+ * (Cattaneo-Mindlin; exact for uncoupled normal and tangential problems, e.g. nu -> 1/2, and a
+ * frictionless indentation, see the parameter FrictionlessIndentation).
  *
  * Setup "Hertz": a rigid cylinder (2d, plane strain) or sphere (3d) of radius R is pressed by an
  * indentation delta into the elastic body [0,W] x [-H,0] (x [0,W]). Only one half (2d) or one
@@ -236,6 +237,31 @@ private:
 };
 
 /*
+ * Friction coefficient that vanishes during the indentation (t <= t_press) and equals mu during the
+ * tangential loading (t > t_press).
+ */
+template<int dim>
+class FrictionAfterIndentation : public dealii::Function<dim>
+{
+public:
+  FrictionAfterIndentation(double const mu, double const t_press)
+    : dealii::Function<dim>(1), mu(mu), t_press(t_press)
+  {
+  }
+
+  double
+  value(dealii::Point<dim> const & p, unsigned int const component = 0) const final
+  {
+    (void)p;
+    (void)component;
+    return (this->get_time() > t_press * (1.0 + 1e-12)) ? mu : 0.0;
+  }
+
+private:
+  double const mu, t_press;
+};
+
+/*
  * Uniform traction t = (0, -p, 0) scaled by the load factor.
  */
 template<int dim>
@@ -331,6 +357,9 @@ public:
     {
       prm.add_parameter("Setup", setup, "PatchTest, Hertz, SlidingBlock or Cattaneo.");
       prm.add_parameter("TangentialShift", shift, "Cattaneo: tangential shift of the ball.");
+      prm.add_parameter("FrictionlessIndentation",
+                        frictionless_indentation,
+                        "Cattaneo: no friction during the indentation (as in Cattaneo-Mindlin).");
       prm.add_parameter("FrictionCoefficient", friction_coefficient, "Coulomb coefficient mu.");
       prm.add_parameter("Compression", compression, "SlidingBlock: compression of the block.");
       prm.add_parameter("Slip", slip, "SlidingBlock: tangential translation of the plane.");
@@ -576,6 +605,9 @@ private:
       bc.contact_bc.insert(pair(3, new MovingBall<dim>(center, radius, displacement)));
       bc.contact_obstacle_displacement.insert(
         pair(3, new PressAndShiftDisplacement<dim>(indentation, shift, t_press)));
+      if(frictionless_indentation)
+        bc.contact_friction_coefficient.insert(
+          pair(3, new FrictionAfterIndentation<dim>(friction_coefficient, t_press)));
       return;
     }
 
@@ -687,11 +719,12 @@ private:
   Setup setup = Setup::PatchTest;
 
   // friction
-  double       friction_coefficient = 0.0;
-  double       compression          = 0.05;
-  double       slip                 = 0.2;
-  double const t_press              = 0.5;
-  double       shift                = 0.0;
+  double       friction_coefficient     = 0.0;
+  double       compression              = 0.05;
+  double       slip                     = 0.2;
+  double const t_press                  = 0.5;
+  double       shift                    = 0.0;
+  bool         frictionless_indentation = false;
 
   double        youngs_modulus    = 1.0;
   double        poissons_ratio    = 0.3;

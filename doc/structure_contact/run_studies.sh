@@ -131,4 +131,11 @@ for L in 10 11; do
 done
 # indentation only (residual traction of the frictional indentation)
 mk catc_press_only input_cattaneo.json Application:Indentation:1e-4 Application:TangentialShift:0.0 Application:LocalRefinements:11 Application:RefinementRadius:0.02
+# Cattaneo-Mindlin with frictionless indentation (friction only during the tangential loading)
+for L in 7 8 9 10; do
+  mk catf_d1e-3_L$L input_cattaneo.json Application:FrictionlessIndentation:true Application:TangentialShift:2e-4 Application:LocalRefinements:$L
+done
+for L in 10 11; do
+  mk catf_d1e-4_L$L input_cattaneo.json Application:FrictionlessIndentation:true Application:Indentation:1e-4 Application:TangentialShift:2e-5 Application:LocalRefinements:$L Application:RefinementRadius:0.02
+done
 echo ALL_DONE

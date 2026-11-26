@@ -159,8 +159,10 @@ public:
   double contact_nitsche_theta;
 
   // Coulomb friction coefficient mu of the contact with rigid obstacles (0: frictionless), for
-  // quasi-static or steady problems. The tangential traction is t_T = Proj_{|t| <= mu lambda}(
-  // (I - n (x) n) w) with the relative slip Delta g with respect to the previous load step and
+  // quasi-static or steady problems. A position- and time-dependent coefficient can be given per
+  // boundary in BoundaryDescriptor::contact_friction_coefficient. The tangential traction is t_T =
+  // Proj_{|t| <= mu lambda}( (I - n (x) n) w) with the relative slip Delta g with respect to the
+  // previous load step and
   //  ContactMethod::Nitsche (theta = 0): w = P N - gamma Delta g (P N: traction of the body),
   //  ContactMethod::Penalty:              w = t_T^old - epsilon Delta g (t_T^old: tangential
   //                                       traction of the previous load step, stored at the

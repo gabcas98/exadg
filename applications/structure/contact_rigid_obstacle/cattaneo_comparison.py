@@ -25,7 +25,7 @@ def load(filename):
                 if line.strip() and not line.startswith("#")]
 
 
-def compare(E, nu, R, mu, prefix):
+def compare(E, nu, R, mu, prefix, h=None):
     E_star = E / (1.0 - nu**2)
 
     # columns: time force_0 force_1 active_area max_pressure min_gap max_tangential stick_area
@@ -71,8 +71,16 @@ def compare(E, nu, R, mu, prefix):
     errors = [abs(t) - q_analytical(x) for x, p, t in profile if abs(x) < 0.8 * a]
     err_l2 = math.sqrt(sum(e**2 for e in errors) / len(errors)) / (mu * p0)
 
+    # error away from the kinks of the exact traction at |x| = c and |x| = a (if the element size h
+    # at the contact zone is given): excludes the bands |x| in (c - 2h, c + 2h) and |x| > a - 2h
+    err_away = 0.0
+    if h is not None:
+        errors_away = [abs(t) - q_analytical(x) for x, p, t in profile
+                       if abs(abs(x) - c) > 2.0 * h and abs(x) < a - 2.0 * h]
+        err_away = math.sqrt(sum(e**2 for e in errors_away) / len(errors_away)) / (mu * p0)
+
     return dict(P=P, Q=Q, ratio=Q / (mu * P), a=a, a_num=a_num, c=c, c_num=c_num, p0=p0,
-                err_l2=err_l2, err_even=err_even, err_even_stick=err_even_stick, rms_odd=rms_odd,
+                err_l2=err_l2, err_away=err_away, err_even=err_even, err_even_stick=err_even_stick, rms_odd=rms_odd,
                 even=even, profile=profile, q_analytical=q_analytical)
 
 
