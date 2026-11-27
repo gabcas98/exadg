@@ -36,6 +36,14 @@
  * Dirichlet faces is a contact surface, two passes (both blocks are slave and master), which
  * increases the number of surface primitives searched.
  *
+ * Setup "SlottedBlock" (self-contact): the block [0, 1] x [0, 1] with a slot [0, 0.6] x
+ * [0.5 - w/2, 0.5 + w/2] (w = SlotWidth) that opens to the left; the two halves are connected by
+ * the bridge x > 0.6. The bottom is clamped, the top face is moved down by Push * t * (1 - x), so
+ * that the upper arm rotates and the slot closes from its mouth. SlotSurfaces = SelfContact: both
+ * faces of the slot form one contact surface in self-contact (pair (20, 20), the search has to
+ * exclude the faces of the same side); TwoPass: the faces are two surfaces 21, 22 with the pairs
+ * (21, 22) and (22, 21). Both describe the same problem and give the same solution.
+ *
  * LowerBlock = Deformable: as described above. LowerBlock = Clamped: the top face of the lower
  * block is clamped as well, i.e. the master surface is the rigid plane y = 0, represented by mesh
  * faces and found by the search. LowerBlock = AnalyticPlane: same mesh and clamping, but the
@@ -74,6 +82,42 @@ public:
 
 private:
   double const approach, slide, t_press;
+};
+
+/*
+ * Vertical displacement - push * t * (1 - x) of the top face (SlottedBlock): maximum above the
+ * mouth of the slot, zero above the end of the bridge (smooth, no singular corner).
+ */
+template<int dim>
+class PushDisplacement : public dealii::Function<dim>
+{
+public:
+  PushDisplacement(double const push) : dealii::Function<dim>(dim), push(push)
+  {
+  }
+
+  double
+  value(dealii::Point<dim> const & p, unsigned int const c) const final
+  {
+    return (c == 1) ? -push * this->get_time() * (1.0 - p[0]) : 0.0;
+  }
+
+private:
+  double const push;
+};
+
+enum class Setup
+{
+  TwoBlocks,
+  SlottedBlock
+};
+
+// SlottedBlock: the two faces of the slot as one self-contact surface or as two surfaces in
+// contact with each other in both directions (two passes)
+enum class SlotSurfaces
+{
+  SelfContact,
+  TwoPass
 };
 
 enum class ContactSurfaces
@@ -142,6 +186,10 @@ public:
 
     prm.enter_subsection("Application");
     {
+      prm.add_parameter("Setup", setup, "TwoBlocks or SlottedBlock (self-contact).");
+      prm.add_parameter("SlotSurfaces", slot_surfaces, "SlottedBlock: SelfContact or TwoPass.");
+      prm.add_parameter("SlotWidth", slot_width, "SlottedBlock: width of the slot.");
+      prm.add_parameter("Push", push, "SlottedBlock: displacement of the loaded part of the top.");
       prm.add_parameter("ContactSurfaces", contact_surfaces, "Faces or Boundary.");
       prm.add_parameter("LowerBlock",
                         lower_block,
@@ -308,6 +356,52 @@ private:
         (void)periodic_face_pairs;
         (void)vector_local_refinements;
 
+        if(setup == Setup::SlottedBlock)
+        {
+          // lower arm, bridge and upper arm with matching vertices (one body)
+          double const               y_0 = 0.5 - 0.5 * slot_width, y_1 = 0.5 + 0.5 * slot_width;
+          dealii::Triangulation<dim> lower, bridge, upper;
+          dealii::GridGenerator::subdivided_hyper_rectangle(lower,
+                                                            {10, 5},
+                                                            dealii::Point<dim>(0.0, 0.0),
+                                                            dealii::Point<dim>(1.0, y_0));
+          dealii::GridGenerator::subdivided_hyper_rectangle(bridge,
+                                                            {4, 1},
+                                                            dealii::Point<dim>(0.6, y_0),
+                                                            dealii::Point<dim>(1.0, y_1));
+          dealii::GridGenerator::subdivided_hyper_rectangle(upper,
+                                                            {10, 5},
+                                                            dealii::Point<dim>(0.0, y_1),
+                                                            dealii::Point<dim>(1.0, 1.0));
+          dealii::GridGenerator::merge_triangulations({&lower, &bridge, &upper}, tria, 1e-10);
+
+          /*
+           * boundary ids: 0 traction free, 1 bottom (clamped), 3 top face (pushed),
+           * 20 slot faces (self-contact) or 21 lower / 22 upper slot face (two passes)
+           */
+          for(auto cell : tria.cell_iterators())
+            for(auto const & f : cell->face_indices())
+            {
+              if(not cell->at_boundary(f))
+                continue;
+              dealii::Point<dim> const   c  = cell->face(f)->center();
+              dealii::types::boundary_id id = 0;
+              if(std::abs(c[1]) < 1e-12)
+                id = 1;
+              else if(std::abs(c[1] - 1.0) < 1e-12)
+                id = 3;
+              else if(std::abs(c[1] - y_0) < 1e-12 and c[0] < 0.6)
+                id = (slot_surfaces == SlotSurfaces::SelfContact) ? 20 : 21;
+              else if(std::abs(c[1] - y_1) < 1e-12 and c[0] < 0.6)
+                id = (slot_surfaces == SlotSurfaces::SelfContact) ? 20 : 22;
+              cell->face(f)->set_boundary_id(id);
+            }
+
+          if(global_refinements > 0)
+            tria.refine_global(global_refinements);
+          return;
+        }
+
         // lower block (8 x 2 cells) and upper block (5 x 2 cells): non-matching meshes
         dealii::Triangulation<dim> lower, upper;
         dealii::GridGenerator::subdivided_hyper_rectangle(lower,
@@ -379,6 +473,32 @@ private:
     typedef typename std::pair<dealii::types::boundary_id, dealii::ComponentMask> pair_mask;
 
     auto & bc = *this->boundary_descriptor;
+
+    if(setup == Setup::SlottedBlock)
+    {
+      bc.neumann_bc.insert(pair(0, new dealii::Functions::ZeroFunction<dim>(dim)));
+      bc.dirichlet_bc.insert(pair(1, new dealii::Functions::ZeroFunction<dim>(dim)));
+      bc.dirichlet_bc_initial_acceleration.insert(
+        pair(1, new dealii::Functions::ZeroFunction<dim>(dim)));
+      bc.dirichlet_bc_component_mask.insert(pair_mask(1, dealii::ComponentMask(dim, true)));
+      bc.dirichlet_bc.insert(pair(3, new PushDisplacement<dim>(push)));
+      bc.dirichlet_bc_initial_acceleration.insert(
+        pair(3, new dealii::Functions::ZeroFunction<dim>(dim)));
+      bc.dirichlet_bc_component_mask.insert(pair_mask(3, dealii::ComponentMask(dim, true)));
+      if(slot_surfaces == SlotSurfaces::SelfContact)
+      {
+        bc.neumann_bc.insert(pair(20, new dealii::Functions::ZeroFunction<dim>(dim)));
+        bc.deformable_contact_pairs.push_back({20, 20});
+      }
+      else
+      {
+        bc.neumann_bc.insert(pair(21, new dealii::Functions::ZeroFunction<dim>(dim)));
+        bc.neumann_bc.insert(pair(22, new dealii::Functions::ZeroFunction<dim>(dim)));
+        bc.deformable_contact_pairs.push_back({21, 22});
+        bc.deformable_contact_pairs.push_back({22, 21});
+      }
+      return;
+    }
 
     bc.neumann_bc.insert(pair(0, new dealii::Functions::ZeroFunction<dim>(dim)));
 
@@ -466,6 +586,11 @@ private:
 
     return post;
   }
+
+  Setup        setup         = Setup::TwoBlocks;
+  SlotSurfaces slot_surfaces = SlotSurfaces::SelfContact;
+  double       slot_width    = 0.02;
+  double       push          = 0.045;
 
   ContactSurfaces contact_surfaces = ContactSurfaces::Faces;
   LowerBlock      lower_block      = LowerBlock::Deformable;

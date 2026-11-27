@@ -432,3 +432,30 @@ much less with refinement than those of Nitsche's method (L5 multigrid: 7.6x fas
 eps = 100 the Uzawa iteration converges too slowly at the first contact (rate ~ K / (K + eps)) and
 the load steps fail; eps should be a few times E / h of the contact cells.
 
+## Self-contact in a mechanical solve (measured 2026-11-27)
+
+Setup `SlottedBlock`: block [0, 1]^2 with a slot of width 0.02 for x in [0, 0.6] at y = 0.5 (the
+halves are connected by the bridge x > 0.6), bottom clamped, top face moved down by
+Push * t * (1 - x): the upper arm rotates and the slot closes from its mouth. `SlotSurfaces =
+SelfContact`: both slot faces form one surface with the pair (20, 20), i.e. the search has to
+exclude the faces of the same side (projection outside the segment, normals not facing);
+`TwoPass`: two surfaces 21, 22 with the pairs (21, 22) and (22, 21). Both describe the same problem.
+
+Results (sequential, one thread):
+
+| L | method | preconditioner | Newton | Krylov | solve | active points | SelfContact == TwoPass |
+|---|---|---|---|---|---|---|---|
+| 2 | penalty eps = 100, push 0.045 | AMG | 79 | 468 | 1.2 s | 61 | bitwise (reaction file) |
+| 3 | penalty eps = 100, push 0.045 | AMG | 82 | 783 | 5.0 s | 124 | bitwise |
+| 4 | penalty eps = 100, push 0.035 | MG | 74 | 606 | 11.0 s | 190 | bitwise |
+| 4 | AL eps = 300, tol 1e-5, push 0.035 | MG | 102 (7 Uzawa) | 977 | 17.0 s | 187 | bitwise |
+| 4 | Nitsche gamma_0 E = 1, push 0.035 | AMG | 120 | 1463 | 29.4 s | 187 | bitwise |
+
+Verlet == exhaustive during the solve (L3): 0 mismatches in 19776 queries. No failed load steps.
+
+Limit of the test, not of the contact: the end of the slot is a notch of width 0.02 (crack-like),
+where the rotation of the arm produces strains of order rotation x thickness / notch radius; the
+St. Venant-Kirchhoff bulk fails there (also without contact: L3 at push ~0.052, L4 at ~0.038), so
+the push is limited (default 0.045; 0.035 for L4). A first variant with the push applied only on
+x < 0.3 failed already at the end of the loaded zone (singular corner of the Dirichlet data).
+
