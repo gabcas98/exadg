@@ -451,11 +451,22 @@ NonLinearOperator<dim, Number>::calculate_system_matrix(
     auto const                      start = std::chrono::steady_clock::now();
     dealii::DoFHandler<dim> const & dof_handler =
       this->matrix_free->get_dof_handler(this->operator_data.dof_index);
-    dealii::IndexSet const &       owned_dofs = dof_handler.locally_owned_dofs();
-    dealii::DynamicSparsityPattern dsp(owned_dofs.size(), owned_dofs.size(), owned_dofs);
-    dealii::DoFTools::make_sparsity_pattern(dof_handler, dsp, *this->constraint);
-    deformable_contact->add_couplings_to_pattern(dsp);
-    system_matrix.reinit(owned_dofs, owned_dofs, dsp, system_matrix.get_mpi_communicator());
+    dealii::IndexSet const & owned_dofs = dof_handler.locally_owned_dofs();
+    // the pattern of the elasticity operator is computed once
+    if(not elasticity_pattern)
+    {
+      elasticity_pattern = std::make_shared<dealii::DynamicSparsityPattern>(owned_dofs.size(),
+                                                                            owned_dofs.size(),
+                                                                            owned_dofs);
+      dealii::DoFTools::make_sparsity_pattern(dof_handler, *elasticity_pattern, *this->constraint);
+    }
+    // the set of contact couplings only grows, so it is added to the cached pattern in place
+    // (DynamicSparsityPattern cannot be copied when it is not empty)
+    deformable_contact->add_couplings_to_pattern(*elasticity_pattern);
+    system_matrix.reinit(owned_dofs,
+                         owned_dofs,
+                         *elasticity_pattern,
+                         system_matrix.get_mpi_communicator());
     cost_statistics.t_pattern +=
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
   }

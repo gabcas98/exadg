@@ -550,6 +550,23 @@ DeformableContact<dim, Number>::project(dealii::Point<dim> const &     x_s,
 
   if(data.smooth_normals)
   {
+    // exact pre-filter: an admissible pair satisfies x_s = p(xi) + g n with |g| <= r_c,
+    // xi in [-tau, 1 + tau] and |p(xi) - chord(xi)| <= 0.16 l, i.e. the distance of x_s to the
+    // chord [m_1, m_2] is at most r_c + (0.16 + tau) l; other pairs are rejected without the
+    // projection onto the curve
+    {
+      dealii::Point<dim> const &   c_1   = x.x[faces[master].vertex[0]];
+      dealii::Tensor<1, dim> const chord = x.x[faces[master].vertex[1]] - c_1;
+      double const                 l2    = chord * chord;
+      double const                 t     = std::max(0.0, std::min(1.0, ((x_s - c_1) * chord) / l2));
+      double const bound = data.radius + (0.16 + data.projection_tolerance) * std::sqrt(l2);
+      if((x_s - (c_1 + t * chord)).norm_square() > bound * bound * (1.0 + 1e-12))
+      {
+        ++stats.n_prefiltered;
+        return false;
+      }
+    }
+
     Face const & m        = faces[master];
     auto const   position = [&](unsigned int const v) { return to_vector2<double, dim>(x.x[v]); };
     bool const   has_p    = (m.neighbor[0] != dealii::numbers::invalid_unsigned_int);
@@ -1234,6 +1251,16 @@ DeformableContact<dim, Number>::set_linearization(VectorType const & u) const
 
 template<int dim, typename Number>
 bool
+DeformableContact<dim, Number>::fully_constrained(unsigned int const vertex) const
+{
+  for(unsigned int c = 0; c < dim; ++c)
+    if(not vertices[vertex].constrained[c])
+      return false;
+  return true;
+}
+
+template<int dim, typename Number>
+bool
 DeformableContact<dim, Number>::pattern_contains_couplings() const
 {
   for(unsigned int p = 0; p < lin_state.size(); ++p)
@@ -1243,7 +1270,8 @@ DeformableContact<dim, Number>::pattern_contains_couplings() const
     std::vector<unsigned int> const local = point_vertices(p, lin_state[p]);
     for(unsigned int const a : local)
       for(unsigned int const b : local)
-        if(a < b and pattern_couplings.find({a, b}) == pattern_couplings.end())
+        if(a < b and not fully_constrained(a) and not fully_constrained(b) and
+           pattern_couplings.find({a, b}) == pattern_couplings.end())
           return false;
   }
   return true;
@@ -1260,7 +1288,7 @@ DeformableContact<dim, Number>::add_couplings_to_pattern(dealii::DynamicSparsity
     std::vector<unsigned int> const local = point_vertices(p, lin_state[p]);
     for(unsigned int const a : local)
       for(unsigned int const b : local)
-        if(a < b)
+        if(a < b and not fully_constrained(a) and not fully_constrained(b))
           pattern_couplings.insert({a, b});
   }
 
@@ -1665,6 +1693,8 @@ DeformableContact<dim, Number>::print_statistics(dealii::ConditionalOStream cons
   line("validity check", s.n_validity_checks, s.t_check);
   line("queries (search + projections)", s.n_queries, s.t_search);
   line("  projections", s.n_projections, 0.0);
+  if(data.smooth_normals)
+    line("    rejected by the pre-filter", s.n_prefiltered, 0.0);
   line("residual assembly", s.n_residuals, s.t_residual);
   line("linearization (reused search)", s.n_linearizations, s.t_lin);
   line("  reused", s.n_lin_reused, 0.0);

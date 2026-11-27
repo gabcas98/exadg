@@ -176,6 +176,7 @@ struct DeformableContactStatistics
   // search
   unsigned long n_queries     = 0; // slave point queries
   unsigned long n_projections = 0; // point-segment projections
+  unsigned long n_prefiltered = 0; // smoothed surface: rejected by the distance to the chord
   unsigned long n_candidates  = 0; // sum of candidates over all Verlet queries
   unsigned long n_list_pairs  = 0; // sum of face pairs in the list over all builds
   unsigned long n_active      = 0; // sum of active points over all queries
@@ -436,6 +437,10 @@ private:
                          double &                  gap,
                          std::array<double, 12> &  gradient,
                          std::array<double, 144> * hessian_values) const;
+
+  // true if all components of the vertex are constrained (no matrix entries)
+  bool
+  fully_constrained(unsigned int const vertex) const;
 
   // local vertices of the contact term of an active point (for the sparsity pattern)
   std::vector<unsigned int>

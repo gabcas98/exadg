@@ -269,3 +269,23 @@ pattern 1.97 s (25 extensions, partly couplings to Dirichlet-constrained vertice
 onto the smoothed curve in the search 1.08 s (segment: 0.007 s), Hessians at the linearization
 0.50 s. AMG setup dominates all methods (30-32 s of 34-40 s at L6).
 
+## Optimizations of the overhead (measured 2026-11-27)
+
+(1) Couplings to vertices whose components are all constrained are not added to the sparsity
+pattern of the AMG matrix (they have no entries); the elasticity pattern is computed once and
+extended in place (the set of couplings only grows). (2) Exact pre-filter for the smoothed
+surface: an admissible pair has a distance of x_s to the chord of at most r_c + (0.16 + tau) l, so
+other pairs are rejected without the projection onto the curve (57 % of the projections at L6).
+All reaction files are bitwise identical to the runs before the optimizations; all tests pass.
+
+| case (L6) | solve before | solve after | pattern extensions | smoothed search |
+|---|---|---|---|---|
+| ours smoothed, rigid plane | 39.5 s | 35.9 s | 25 (1.97 s) -> 1 (0.08 s) | 1.08 s -> 0.29 s |
+| ours segment, rigid plane | 37.7 s | 35.4 s | 25 (1.97 s) -> 1 (0.08 s) | - |
+| classical penalty | 35.6 s | 34.9 s (rerun) | - | - |
+| classical Nitsche | 34.1 s | 34.3 s (rerun) | - | - |
+| deformable blocks, smoothed | 119 s | 115 s | 44 (3.54 s) -> 44 (1.97 s) | 3.44 s -> 0.96 s |
+
+On the rigid plane, the deformable contact is now within 3 % (smoothed) and 1.4 % (segment) of
+the classical penalty contact, which is the order of the run-to-run variation (~3 %).
+

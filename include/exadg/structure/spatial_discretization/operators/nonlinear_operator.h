@@ -26,6 +26,9 @@
 #include <limits>
 #include <vector>
 
+// deal.II
+#include <deal.II/lac/dynamic_sparsity_pattern.h>
+
 // ExaDG
 #include <exadg/structure/spatial_discretization/operators/boundary_conditions.h>
 #include <exadg/structure/spatial_discretization/operators/deformable_contact.h>
@@ -494,6 +497,10 @@ private:
 
   // contact between deformable surfaces
   std::shared_ptr<DeformableContact<dim, Number> const> deformable_contact;
+
+  // sparsity pattern of the AMG matrix: elasticity operator plus the contact couplings seen so far
+  // (see calculate_system_matrix())
+  mutable std::shared_ptr<dealii::DynamicSparsityPattern> elasticity_pattern;
 
   mutable CostStatistics cost_statistics;
 };
