@@ -159,6 +159,23 @@ struct DeformableContactData
   // multigrid: re-discretize the contact on the multigrid levels (see MultigridPreconditioner)
   bool on_multigrid_levels = true;
 
+  /*
+   * Nitsche's method (variant theta = 0, frictionless) instead of the penalty method: the contact
+   * pressure is lambda = [A]_+ with A = n_m . (P_s N_s) - gamma g, where P_s N_s is the first
+   * Piola-Kirchhoff traction of the slave body at the slave point (evaluated in the adjacent slave
+   * cell), n_m the master normal and gamma = gamma_0 E (k + 1)^2 |dK| / |K| of the slave cell K
+   * (as for the rigid obstacles, `penalty` is gamma_0 E). The residual is R = - w lambda dg/du,
+   * the tangent J v = - w (H(A) delta A dg/du + lambda d^2g/du^2 v) with delta A = delta n . t +
+   * n . (delta P N_s) - gamma dg/du . v (non-symmetric). Points without an admissible master face
+   * within the detection radius are inactive; points where Nitsche's method would activate them
+   * (normal traction > gamma r_c) are counted as cutoff hits. Requires St. Venant-Kirchhoff with
+   * constant coefficients (youngs_modulus, poissons_ratio, plane_stress).
+   */
+  bool   nitsche        = false;
+  double youngs_modulus = 0.0;
+  double poissons_ratio = 0.0;
+  bool   plane_stress   = false;
+
   // Jacobian without the geometric part - lambda w d^2g/du^2, i.e. the positive semi-definite
   // part epsilon w (dg/du) (x) (dg/du) only (used on the multigrid levels, where the operator
   // serves as a preconditioner and has to be positive definite also for large penetrations)
@@ -493,15 +510,85 @@ private:
                          std::array<double, 144> * hessian_values,
                          bool const                all_directions = false) const;
 
+  /*
+   * Nitsche's method: data of the slave cell of each slave face (DoF indices, components,
+   * constraints, Nitsche parameter gamma) and of each slave point (reference outward normal N_s,
+   * reference gradients of the cell shape functions), and the linearization state of a point.
+   */
+  struct NitscheFace
+  {
+    std::vector<dealii::types::global_dof_index> dofs;
+    std::vector<unsigned int>                    component;
+    std::vector<bool>                            constrained;
+    double                                       gamma = 0.0;
+  };
+
+  struct NitschePoint
+  {
+    dealii::Tensor<1, dim>              N;
+    std::vector<dealii::Tensor<1, dim>> grad_phi;
+  };
+
+  struct NitscheState
+  {
+    dealii::Tensor<2, dim> F, S;
+    dealii::Tensor<1, dim> traction;
+    // derivatives of the two components of the master normal with respect to the local DoFs of
+    // the contact (smooth normals)
+    std::array<std::array<double, 12>, 2> dn;
+  };
+
+  // second Piola-Kirchhoff stress of St. Venant-Kirchhoff for the Green-Lagrange strain E (2d)
+  dealii::Tensor<2, dim>
+  svk_stress(dealii::Tensor<2, dim> const & E) const;
+
+  // deformation gradient F, stress S and traction P N_s of the slave body at a slave point
+  void
+  slave_traction(unsigned int const       point,
+                 VectorType const &       u,
+                 dealii::Tensor<2, dim> & F,
+                 dealii::Tensor<2, dim> & S,
+                 dealii::Tensor<1, dim> & traction) const;
+
+  // argument A of the contact pressure [A]_+ of a point with an admissible master face:
+  // penalty: - epsilon g, Nitsche: n . (P_s N_s) - gamma g (state optional)
+  double
+  pressure_argument(unsigned int const             point,
+                    ContactProjection<dim> const & projection,
+                    VectorType const &             u,
+                    NitscheState *                 nitsche_state) const;
+
+  // stiffness of the positive semi-definite part of the contact tangent (penalty: epsilon,
+  // Nitsche: gamma of the slave cell)
+  double
+  contact_stiffness(unsigned int const point) const;
+
+  // smooth normals: unit normal of the master curve at the projection and its derivatives with
+  // respect to all local DoFs of the contact
+  template<typename T>
+  void
+  smooth_projection_of_positions(LocalTopology const &                   topology,
+                                 std::array<std::array<T, 2>, 6> const & X,
+                                 T &                                     gap,
+                                 std::array<T, 2> &                      normal) const;
+
+  void
+  smooth_normal_derivatives(LocalTopology const &                   topology,
+                            Configuration const &                   x,
+                            std::array<std::array<double, 12>, 2> & dn) const;
+
   // true if all components of the vertex are constrained (no matrix entries)
   bool
   fully_constrained(unsigned int const vertex) const;
 
-  // J_c v of one active point at the linearization state: read(vertex) returns the direction at a
-  // vertex, write(vertex, value) receives the contribution
-  template<typename Read, typename Write>
+  // J_c v of one active point at the linearization state: read_dof(i) returns the direction at the
+  // DoF with global index i (constrained DoFs are treated as zero here), write(vertex, value)
+  // receives the contribution to the rows of a vertex of the contact
+  template<typename ReadDoF, typename Write>
   void
-  apply_point_jacobian(unsigned int const point, Read const & read, Write const & write) const;
+  apply_point_jacobian(unsigned int const point,
+                       ReadDoF const &    read_dof,
+                       Write const &      write) const;
 
   // local vertices of the contact term of an active point (for the sparsity pattern)
   std::vector<unsigned int>
@@ -604,6 +691,13 @@ private:
   mutable Configuration                       lin_positions;
   mutable std::vector<ContactProjection<dim>> lin_state;
   mutable std::vector<SmoothLinearization>    lin_smooth;
+  // active set and contact pressure at the linearization state (penalty: g <= 0, Nitsche: A >= 0)
+  mutable std::vector<char>         lin_active;
+  mutable std::vector<double>       lin_lambda;
+  mutable std::vector<NitscheState> lin_nitsche;
+
+  std::vector<NitscheFace>  nitsche_faces;  // per slave face
+  std::vector<NitschePoint> nitsche_points; // per slave point
 
   // positions and search result of the last residual evaluation (reused by set_linearization()
   // if the positions are identical)

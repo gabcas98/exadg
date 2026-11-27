@@ -193,6 +193,10 @@ public:
   // diagnostics: changes of the contact state per linearization and Newton residuals
   bool deformable_contact_log;
 
+  // method of the deformable contact: Penalty (deformable_contact_penalty_parameter = epsilon) or
+  // Nitsche (theta = 0, deformable_contact_penalty_parameter = gamma_0 E, St. Venant-Kirchhoff)
+  ContactMethod deformable_contact_method;
+
   // continuous master normal (averaged nodal normals), see DeformableContactData::smooth_normals
   bool deformable_contact_smooth_normals;
 
@@ -232,6 +236,7 @@ public:
 
   // choose a value in [0,1] where 1 = maximum load (Neumann or Dirichlet)
   double load_increment;
+
 
   /**************************************************************************************/
   /*                                                                                    */

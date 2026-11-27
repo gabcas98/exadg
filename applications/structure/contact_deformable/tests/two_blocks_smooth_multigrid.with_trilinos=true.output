@@ -30,6 +30,7 @@ Mathematical model:
   Material type:                             StVenantKirchhoff
 
 Physical quantities:
+  Deformable contact method:                 Penalty
   Deformable contact penalty parameter:      1.0000e+02
   Deformable contact radius:                 5.0000e-02
   Smooth master normals:                     true

@@ -34,6 +34,8 @@
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe.h>
+#include <deal.II/fe/fe_values.h>
+#include <deal.II/fe/mapping_q.h>
 
 // ExaDG
 #include <exadg/structure/spatial_discretization/operators/deformable_contact.h>
@@ -694,6 +696,81 @@ DeformableContact<dim, Number>::setup(
     }
   }
 
+  // Nitsche's method: slave cell data
+  nitsche_faces.clear();
+  nitsche_points.clear();
+  if(data.nitsche)
+  {
+    AssertThrow(data.youngs_modulus > 0.0 and data.poissons_ratio < 0.5,
+                dealii::ExcMessage("Deformable contact (Nitsche): invalid material data."));
+
+    dealii::MappingQ<dim>     mapping(1);
+    dealii::QGauss<dim>       cell_quadrature(fe.degree + 1);
+    dealii::QGauss<dim - 1>   area_quadrature(fe.degree + 1);
+    dealii::QGauss<dim - 1>   point_quadrature(n_q);
+    dealii::FEValues<dim>     fe_values(mapping, fe, cell_quadrature, dealii::update_JxW_values);
+    dealii::FEFaceValues<dim> fe_face_area(mapping, fe, area_quadrature, dealii::update_JxW_values);
+    dealii::FEFaceValues<dim> fe_face_points(mapping,
+                                             fe,
+                                             point_quadrature,
+                                             dealii::update_gradients |
+                                               dealii::update_quadrature_points |
+                                               dealii::update_normal_vectors);
+    double const              penalty_factor = (fe.degree + 1.0) * (fe.degree + 1.0);
+
+    nitsche_points.resize(slave_points.size());
+    for(SlaveFace const & slave_face : slave_faces)
+    {
+      Face const & face = faces[slave_face.face];
+      NitscheFace  nitsche_face;
+      nitsche_face.dofs.resize(fe.n_dofs_per_cell());
+      face.cell->get_dof_indices(nitsche_face.dofs);
+      for(unsigned int j = 0; j < fe.n_dofs_per_cell(); ++j)
+      {
+        nitsche_face.component.push_back(fe.system_to_component_index(j).first);
+        nitsche_face.constrained.push_back(constrained.find(nitsche_face.dofs[j]) !=
+                                           constrained.end());
+      }
+
+      // gamma = gamma_0 E (k + 1)^2 |dK| / |K| (interior faces weighted by 1/2, as in
+      // IP::calculate_penalty_parameter())
+      fe_values.reinit(face.cell);
+      double volume = 0.0, surface = 0.0;
+      for(unsigned int q = 0; q < cell_quadrature.size(); ++q)
+        volume += fe_values.JxW(q);
+      for(unsigned int const f : face.cell->face_indices())
+      {
+        fe_face_area.reinit(face.cell, f);
+        double const factor =
+          (face.cell->at_boundary(f) and not face.cell->has_periodic_neighbor(f)) ? 1.0 : 0.5;
+        for(unsigned int q = 0; q < area_quadrature.size(); ++q)
+          surface += factor * fe_face_area.JxW(q);
+      }
+      nitsche_face.gamma = data.penalty * penalty_factor * surface / volume;
+      nitsche_faces.push_back(nitsche_face);
+
+      // slave points: match the face quadrature points by position
+      fe_face_points.reinit(face.cell, face.face_no);
+      for(unsigned int k = 0; k < slave_face.n_points; ++k)
+      {
+        unsigned int const       point = slave_face.first_point + k;
+        SlavePoint const &       sp    = slave_points[point];
+        dealii::Point<dim> const X((1.0 - sp.eta) * vertices[face.vertex[0]].X +
+                                   sp.eta * vertices[face.vertex[1]].X);
+        unsigned int             match = dealii::numbers::invalid_unsigned_int;
+        for(unsigned int q = 0; q < point_quadrature.size(); ++q)
+          if(fe_face_points.quadrature_point(q).distance(X) <= 1e-12 * (1.0 + X.norm()))
+            match = q;
+        AssertThrow(match != dealii::numbers::invalid_unsigned_int,
+                    dealii::ExcMessage("Deformable contact (Nitsche): slave point not found among "
+                                       "the face quadrature points."));
+        nitsche_points[point].N = fe_face_points.normal_vector(match);
+        for(unsigned int j = 0; j < fe.n_dofs_per_cell(); ++j)
+          nitsche_points[point].grad_phi.push_back(fe_face_points.shape_grad(j, match));
+      }
+    }
+  }
+
   list_built = false;
   lin_state.clear();
   lin_smooth.clear();
@@ -1241,31 +1318,10 @@ DeformableContact<dim, Number>::smooth_gap_of_positions(
   LocalTopology const &                   topology,
   std::array<std::array<T, 2>, 6> const & X) const
 {
-  double const     eta = topology.eta;
-  Vector2<T> const x_s = {
-    {T(1.0 - eta) * X[topology.slave_a][0] + T(eta) * X[topology.slave_b][0],
-     T(1.0 - eta) * X[topology.slave_a][1] + T(eta) * X[topology.slave_b][1]}};
-
-  T          xi, g;
-  Vector2<T> nu;
-  bool const found = smooth_projection<T>(x_s,
-                                          X[topology.master_1],
-                                          X[topology.master_2],
-                                          topology.orientation,
-                                          topology.has_neighbor[0],
-                                          X[topology.neighbor_vertex[0][0]],
-                                          X[topology.neighbor_vertex[0][1]],
-                                          topology.neighbor_orientation[0],
-                                          topology.has_neighbor[1],
-                                          X[topology.neighbor_vertex[1][0]],
-                                          X[topology.neighbor_vertex[1][1]],
-                                          topology.neighbor_orientation[1],
-                                          std::cos(data.smoothing_angle),
-                                          xi,
-                                          g,
-                                          nu);
-  AssertThrow(found, dealii::ExcInternalError());
-  return g;
+  T                gap;
+  std::array<T, 2> normal;
+  smooth_projection_of_positions(topology, X, gap, normal);
+  return gap;
 }
 
 template<int dim, typename Number>
@@ -1432,6 +1488,143 @@ DeformableContact<dim, Number>::verify_smooth_derivatives(VectorType const & u) 
 }
 
 template<int dim, typename Number>
+dealii::Tensor<2, dim>
+DeformableContact<dim, Number>::svk_stress(dealii::Tensor<2, dim> const & E) const
+{
+  // as StVenantKirchhoff (2d, plane strain or plane stress), coefficients times Young's modulus
+  double const nu = data.poissons_ratio;
+  double       f0, f1, f2;
+  if(data.plane_stress)
+  {
+    f0 = 1. / (1. - nu * nu);
+    f1 = nu / (1. - nu * nu);
+    f2 = (1. - nu) / (2.0 * (1. - nu * nu));
+  }
+  else
+  {
+    f0 = (1. - nu) / ((1. + nu) * (1. - 2. * nu));
+    f1 = nu / ((1. + nu) * (1. - 2. * nu));
+    f2 = (1. - 2. * nu) / (2.0 * (1. + nu) * (1. - 2. * nu));
+  }
+  f0 *= data.youngs_modulus;
+  f1 *= data.youngs_modulus;
+  f2 *= data.youngs_modulus;
+
+  dealii::Tensor<2, dim> S;
+  S[0][0] = f0 * E[0][0] + f1 * E[1][1];
+  S[1][1] = f1 * E[0][0] + f0 * E[1][1];
+  S[0][1] = f2 * (E[0][1] + E[1][0]);
+  S[1][0] = S[0][1];
+  return S;
+}
+
+template<int dim, typename Number>
+void
+DeformableContact<dim, Number>::slave_traction(unsigned int const       point,
+                                               VectorType const &       u,
+                                               dealii::Tensor<2, dim> & F,
+                                               dealii::Tensor<2, dim> & S,
+                                               dealii::Tensor<1, dim> & traction) const
+{
+  NitscheFace const &  face = nitsche_faces[slave_points[point].slave_face];
+  NitschePoint const & np   = nitsche_points[point];
+
+  // displacement gradient H = sum_j u_j e_{c_j} (x) grad phi_j
+  dealii::Tensor<2, dim> H;
+  for(unsigned int j = 0; j < face.dofs.size(); ++j)
+    for(unsigned int d = 0; d < dim; ++d)
+      H[face.component[j]][d] += u(face.dofs[j]) * np.grad_phi[j][d];
+
+  dealii::Tensor<2, dim> const E = 0.5 * (H + transpose(H) + transpose(H) * H);
+  F                              = H;
+  for(unsigned int d = 0; d < dim; ++d)
+    F[d][d] += 1.0;
+  S        = svk_stress(E);
+  traction = (F * S) * np.N;
+}
+
+template<int dim, typename Number>
+double
+DeformableContact<dim, Number>::pressure_argument(unsigned int const             point,
+                                                  ContactProjection<dim> const & projection,
+                                                  VectorType const &             u,
+                                                  NitscheState * nitsche_state) const
+{
+  if(not data.nitsche)
+    return -data.penalty * projection.gap;
+
+  NitscheState state;
+  slave_traction(point, u, state.F, state.S, state.traction);
+  if(nitsche_state)
+    *nitsche_state = state;
+  return projection.normal * state.traction -
+         nitsche_faces[slave_points[point].slave_face].gamma * projection.gap;
+}
+
+template<int dim, typename Number>
+double
+DeformableContact<dim, Number>::contact_stiffness(unsigned int const point) const
+{
+  return data.nitsche ? nitsche_faces[slave_points[point].slave_face].gamma : data.penalty;
+}
+
+template<int dim, typename Number>
+template<typename T>
+void
+DeformableContact<dim, Number>::smooth_projection_of_positions(
+  LocalTopology const &                   topology,
+  std::array<std::array<T, 2>, 6> const & X,
+  T &                                     gap,
+  std::array<T, 2> &                      normal) const
+{
+  double const     eta = topology.eta;
+  Vector2<T> const x_s = {
+    {T(1.0 - eta) * X[topology.slave_a][0] + T(eta) * X[topology.slave_b][0],
+     T(1.0 - eta) * X[topology.slave_a][1] + T(eta) * X[topology.slave_b][1]}};
+
+  T          xi;
+  bool const found = smooth_projection<T>(x_s,
+                                          X[topology.master_1],
+                                          X[topology.master_2],
+                                          topology.orientation,
+                                          topology.has_neighbor[0],
+                                          X[topology.neighbor_vertex[0][0]],
+                                          X[topology.neighbor_vertex[0][1]],
+                                          topology.neighbor_orientation[0],
+                                          topology.has_neighbor[1],
+                                          X[topology.neighbor_vertex[1][0]],
+                                          X[topology.neighbor_vertex[1][1]],
+                                          topology.neighbor_orientation[1],
+                                          std::cos(data.smoothing_angle),
+                                          xi,
+                                          gap,
+                                          normal);
+  AssertThrow(found, dealii::ExcInternalError());
+}
+
+template<int dim, typename Number>
+void
+DeformableContact<dim, Number>::smooth_normal_derivatives(
+  LocalTopology const &                   topology,
+  Configuration const &                   x,
+  std::array<std::array<double, 12>, 2> & dn) const
+{
+  std::array<std::array<Dual<12>, 2>, 6> X;
+  for(unsigned int k = 0; k < topology.n; ++k)
+    for(unsigned int c = 0; c < 2; ++c)
+    {
+      X[k][c]              = Dual<12>(x.x[topology.vertex[k]][c]);
+      X[k][c].g[2 * k + c] = 1.0;
+    }
+  Dual<12>                gap;
+  std::array<Dual<12>, 2> normal;
+  smooth_projection_of_positions(topology, X, gap, normal);
+  for(unsigned int c = 0; c < 2; ++c)
+    for(unsigned int i = 0; i < 12; ++i)
+      dn[c][i] = normal[c].g[i];
+}
+
+template<int dim, typename Number>
 std::vector<unsigned int>
 DeformableContact<dim, Number>::point_vertices(unsigned int const             point,
                                                ContactProjection<dim> const & state) const
@@ -1477,10 +1670,27 @@ DeformableContact<dim, Number>::evaluate_residual_add(VectorType & dst, VectorTy
   for(unsigned int p = 0; p < slave_points.size(); ++p)
   {
     ContactProjection<dim> const & state = last_state[p];
-    if(not state.active())
-      continue;
+    SlavePoint const &             sp    = slave_points[p];
 
-    SlavePoint const & sp = slave_points[p];
+    if(not state.found())
+    {
+      // Nitsche: the detection radius changes the result if the normal traction exceeds
+      // gamma r_c (the point would be active for any gap below this distance)
+      if(data.nitsche)
+      {
+        dealii::Tensor<2, dim> F, S;
+        dealii::Tensor<1, dim> traction;
+        slave_traction(p, u, F, S, traction);
+        if(-(nitsche_points[p].N * traction) > nitsche_faces[sp.slave_face].gamma * data.radius)
+          ++stats.n_cutoff;
+      }
+      continue;
+    }
+
+    // contact pressure lambda = [A]_+ (penalty: A = - epsilon g, Nitsche: n . (P N) - gamma g)
+    double const lambda = std::max(pressure_argument(p, state, u, nullptr), 0.0);
+    if(lambda == 0.0)
+      continue;
 
     if(data.smooth_normals)
     {
@@ -1489,7 +1699,7 @@ DeformableContact<dim, Number>::evaluate_residual_add(VectorType & dst, VectorTy
       double                 gap;
       std::array<double, 12> gradient;
       smooth_gap_derivatives(topology, last_positions, false, gap, gradient, nullptr);
-      double const factor = -sp.weight * data.penalty * (-gap);
+      double const factor = -sp.weight * lambda;
       for(unsigned int k = 0; k < topology.n; ++k)
       {
         dealii::Tensor<1, dim> value;
@@ -1503,8 +1713,8 @@ DeformableContact<dim, Number>::evaluate_residual_add(VectorType & dst, VectorTy
     Face const & slave  = faces[slave_faces[sp.slave_face].face];
     Face const & master = faces[state.master];
 
-    // R = - w lambda dg/du with lambda = epsilon (-g), dg = (dx_s - dx_m) . n
-    dealii::Tensor<1, dim> const f = (sp.weight * data.penalty * (-state.gap)) * state.normal;
+    // R = - w lambda dg/du with dg = (dx_s - dx_m) . n
+    dealii::Tensor<1, dim> const f = (sp.weight * lambda) * state.normal;
     add(dst, slave.vertex[0], -(1.0 - sp.eta) * f);
     add(dst, slave.vertex[1], -sp.eta * f);
     add(dst, master.vertex[0], (1.0 - state.xi) * f);
@@ -1539,13 +1749,33 @@ DeformableContact<dim, Number>::set_linearization(VectorType const & u) const
     lin_positions = x;
   }
 
+  // active set and contact pressure (and the slave traction for Nitsche's method)
+  {
+    ScopedTime timer(stats.t_lin);
+    lin_active.assign(lin_state.size(), 0);
+    lin_lambda.assign(lin_state.size(), 0.0);
+    if(data.nitsche)
+      lin_nitsche.resize(lin_state.size());
+    for(unsigned int p = 0; p < lin_state.size(); ++p)
+      if(lin_state[p].found())
+      {
+        double const A =
+          pressure_argument(p, lin_state[p], u, data.nitsche ? &lin_nitsche[p] : nullptr);
+        if(A >= 0.0)
+        {
+          lin_active[p] = 1;
+          lin_lambda[p] = A;
+        }
+      }
+  }
+
   // smooth normals: gradient and Hessian of the gap of the active points
   if(data.smooth_normals)
   {
     ScopedTime timer(stats.t_lin);
     lin_smooth.resize(lin_state.size());
     for(unsigned int p = 0; p < lin_state.size(); ++p)
-      if(lin_state[p].active())
+      if(lin_active[p])
       {
         lin_smooth[p].topology = local_topology(p, lin_state[p].master);
         double gap;
@@ -1556,6 +1786,8 @@ DeformableContact<dim, Number>::set_linearization(VectorType const & u) const
                                gap,
                                lin_smooth[p].gradient,
                                &lin_smooth[p].hessian);
+        if(data.nitsche and not data.penalty_part_only)
+          smooth_normal_derivatives(lin_smooth[p].topology, x, lin_nitsche[p].dn);
       }
   }
 
@@ -1662,7 +1894,7 @@ DeformableContact<dim, Number>::pattern_contains_couplings() const
 {
   for(unsigned int p = 0; p < lin_state.size(); ++p)
   {
-    if(not lin_state[p].active())
+    if(not lin_active[p])
       continue;
     std::vector<unsigned int> const local = point_vertices(p, lin_state[p]);
     for(unsigned int const a : local)
@@ -1680,7 +1912,7 @@ DeformableContact<dim, Number>::add_couplings_to_pattern(dealii::DynamicSparsity
 {
   for(unsigned int p = 0; p < lin_state.size(); ++p)
   {
-    if(not lin_state[p].active())
+    if(not lin_active[p])
       continue;
     std::vector<unsigned int> const local = point_vertices(p, lin_state[p]);
     for(unsigned int const a : local)
@@ -1737,11 +1969,11 @@ DeformableContact<dim, Number>::add_to_matrix(dealii::TrilinosWrappers::SparseMa
   for(unsigned int p = 0; p < slave_points.size(); ++p)
   {
     ContactProjection<dim> const & state = lin_state[p];
-    if(not state.active())
+    if(not lin_active[p])
       continue;
 
     SlavePoint const & sp     = slave_points[p];
-    double const       factor = data.penalty * sp.weight;
+    double const       factor = contact_stiffness(p) * sp.weight;
     if(data.smooth_normals)
     {
       // epsilon w (dg/du) (x) (dg/du) on all local vertices (with coupling) or on the slave and
@@ -1819,19 +2051,58 @@ DeformableContact<dim, Number>::add_to_matrix(dealii::TrilinosWrappers::SparseMa
 #endif
 
 template<int dim, typename Number>
-template<typename Read, typename Write>
+template<typename ReadDoF, typename Write>
 void
 DeformableContact<dim, Number>::apply_point_jacobian(unsigned int const point,
-                                                     Read const &       read,
+                                                     ReadDoF const &    read_dof,
                                                      Write const &      write) const
 {
-  ContactProjection<dim> const & state   = lin_state[point];
-  SlavePoint const &             sp      = slave_points[point];
-  double const                   epsilon = data.penalty;
+  ContactProjection<dim> const & state  = lin_state[point];
+  SlavePoint const &             sp     = slave_points[point];
+  double const                   w      = sp.weight;
+  double const                   lambda = lin_lambda[point];
+
+  // direction at a vertex of the contact (constrained components are zero)
+  auto const read = [&](unsigned int const vertex) {
+    dealii::Tensor<1, dim> value;
+    for(unsigned int c = 0; c < dim; ++c)
+      if(not vertices[vertex].constrained[c])
+        value[c] = read_dof(vertices[vertex].dof[c]);
+    return value;
+  };
+
+  // Nitsche: delta (n . (P N)) = delta n . t + n . (delta P N) with delta P = F delta S + G S,
+  // G = Grad(delta d) in the slave cell
+  auto const delta_normal_traction = [&](dealii::Tensor<1, dim> const & delta_n) {
+    NitscheState const &   ns   = lin_nitsche[point];
+    NitscheFace const &    face = nitsche_faces[sp.slave_face];
+    NitschePoint const &   np   = nitsche_points[point];
+    dealii::Tensor<2, dim> G;
+    for(unsigned int j = 0; j < face.dofs.size(); ++j)
+      if(not face.constrained[j])
+      {
+        double const value = read_dof(face.dofs[j]);
+        for(unsigned int d = 0; d < dim; ++d)
+          G[face.component[j]][d] += value * np.grad_phi[j][d];
+      }
+    dealii::Tensor<2, dim> H = ns.F;
+    for(unsigned int d = 0; d < dim; ++d)
+      H[d][d] -= 1.0;
+    dealii::Tensor<2, dim> const delta_E =
+      0.5 * (G + transpose(G) + transpose(G) * H + transpose(H) * G);
+    dealii::Tensor<2, dim> const delta_P = ns.F * svk_stress(delta_E) + G * ns.S;
+    return delta_n * ns.traction + state.normal * (delta_P * np.N);
+  };
+
+  // J v = alpha dg/du - beta d^2g/du^2 v with
+  //  penalty: alpha = w epsilon (dg . v), beta = w lambda,
+  //  Nitsche: alpha = - w delta A, delta A = delta (n . (P N)) - gamma (dg . v), beta = w lambda,
+  //  positive semi-definite part only: alpha = w kappa (dg . v), beta = 0
+  double const kappa = contact_stiffness(point);
+  double const beta  = data.penalty_part_only ? 0.0 : w * lambda;
 
   if(data.smooth_normals)
   {
-    // J v = w (epsilon (dg/du . v) dg/du - lambda d^2g/du^2 v), lambda = epsilon (-g)
     SmoothLinearization const & lin    = lin_smooth[point];
     unsigned int const          n_dofs = 2 * lin.topology.n;
     std::array<double, 12>      v_local;
@@ -1844,7 +2115,17 @@ DeformableContact<dim, Number>::apply_point_jacobian(unsigned int const point,
     double delta_g = 0.0;
     for(unsigned int i = 0; i < n_dofs; ++i)
       delta_g += lin.gradient[i] * v_local[i];
-    double const lambda = epsilon * (-state.gap);
+
+    double alpha = w * kappa * delta_g;
+    if(data.nitsche and not data.penalty_part_only)
+    {
+      dealii::Tensor<1, dim> delta_n;
+      for(unsigned int c = 0; c < dim; ++c)
+        for(unsigned int i = 0; i < n_dofs; ++i)
+          delta_n[c] += lin_nitsche[point].dn[c][i] * v_local[i];
+      alpha = -w * (delta_normal_traction(delta_n) - kappa * delta_g);
+    }
+
     for(unsigned int k = 0; k < lin.topology.n; ++k)
     {
       dealii::Tensor<1, dim> value;
@@ -1855,8 +2136,7 @@ DeformableContact<dim, Number>::apply_point_jacobian(unsigned int const point,
         if(not data.penalty_part_only)
           for(unsigned int j = 0; j < n_dofs; ++j)
             Hv += lin.hessian[i * 12 + j] * v_local[j];
-        value[c] = sp.weight * (epsilon * delta_g * lin.gradient[i] -
-                                (data.penalty_part_only ? 0.0 : lambda * Hv));
+        value[c] = alpha * lin.gradient[i] - beta * Hv;
       }
       write(lin.topology.vertex[k], value);
     }
@@ -1881,25 +2161,29 @@ DeformableContact<dim, Number>::apply_point_jacobian(unsigned int const point,
   double const delta_g = delta_r * n;
 
   // second variation of g (straight master segment, 2d):
-  //  Delta delta g = - alpha / l (delta x_s - delta x_m) . t - (beta / l + g alpha / l^2)
+  //  Delta delta g = - a / l (delta x_s - delta x_m) . t - (b / l + g a / l^2)
   //                  n . (delta x_2 - delta x_1)
-  // with alpha = n . (Delta x_2 - Delta x_1), beta = (Delta x_s - Delta x_m) . t
-  double const alpha = n * (delta_2 - delta_1);
-  double const beta  = delta_r * t;
-  double const c_n   = beta / l + g * alpha / (l * l);
-  double const c_t   = alpha / l;
+  // with a = n . (Delta x_2 - Delta x_1), b = (Delta x_s - Delta x_m) . t
+  double const a   = n * (delta_2 - delta_1);
+  double const b   = delta_r * t;
+  double const c_n = b / l + g * a / (l * l);
+  double const c_t = a / l;
 
   dealii::Tensor<1, dim> const c_s = -c_t * t;
   dealii::Tensor<1, dim> const c_1 = c_t * (1.0 - xi) * t + c_n * n;
   dealii::Tensor<1, dim> const c_2 = c_t * xi * t - c_n * n;
 
-  // J v = w (epsilon H(-g) Delta g dg/du - lambda Delta delta g), lambda = epsilon (-g)
-  double const lambda = data.penalty_part_only ? 0.0 : epsilon * (-g);
-  double const k      = sp.weight * epsilon * delta_g;
+  double alpha = w * kappa * delta_g;
+  if(data.nitsche and not data.penalty_part_only)
+  {
+    // variation of the master normal: delta n = - t (n . (delta x_2 - delta x_1)) / l
+    dealii::Tensor<1, dim> const delta_n = -(a / l) * t;
+    alpha                                = -w * (delta_normal_traction(delta_n) - kappa * delta_g);
+  }
 
-  dealii::Tensor<1, dim> const f_s = k * n - sp.weight * lambda * c_s;
-  dealii::Tensor<1, dim> const f_1 = -k * (1.0 - xi) * n - sp.weight * lambda * c_1;
-  dealii::Tensor<1, dim> const f_2 = -k * xi * n - sp.weight * lambda * c_2;
+  dealii::Tensor<1, dim> const f_s = alpha * n - beta * c_s;
+  dealii::Tensor<1, dim> const f_1 = -alpha * (1.0 - xi) * n - beta * c_1;
+  dealii::Tensor<1, dim> const f_2 = -alpha * xi * n - beta * c_2;
 
   write(slave.vertex[0], (1.0 - sp.eta) * f_s);
   write(slave.vertex[1], sp.eta * f_s);
@@ -1917,21 +2201,16 @@ DeformableContact<dim, Number>::apply_jacobian_add(VectorType & dst, VectorType 
   AssertThrow(lin_state.size() == slave_points.size(),
               dealii::ExcMessage("Deformable contact: linearization state not set."));
 
-  // constrained entries of v are treated as zero, constrained rows of dst are not written
-  auto const read = [&](unsigned int const vertex) {
-    dealii::Tensor<1, dim> value;
-    for(unsigned int c = 0; c < dim; ++c)
-      if(not vertices[vertex].constrained[c])
-        value[c] = v(vertices[vertex].dof[c]);
-    return value;
-  };
-  auto const write = [&](unsigned int const vertex, dealii::Tensor<1, dim> const & value) {
+  // constrained entries of v are treated as zero (in apply_point_jacobian()), constrained rows of
+  // dst are not written
+  auto const read_dof = [&](dealii::types::global_dof_index const i) { return double(v(i)); };
+  auto const write    = [&](unsigned int const vertex, dealii::Tensor<1, dim> const & value) {
     add(dst, vertex, value);
   };
 
   for(unsigned int p = 0; p < slave_points.size(); ++p)
-    if(lin_state[p].active())
-      apply_point_jacobian(p, read, write);
+    if(lin_active[p])
+      apply_point_jacobian(p, read_dof, write);
 }
 
 template<int dim, typename Number>
@@ -1943,12 +2222,14 @@ DeformableContact<dim, Number>::add_diagonal(VectorType & diagonal) const
 
   for(unsigned int p = 0; p < slave_points.size(); ++p)
   {
-    if(not lin_state[p].active())
+    if(not lin_active[p])
       continue;
 
-    // diagonal entry of the point contribution for each unconstrained DoF of its vertices:
-    // apply the point Jacobian to the unit vector of this DoF (vertices that appear in several
-    // roles, e.g. common vertices of slave and master faces in self-contact, are one DoF)
+    // diagonal entry of the point contribution for each unconstrained DoF of the vertices of
+    // the contact (the rows of the contact term): apply the point Jacobian to the unit vector of
+    // this DoF (vertices that appear in several roles, e.g. common vertices of slave and master
+    // faces in self-contact, are one DoF; for Nitsche's method, the unit vector also acts on the
+    // traction of the slave cell)
     std::vector<unsigned int> local = point_vertices(p, lin_state[p]);
     std::sort(local.begin(), local.end());
     local.erase(std::unique(local.begin(), local.end()), local.end());
@@ -1957,19 +2238,18 @@ DeformableContact<dim, Number>::add_diagonal(VectorType & diagonal) const
       {
         if(vertices[vertex].constrained[c])
           continue;
-        auto const read = [&](unsigned int const w) {
-          dealii::Tensor<1, dim> value;
-          if(w == vertex)
-            value[c] = 1.0;
-          return value;
+        dealii::types::global_dof_index const dof = vertices[vertex].dof[c];
+
+        auto const read_dof = [&](dealii::types::global_dof_index const i) {
+          return i == dof ? 1.0 : 0.0;
         };
         double     entry = 0.0;
         auto const write = [&](unsigned int const w, dealii::Tensor<1, dim> const & value) {
           if(w == vertex)
             entry += value[c];
         };
-        apply_point_jacobian(p, read, write);
-        diagonal(vertices[vertex].dof[c]) += entry;
+        apply_point_jacobian(p, read_dof, write);
+        diagonal(dof) += entry;
       }
   }
 }
@@ -1991,11 +2271,13 @@ DeformableContact<dim, Number>::compute_quantities(VectorType const & u) const
   DeformableContactQuantities<dim> result;
   for(unsigned int p = 0; p < slave_points.size(); ++p)
   {
-    if(state[p].found())
-      result.min_gap = std::min(result.min_gap, state[p].gap);
-    if(not state[p].active())
+    if(not state[p].found())
       continue;
-    double const lambda = data.penalty * (-state[p].gap);
+    result.min_gap = std::min(result.min_gap, state[p].gap);
+    double const A = pressure_argument(p, state[p], u, nullptr);
+    if(A < 0.0)
+      continue;
+    double const lambda = A;
     if(data.smooth_normals)
     {
       // force on the slave face: w lambda dg/dx_s (derivatives with respect to the slave vertices)

@@ -58,6 +58,7 @@ Parameters::Parameters()
     deformable_contact_in_preconditioner(false),
     deformable_contact_preconditioner_coupling(true),
     deformable_contact_log(false),
+    deformable_contact_method(ContactMethod::Penalty),
     deformable_contact_smooth_normals(false),
     deformable_contact_on_multigrid_levels(true),
 
@@ -227,6 +228,7 @@ Parameters::print_parameters_physical_quantities(dealii::ConditionalOStream cons
 
   if(deformable_contact_penalty_parameter > 0.0)
   {
+    print_parameter(pcout, "Deformable contact method", deformable_contact_method);
     print_parameter(pcout,
                     "Deformable contact penalty parameter",
                     deformable_contact_penalty_parameter);

@@ -165,6 +165,10 @@ public:
       prm.add_parameter("PreconditionerCoupling",
                         preconditioner_coupling,
                         "Slave-master coupling in the AMG matrix (extended sparsity pattern).");
+      prm.add_parameter("DeformableContactMethod",
+                        deformable_contact_method,
+                        "Deformable contact: Penalty (PenaltyParameter = epsilon) or Nitsche "
+                        "(theta = 0, PenaltyParameter = gamma_0 E).");
       prm.add_parameter("AnalyticContactMethod",
                         analytic_contact_method,
                         "LowerBlock = AnalyticPlane: Penalty or Nitsche (theta = 0).");
@@ -231,6 +235,7 @@ private:
     this->param.deformable_contact_preconditioner_coupling = preconditioner_coupling;
     this->param.deformable_contact_log                     = log_contact_state;
     this->param.deformable_contact_smooth_normals          = smooth_normals;
+    this->param.deformable_contact_method                  = deformable_contact_method;
 
     this->param.load_increment = load_increment;
 
@@ -256,7 +261,9 @@ private:
     // the frictionless penalty contact has a symmetric tangent
     // (Nitsche's method with theta = 0 has a non-symmetric tangent)
     bool const symmetric = not(lower_block == LowerBlock::AnalyticPlane and
-                               analytic_contact_method == ContactMethod::Nitsche);
+                               analytic_contact_method == ContactMethod::Nitsche) and
+                           not(lower_block != LowerBlock::AnalyticPlane and
+                               deformable_contact_method == ContactMethod::Nitsche);
     this->param.solver_data =
       SolverData(1e4, 1.e-14, 1.e-6, symmetric ? LinearSolver::CG : LinearSolver::GMRES, 100);
     this->param.preconditioner = preconditioner;
@@ -473,6 +480,7 @@ private:
   bool                  preconditioner_coupling     = true;
   bool                  log_contact_state           = false;
   bool                  smooth_normals              = false;
+  ContactMethod         deformable_contact_method   = ContactMethod::Penalty;
   unsigned int          smoother_iterations         = 5;
   bool                  contact_on_multigrid_levels = true;
   double                coarse_relative_tolerance   = 1.e-3;

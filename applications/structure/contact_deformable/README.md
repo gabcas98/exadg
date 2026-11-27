@@ -354,3 +354,47 @@ remaining difference at L6 (~0.8 s, 6.5 %) is the search (projections onto the c
 the contact on the multigrid levels (~0.3 s). Deformable blocks L6 with multigrid: 59.9 s (no
 constrained DoFs at the contact, unchanged).
 
+## Nitsche's method between deformable bodies (measured 2026-11-27)
+
+`DeformableContactMethod = Nitsche` (theta = 0, frictionless): lambda = [A]_+ with
+A = n_m . (P_s N_s) - gamma g, where P_s N_s is the traction of the slave body evaluated in the
+slave cell (St. Venant-Kirchhoff with constant coefficients, as in the rigid obstacle code) and
+gamma = gamma_0 E (k+1)^2 |dK| / |K| of the slave cell (`PenaltyParameter` = gamma_0 E). Residual
+R = - w lambda dg/du; tangent J v = - w (H(A) delta A dg/du + lambda d^2g/du^2 v) with
+delta A = delta n . t + n . (delta P N_s) - gamma dg . v (non-symmetric, GMRES); delta n in closed
+form (segment) or by one-pass automatic differentiation (smoothed surface). The preconditioner
+(AMG matrix, multigrid levels) uses gamma w H(A) dg (x) dg. Points without an admissible master
+face within r_c are inactive; points where the slave normal traction exceeds gamma r_c are counted
+as cutoff hits (0 in all runs).
+
+Checks: tangent vs. finite differences O(h^2) down to ~1e-11 (two blocks segment/smoothed, U strip
+self-contact), diagonal == columns of J exactly; rigid master vs. the analytic Nitsche contact
+(gamma_0 E = 10): reaction and maximum pressure identical in all 10 printed digits at L4 and L5,
+Newton 18/18 and 20/20 iterations, solve +2.6 % at L5 (AMG).
+
+Two deformable blocks, L4, AMG (penalty converges to Nitsche for eps -> infinity):
+
+| method | Newton | Krylov | solve | F_y | min gap |
+|---|---|---|---|---|---|
+| penalty eps = 100 | 58 | 720 | 4.35 s | 2.43500e-02 (-1.2 %) | -4e-4 |
+| penalty eps = 1000 | 124 | 3580 | 10.6 s | 2.46176e-02 (-0.13 %) | -6.1e-5 |
+| penalty eps = 10000 | 354 | 17007 | 75.2 s | 2.46457e-02 (-0.012 %) | -6.6e-6 |
+| Nitsche gamma_0 E = 10 | 310 | 18635 | 69.2 s | 2.46487e-02 | -4.5e-6 |
+| Nitsche gamma_0 E = 1 | 112 | 1428 | 7.83 s | 2.46470e-02 | -1.7e-5 |
+| Nitsche gamma_0 E = 0.3 | 97 | 928 | 6.45 s | 2.46451e-02 | -4.4e-5 |
+
+The dependence on gamma_0 halves with refinement (F_y difference gamma_0 E = 0.3 vs. 10: 7.2e-6
+at L3, 3.6e-6 at L4). Multigrid with the contact on the levels: Nitsche gamma_0 E = 1, L4 6.05 s
+(110 Newton), L5 183 s (189 Newton; AMG 220 s), same reaction.
+
+Open issue: Newton's method needs many more iterations than the penalty method with eps = 100,
+increasing with refinement (Nitsche gamma_0 E = 1: L4 110, L5 189; penalty eps = 100: 58, 61).
+The log shows that full Newton steps flip the status of most active points (the activation
+A = lambda_N - gamma g is decided by gaps of order lambda / gamma ~ 1e-5 on the deformable master),
+and the line search reduces the steps to 1e-3 - 1e-1 until the active set has been rebuilt. The
+penalty method with a comparable accuracy (eps = 1e4) shows the same behaviour, so this is a
+property of the stiff constraint enforcement, not of the Nitsche implementation. Tried without
+success: non-monotone full steps (factor 1e6 or 100: worse), no extrapolation of the load steps
+(worse), keeping the previous active set in the first Jacobian of a step (no gain); these
+experiments were removed again.
+

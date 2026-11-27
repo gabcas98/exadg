@@ -320,6 +320,25 @@ Operator<dim, Number>::setup_operators()
       contact_data.smooth_normals          = param.deformable_contact_smooth_normals;
       contact_data.on_multigrid_levels     = param.deformable_contact_on_multigrid_levels;
 
+      // Nitsche's method: material data of the slave traction (St. Venant-Kirchhoff with
+      // constant coefficients, as the rigid obstacle Nitsche contact)
+      contact_data.nitsche = (param.deformable_contact_method == ContactMethod::Nitsche);
+      if(contact_data.nitsche)
+      {
+        AssertThrow(material_descriptor->size() == 1 and
+                      material_descriptor->begin()->second->type == MaterialType::StVenantKirchhoff,
+                    dealii::ExcMessage("Deformable contact with Nitsche's method requires one "
+                                       "St. Venant-Kirchhoff material."));
+        auto const svk = std::static_pointer_cast<StVenantKirchhoffData<dim>>(
+          material_descriptor->begin()->second);
+        AssertThrow(svk->youngs_modulus_function == nullptr,
+                    dealii::ExcMessage("Deformable contact with Nitsche's method requires a "
+                                       "constant Young's modulus."));
+        contact_data.youngs_modulus = svk->youngs_modulus;
+        contact_data.poissons_ratio = svk->poissons_ratio;
+        contact_data.plane_stress   = (svk->type_two_dim == Type2D::PlaneStress);
+      }
+
       // constrained DoFs (Dirichlet), global indices
       std::vector<dealii::types::global_dof_index> constrained_dofs;
       VectorType                                   vector;

@@ -1006,6 +1006,140 @@ test_smooth_self_contact(double & fd_error)
   fd_error = finite_difference_check(contact, u, 9);
 }
 
+/*
+ * Test 8: Nitsche's method (theta = 0): tangent vs. finite differences and diagonal, two blocks
+ * (segment and smoothed master) and U strip (self-contact, smoothed).
+ */
+void
+test_nitsche(double & fd_worst)
+{
+  std::cout << std::endl << "Test 8: Nitsche's method" << std::endl;
+  fd_worst = 0.0;
+
+  auto const nitsche_data = [](DeformableContactData data) {
+    data.nitsche        = true;
+    data.penalty        = 10.0; // gamma_0 E
+    data.youngs_modulus = 1.0;
+    data.poissons_ratio = 0.3;
+    return data;
+  };
+
+  {
+    dealii::Triangulation<dim> tria;
+    create_two_blocks(tria, 0.05, 2);
+    dealii::FESystem<dim>   fe(dealii::FE_Q<dim>(1), dim);
+    dealii::DoFHandler<dim> dof_handler(tria);
+    dof_handler.distribute_dofs(fe);
+
+    // compressed upper block with a non-uniform deformation of both blocks: the slave traction
+    // is non-zero and the active set (A >= 0) contains points with g > 0 and g < 0
+    VectorType u;
+    interpolate(
+      dof_handler,
+      [](dealii::Point<dim> const & X) {
+        dealii::Tensor<1, dim> d;
+        if(X[1] > 0.0)
+        {
+          d[0] = 0.13 + 0.01 * std::sin(3.0 * X[0]) + 0.02 * (X[1] - 0.05);
+          d[1] = -0.0502 + 0.0003 * std::cos(5.0 * X[0]) - 0.04 * (X[1] - 0.05);
+        }
+        else
+        {
+          d[0] = 0.005 * std::sin(2.0 * X[0]) * (X[1] + 0.5);
+          d[1] = 0.0002 * std::sin(4.0 * X[0]) * (X[1] + 0.5) / 0.5;
+        }
+        return d;
+      },
+      u);
+
+    for(bool const smooth : {false, true})
+    {
+      DeformableContactData data;
+      data.pairs                = {{11, 10}};
+      data.radius               = 0.05;
+      data.skin                 = 0.05;
+      data.projection_tolerance = 0.01;
+      data.search               = ContactSearchStrategy::Exhaustive;
+      data.smooth_normals       = smooth;
+      Contact contact;
+      contact.setup(dof_handler, {}, nitsche_data(data));
+
+      DeformableContactQuantities<dim> const q = contact.compute_quantities(u);
+      std::cout << "    two blocks, " << (smooth ? "smooth " : "segment") << ": active "
+                << q.n_active << " of " << contact.n_slave_points() << ", min gap " << q.min_gap
+                << ", max pressure " << q.max_pressure << std::endl;
+      double const d = diagonal_check(contact, u);
+      std::cout << "    diagonal vs. columns of J: " << d << std::endl;
+      check(q.n_active > 0 and d < 1e-14,
+            std::string("Nitsche, two blocks (") + (smooth ? "smooth" : "segment") +
+              "): diagonal == diagonal entries of J e_i");
+      std::cout << "    finite differences:" << std::endl;
+      double const fd = finite_difference_check(contact, u, 21);
+      fd_worst        = std::max(fd_worst, fd);
+      check(fd < 1e-6,
+            std::string("Nitsche, two blocks (") + (smooth ? "smooth" : "segment") +
+              "): tangent agrees with finite differences");
+    }
+  }
+
+  {
+    double const L = 4.0, T = 0.1, l = 0.4, a = 0.5 * (L - l);
+
+    dealii::Triangulation<dim> tria;
+    dealii::GridGenerator::subdivided_hyper_rectangle(tria,
+                                                      {80, 1},
+                                                      dealii::Point<dim>(0.0, 0.0),
+                                                      dealii::Point<dim>(L, T));
+    for(auto const & cell : tria.active_cell_iterators())
+      for(unsigned int const f : cell->face_indices())
+        if(cell->at_boundary(f))
+          cell->face(f)->set_boundary_id(std::abs(cell->face(f)->center()[1] - T) < 1e-12 ? 1 : 0);
+    dealii::FESystem<dim>   fe(dealii::FE_Q<dim>(1), dim);
+    dealii::DoFHandler<dim> dof_handler(tria);
+    dof_handler.distribute_dofs(fe);
+
+    DeformableContactData data;
+    data.pairs          = {{1, 1}};
+    data.radius         = 0.05;
+    data.skin           = 0.05;
+    data.search         = ContactSearchStrategy::Verlet;
+    data.smooth_normals = true;
+    Contact contact;
+    contact.setup(dof_handler, {}, nitsche_data(data));
+
+    double const       theta = 1.06 * M_PI, rho = l / theta;
+    dealii::Point<dim> C(a, T + rho);
+    VectorType         u;
+    interpolate(
+      dof_handler,
+      [&](dealii::Point<dim> const & X) {
+        double const       d = T - X[1], r = rho + d;
+        dealii::Point<dim> x;
+        if(X[0] <= a)
+          x = X;
+        else if(X[0] <= a + l)
+        {
+          double const phi = (X[0] - a) / rho;
+          x                = C + r * dealii::Point<dim>(std::sin(phi), -std::cos(phi));
+        }
+        else
+          x = C + r * dealii::Point<dim>(std::sin(theta), -std::cos(theta)) +
+              (X[0] - a - l) * dealii::Point<dim>(std::cos(theta), std::sin(theta));
+        x[1] += 0.01 * std::sin(2.0 * X[0]);
+        return dealii::Tensor<1, dim>(x - X);
+      },
+      u);
+    compare(contact, u, "Nitsche, U strip");
+    double const d = diagonal_check(contact, u);
+    std::cout << "    diagonal vs. columns of J: " << d << std::endl;
+    check(d < 1e-14, "Nitsche, U strip: diagonal == diagonal entries of J e_i");
+    std::cout << "    finite differences:" << std::endl;
+    double const fd = finite_difference_check(contact, u, 23);
+    fd_worst        = std::max(fd_worst, fd);
+    check(fd < 1e-6, "Nitsche, U strip (self-contact): tangent agrees with finite differences");
+  }
+}
+
 int
 main(int argc, char ** argv)
 {
@@ -1020,6 +1154,8 @@ main(int argc, char ** argv)
   test_smooth_normals();
   double fd_smooth_u = 0.0;
   test_smooth_self_contact(fd_smooth_u);
+  double fd_nitsche = 0.0;
+  test_nitsche(fd_nitsche);
 
   std::cout << std::endl;
   check(fd_blocks < 1e-6, "tangent of the two blocks agrees with finite differences");
