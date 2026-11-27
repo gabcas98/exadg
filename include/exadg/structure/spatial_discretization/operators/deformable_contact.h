@@ -25,6 +25,7 @@
 // C/C++
 #include <array>
 #include <limits>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -33,7 +34,11 @@
 #include <deal.II/base/point.h>
 #include <deal.II/base/tensor.h>
 #include <deal.II/dofs/dof_handler.h>
+#include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/la_parallel_vector.h>
+#ifdef DEAL_II_WITH_TRILINOS
+#  include <deal.II/lac/trilinos_sparse_matrix.h>
+#endif
 
 // ExaDG
 #include <exadg/structure/user_interface/enum_types.h>
@@ -125,6 +130,17 @@ struct DeformableContactData
 
   // number of Gauss points per slave face (0: degree + 1)
   unsigned int n_q_points = 0;
+
+  // add the contact stiffness to the matrix of the preconditioner (AMG), see add_to_matrix()
+  bool add_to_preconditioner = false;
+
+  // include the slave-master coupling in the preconditioner matrix (requires an extension of the
+  // sparsity pattern, see add_couplings_to_pattern()); otherwise only the slave-slave and
+  // master-master blocks are added
+  bool preconditioner_coupling = true;
+
+  // print one line per linearization with the changes of the contact state (diagnostics)
+  bool log_linearization = false;
 };
 
 /*
@@ -150,6 +166,23 @@ struct DeformableContactStatistics
   unsigned long n_cutoff      = 0; // queries without admissible face within r_c, but with an
                                    // active admissible face beyond r_c (only counted by
                                    // exhaustive searches)
+
+  // changes of the contact state between consecutive linearizations: points that became active
+  // or inactive, active points whose master face changed, maximum angle between the old and the
+  // new master normal of these points, active points with a projection in the tolerance zone
+  // (xi < 0 or xi > 1) and minimum |g| of the points that changed their status
+  unsigned long n_activated         = 0;
+  unsigned long n_deactivated       = 0;
+  unsigned long n_switched          = 0;
+  double        max_switch_angle    = 0.0;
+  unsigned long n_in_tolerance_zone = 0;
+  double        min_abs_gap_changed = std::numeric_limits<double>::max();
+
+  // preconditioner matrix and extensions of its sparsity pattern
+  unsigned long n_matrix_updates    = 0;
+  double        t_matrix            = 0.0;
+  unsigned long n_pattern_updates   = 0;
+  unsigned long n_pattern_couplings = 0;
 
   // verification (ContactSearchStrategy::Verlet with verify = true)
   unsigned long n_verified          = 0;
@@ -240,6 +273,34 @@ public:
    */
   void
   apply_jacobian_add(VectorType & dst, VectorType const & v) const;
+
+  /*
+   * Sparsity pattern of the slave-master coupling for the preconditioner matrix: the pattern
+   * contains the couplings of all vertex pairs (slave face vertex, master face vertex) of the
+   * active points of all linearization states seen so far (monotonically growing set).
+   * pattern_contains_couplings() returns false if the current linearization state needs couplings
+   * that are not in this set; add_couplings_to_pattern() adds them to the set and writes all
+   * couplings of the set into the given pattern.
+   */
+  bool
+  pattern_contains_couplings() const;
+
+  void
+  add_couplings_to_pattern(dealii::DynamicSparsityPattern & dsp) const;
+
+#ifdef DEAL_II_WITH_TRILINOS
+  /*
+   * Adds the part epsilon w (dg/du) (x) (dg/du) of the contact tangent at the linearization state
+   * (rank one and positive semi-definite per point) to the matrix of the preconditioner;
+   * constrained rows and columns are skipped and the geometric part - lambda w d^2 g/du^2 is
+   * omitted. With DeformableContactData::preconditioner_coupling, the full block including the
+   * slave-master coupling is added (the pattern must contain the couplings, see
+   * add_couplings_to_pattern()); otherwise only the slave-slave and master-master blocks. Requires
+   * a previous call of set_linearization() (no-op otherwise).
+   */
+  void
+  add_to_matrix(dealii::TrilinosWrappers::SparseMatrix & matrix) const;
+#endif
 
   DeformableContactQuantities<dim>
   compute_quantities(VectorType const & u) const;
@@ -415,6 +476,9 @@ private:
   // if the positions are identical)
   mutable Configuration                       last_positions;
   mutable std::vector<ContactProjection<dim>> last_state;
+
+  // vertex pairs (slave vertex, master vertex) contained in the pattern of the preconditioner
+  mutable std::set<std::pair<unsigned int, unsigned int>> pattern_couplings;
 
   mutable DeformableContactStatistics stats;
 };

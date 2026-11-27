@@ -19,6 +19,9 @@
  *  ______________________________________________________________________
  */
 
+#include <deal.II/dofs/dof_tools.h>
+#include <deal.II/lac/dynamic_sparsity_pattern.h>
+
 #include <exadg/operators/interior_penalty_parameter.h>
 #include <exadg/structure/spatial_discretization/operators/boundary_conditions.h>
 #include <exadg/structure/spatial_discretization/operators/continuum_mechanics.h>
@@ -431,6 +434,39 @@ NonLinearOperator<dim, Number>::vmult(VectorType & dst, VectorType const & src) 
     std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
 
+#ifdef DEAL_II_WITH_TRILINOS
+template<int dim, typename Number>
+void
+NonLinearOperator<dim, Number>::calculate_system_matrix(
+  dealii::TrilinosWrappers::SparseMatrix & system_matrix) const
+{
+  bool const contact = deformable_contact and deformable_contact->get_data().add_to_preconditioner;
+
+  // slave-master coupling: extend the sparsity pattern if the current active pairs need couplings
+  // that are not contained (the pattern of the elasticity operator is rebuilt as in
+  // OperatorBase::init_system_matrix(), serial)
+  if(contact and deformable_contact->get_data().preconditioner_coupling and
+     not deformable_contact->pattern_contains_couplings())
+  {
+    auto const                      start = std::chrono::steady_clock::now();
+    dealii::DoFHandler<dim> const & dof_handler =
+      this->matrix_free->get_dof_handler(this->operator_data.dof_index);
+    dealii::IndexSet const &       owned_dofs = dof_handler.locally_owned_dofs();
+    dealii::DynamicSparsityPattern dsp(owned_dofs.size(), owned_dofs.size(), owned_dofs);
+    dealii::DoFTools::make_sparsity_pattern(dof_handler, dsp, *this->constraint);
+    deformable_contact->add_couplings_to_pattern(dsp);
+    system_matrix.reinit(owned_dofs, owned_dofs, dsp, system_matrix.get_mpi_communicator());
+    cost_statistics.t_pattern +=
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  }
+
+  Base::calculate_system_matrix(system_matrix);
+
+  if(contact)
+    deformable_contact->add_to_matrix(system_matrix);
+}
+#endif
+
 template<int dim, typename Number>
 void
 NonLinearOperator<dim, Number>::set_deformable_contact(
@@ -470,6 +506,9 @@ NonLinearOperator<dim, Number>::print_cost_statistics(
   line("residual evaluations", s.n_residuals, s.t_residual);
   line("linearizations", s.n_linearizations, s.t_linearization);
   line("Jacobian-vector products", s.n_vmults, s.t_vmult);
+  if(s.t_pattern > 0.0)
+    pcout << "  sparsity pattern extensions (AMG matrix)  " << std::scientific
+          << std::setprecision(4) << s.t_pattern << " s" << std::defaultfloat << std::endl;
 }
 
 template<int dim, typename Number>

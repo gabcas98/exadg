@@ -159,6 +159,15 @@ public:
                         projection_tolerance,
                         "Admissible projections xi in [-tau, 1 + tau].");
       prm.add_parameter("Search", search, "Exhaustive or Verlet.");
+      prm.add_parameter("ContactInPreconditioner",
+                        contact_in_preconditioner,
+                        "Add the contact stiffness to the AMG matrix.");
+      prm.add_parameter("PreconditionerCoupling",
+                        preconditioner_coupling,
+                        "Slave-master coupling in the AMG matrix (extended sparsity pattern).");
+      prm.add_parameter("LogContactState",
+                        log_contact_state,
+                        "Print the contact state changes and the Newton residuals.");
       prm.add_parameter("VerifySearch",
                         verify_search,
                         "Repeat every Verlet query with the exhaustive search.");
@@ -187,12 +196,15 @@ private:
       this->param.contact_penalty_parameter = penalty_parameter;
     }
 
-    this->param.deformable_contact_penalty_parameter    = penalty_parameter;
-    this->param.deformable_contact_radius               = contact_radius;
-    this->param.deformable_contact_skin                 = skin;
-    this->param.deformable_contact_projection_tolerance = projection_tolerance;
-    this->param.deformable_contact_search               = search;
-    this->param.deformable_contact_verify_search        = verify_search;
+    this->param.deformable_contact_penalty_parameter       = penalty_parameter;
+    this->param.deformable_contact_radius                  = contact_radius;
+    this->param.deformable_contact_skin                    = skin;
+    this->param.deformable_contact_projection_tolerance    = projection_tolerance;
+    this->param.deformable_contact_search                  = search;
+    this->param.deformable_contact_verify_search           = verify_search;
+    this->param.deformable_contact_in_preconditioner       = contact_in_preconditioner;
+    this->param.deformable_contact_preconditioner_coupling = preconditioner_coupling;
+    this->param.deformable_contact_log                     = log_contact_state;
 
     this->param.load_increment = load_increment;
 
@@ -211,6 +223,7 @@ private:
     this->param.newton_solver_data.n_nonmonotone_steps = 3;
     this->param.newton_solver_data.nonmonotone_factor  = 1.e6;
     this->param.newton_solver_data.max_iter_damping    = 20;
+    this->param.newton_solver_data.print_residuals     = log_contact_state;
 
     // the frictionless penalty contact has a symmetric tangent
     this->param.solver_data    = SolverData(1e4, 1.e-14, 1.e-6, LinearSolver::CG, 100);
@@ -408,12 +421,15 @@ private:
   double youngs_modulus = 1.0;
   double poissons_ratio = 0.3;
 
-  double                penalty_parameter    = 1000.0;
-  double                contact_radius       = 0.05;
-  double                skin                 = 0.05;
-  double                projection_tolerance = 0.01;
-  ContactSearchStrategy search               = ContactSearchStrategy::Verlet;
-  bool                  verify_search        = false;
+  double                penalty_parameter         = 1000.0;
+  double                contact_radius            = 0.05;
+  double                skin                      = 0.05;
+  double                projection_tolerance      = 0.01;
+  ContactSearchStrategy search                    = ContactSearchStrategy::Verlet;
+  bool                  verify_search             = false;
+  bool                  contact_in_preconditioner = false;
+  bool                  preconditioner_coupling   = true;
+  bool                  log_contact_state         = false;
 
   double load_increment = 0.05;
   double newton_abs_tol = 1.e-8;

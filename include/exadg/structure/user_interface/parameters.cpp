@@ -55,6 +55,9 @@ Parameters::Parameters()
     deformable_contact_projection_tolerance(0.0),
     deformable_contact_search(ContactSearchStrategy::Verlet),
     deformable_contact_verify_search(false),
+    deformable_contact_in_preconditioner(false),
+    deformable_contact_preconditioner_coupling(true),
+    deformable_contact_log(false),
 
     // TEMPORAL DISCRETIZATION
     start_time(0.0),
@@ -230,6 +233,13 @@ Parameters::print_parameters_physical_quantities(dealii::ConditionalOStream cons
                     "Deformable contact projection tolerance",
                     deformable_contact_projection_tolerance);
     print_parameter(pcout, "Deformable contact search", deformable_contact_search);
+    print_parameter(pcout,
+                    "Deformable contact in preconditioner",
+                    deformable_contact_in_preconditioner);
+    if(deformable_contact_in_preconditioner)
+      print_parameter(pcout,
+                      "Slave-master coupling in preconditioner",
+                      deformable_contact_preconditioner_coupling);
     if(deformable_contact_search == ContactSearchStrategy::Verlet)
     {
       print_parameter(pcout, "Verlet skin", deformable_contact_skin);

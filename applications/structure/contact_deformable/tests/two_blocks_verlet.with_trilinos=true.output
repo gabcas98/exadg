@@ -34,6 +34,8 @@ Physical quantities:
   Deformable contact radius:                 5.0000e-02
   Deformable contact projection tolerance:   1.0000e-02
   Deformable contact search:                 Verlet
+  Deformable contact in preconditioner:      true
+  Slave-master coupling in preconditioner:   true
   Verlet skin:                               5.0000e-02
   Verify Verlet search:                      true
 

@@ -173,6 +173,20 @@ public:
   void
   vmult(VectorType & dst, VectorType const & src) const;
 
+  // keep the other overloads (PETSc) of OperatorBase visible
+  using Base::calculate_system_matrix;
+
+#ifdef DEAL_II_WITH_TRILINOS
+  /*
+   * Matrix of the AMG preconditioner: elasticity operator (OperatorBase) plus, if requested, the
+   * stiffness of the deformable contact, see DeformableContact::add_to_matrix(). Hides
+   * OperatorBase::calculate_system_matrix(), which is called by PreconditionerAMG through the type
+   * NonLinearOperator; the matrix of the matrix-based operator (OperatorBase) is not affected.
+   */
+  void
+  calculate_system_matrix(dealii::TrilinosWrappers::SparseMatrix & system_matrix) const;
+#endif
+
   /*
    * Calls and wall times of the residual evaluations, linearizations and Jacobian-vector products
    * (whole operator, including the contact terms of the matrix-free loops).
@@ -185,6 +199,7 @@ public:
     double        t_residual       = 0.0;
     double        t_linearization  = 0.0;
     double        t_vmult          = 0.0;
+    double        t_pattern        = 0.0; // extensions of the sparsity pattern of the AMG matrix
   };
 
   CostStatistics const &

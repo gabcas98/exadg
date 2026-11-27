@@ -41,7 +41,8 @@ struct SolverData
       n_line_search_refinements(0),
       n_nonmonotone_steps(0),
       nonmonotone_factor(1.e2),
-      max_iter_damping(10)
+      max_iter_damping(10),
+      print_residuals(false)
   {
   }
 
@@ -55,7 +56,8 @@ struct SolverData
       n_line_search_refinements(n_line_search_refinements_),
       n_nonmonotone_steps(0),
       nonmonotone_factor(1.e2),
-      max_iter_damping(10)
+      max_iter_damping(10),
+      print_residuals(false)
   {
   }
 
@@ -101,6 +103,10 @@ struct SolverData
 
   // maximum number of halvings of the damping factor in the backtracking line search
   unsigned int max_iter_damping;
+
+  // print the residual norm, the damping factor and the linear iterations of every Newton
+  // iteration to std::cout (diagnostics)
+  bool print_residuals;
 };
 
 struct UpdateData

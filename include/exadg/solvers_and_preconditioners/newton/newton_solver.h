@@ -27,6 +27,8 @@
 
 // C/C++
 #include <chrono>
+#include <iomanip>
+#include <iostream>
 
 // ExaDG
 #include <exadg/solvers_and_preconditioners/newton/newton_solver_data.h>
@@ -212,6 +214,12 @@ public:
       // update solution and residual
       solution.copy_locally_owned_data_from(temporary);
       norm_r = norm_r_damp;
+
+      if(solver_data.print_residuals)
+        std::cout << "    Newton iteration " << newton_iterations + 1
+                  << ": |r| = " << std::scientific << std::setprecision(4) << norm_r
+                  << ", damping factor (before refinement) " << 2.0 * omega
+                  << ", linear iterations " << n_iter_linear << std::defaultfloat << std::endl;
 
       // increment iteration counter
       ++newton_iterations;

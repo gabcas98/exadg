@@ -160,3 +160,40 @@ results agree within the solver tolerances (relative differences ~1e-9 in the pr
 deformable contact needs ~3x more Krylov iterations, because the analytic contact is part of the
 assembled AMG matrix and the deformable contact is not.
 
+## Step A: contact stiffness in the AMG matrix (measured 2026-11-27)
+
+`ContactInPreconditioner = true` adds the penalty part `eps w (dg/du) (x) (dg/du)` (rank one,
+positive semi-definite per active point, geometric part omitted) at the linearization state to the
+matrix from which AMG is built (`NonLinearOperator::calculate_system_matrix()`, which hides the
+`OperatorBase` version for `PreconditionerAMG<NonLinearOperator>`; the matrix of the matrix-based
+operator is not affected). A1 (`PreconditionerCoupling = false`): only the slave-slave and
+master-master blocks (entries already in the pattern). A2 (`PreconditionerCoupling = true`,
+default): full block including the slave-master coupling; the sparsity pattern is rebuilt when the
+active pairs need couplings that are not yet contained (monotonically growing set of vertex pairs).
+
+Sequential runs, one thread, Faces, eps = 100, same input except the preconditioner option:
+
+| case | Krylov: none / A1 / A2 (analytic) | solve [s]: none / A1 / A2 (analytic) |
+|---|---|---|
+| Clamped L5 | 462 / 149 / 149 (149) | 10.3 / 8.3 / 7.7 (7.1) |
+| Deformable L4 | 2798 / 3079 / 606 | 7.47 / 8.83 / 4.82 |
+| Deformable L5 | 4728 / 4288 / 1838 | 70.6 / 62.7 / 39.3 |
+
+Newton iterations and reaction are unchanged. A1 suffices for a rigid master but not for two
+deformable bodies, since the contact energy penalizes the relative motion `n . (u_s - u_m)`.
+Cost of A2 at L5: 62 pattern extensions (6602 vertex pairs), 1.24 s; matrix contributions 0.12 s.
+
+## Step B1: diagnosis of the Newton stagnation (measured)
+
+`LogContactState = true` prints, per linearization, the changes of the contact state and the
+active points with two admissible master faces, per residual evaluation the master switches with
+respect to the linearization state, and the Newton residuals. Deformable L5, load step 0.75
+(failed): |r| stagnates at 1.97e-6 with damping factors down to 1.5e-5; between linearizations the
+contact state does not change (0 activations, 0 switches), 5-9 active points lie in the overlap of
+two master segments (normal angle ~4.5e-3 rad, relative |g| difference ~1.2e-4), and every line
+search trial, even with damping ~1e-5, switches the master face of one point (0 status changes).
+The residual jumps by ~ p w dtheta (0.045 * 0.0031 * 0.0045 ~ 6e-7 per point) at the switching
+locus of the C0 master surface. With a clamped (flat) master, the angles are zero and no load step
+fails. Conclusion: the stagnation is caused by the discontinuous master normal at master vertices,
+not by active-set changes or the search; next step B2: continuous master normal.
+

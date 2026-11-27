@@ -29,6 +29,7 @@
         "VerifySearch": "true",
         "LoadIncrement": "0.05",
         "NewtonAbsTol": "1e-8",
+        "ContactInPreconditioner": "true",
         "Preconditioner": "AMG"
     },
     "Output": {

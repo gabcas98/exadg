@@ -183,6 +183,16 @@ public:
   ContactSearchStrategy deformable_contact_search;
   bool                  deformable_contact_verify_search;
 
+  // add the stiffness of the deformable contact (slave-slave and master-master blocks) to the
+  // matrix of the AMG preconditioner, see DeformableContact::add_to_matrix()
+  bool deformable_contact_in_preconditioner;
+
+  // include the slave-master coupling in the preconditioner matrix (extended sparsity pattern)
+  bool deformable_contact_preconditioner_coupling;
+
+  // diagnostics: changes of the contact state per linearization and Newton residuals
+  bool deformable_contact_log;
+
   /**************************************************************************************/
   /*                                                                                    */
   /*                             TEMPORAL DISCRETIZATION                                */

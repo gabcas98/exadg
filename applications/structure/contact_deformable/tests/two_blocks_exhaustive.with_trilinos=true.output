@@ -34,6 +34,8 @@ Physical quantities:
   Deformable contact radius:                 5.0000e-02
   Deformable contact projection tolerance:   1.0000e-02
   Deformable contact search:                 Exhaustive
+  Deformable contact in preconditioner:      true
+  Slave-master coupling in preconditioner:   true
 
 Temporal discretization:
   load_increment:                            5.0000e-02

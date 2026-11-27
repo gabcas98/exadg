@@ -307,13 +307,16 @@ Operator<dim, Number>::setup_operators()
                   dealii::ExcMessage("The deformable contact requires a linear mapping."));
 
       DeformableContactData contact_data;
-      contact_data.pairs                = boundary_descriptor->deformable_contact_pairs;
-      contact_data.penalty              = param.deformable_contact_penalty_parameter;
-      contact_data.radius               = param.deformable_contact_radius;
-      contact_data.skin                 = param.deformable_contact_skin;
-      contact_data.projection_tolerance = param.deformable_contact_projection_tolerance;
-      contact_data.search               = param.deformable_contact_search;
-      contact_data.verify               = param.deformable_contact_verify_search;
+      contact_data.pairs                   = boundary_descriptor->deformable_contact_pairs;
+      contact_data.penalty                 = param.deformable_contact_penalty_parameter;
+      contact_data.radius                  = param.deformable_contact_radius;
+      contact_data.skin                    = param.deformable_contact_skin;
+      contact_data.projection_tolerance    = param.deformable_contact_projection_tolerance;
+      contact_data.search                  = param.deformable_contact_search;
+      contact_data.verify                  = param.deformable_contact_verify_search;
+      contact_data.add_to_preconditioner   = param.deformable_contact_in_preconditioner;
+      contact_data.log_linearization       = param.deformable_contact_log;
+      contact_data.preconditioner_coupling = param.deformable_contact_preconditioner_coupling;
 
       // constrained DoFs (Dirichlet), global indices
       std::vector<dealii::types::global_dof_index> constrained_dofs;

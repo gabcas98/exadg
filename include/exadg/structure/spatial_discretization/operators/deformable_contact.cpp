@@ -582,6 +582,22 @@ DeformableContact<dim, Number>::evaluate_residual_add(VectorType & dst, VectorTy
   compute_positions(u, last_positions);
   search_all(last_positions, data.search, last_state);
 
+  // diagnostics: master switches and status changes of this residual evaluation (e.g. a line
+  // search trial) with respect to the linearization state
+  if(data.log_linearization and lin_state.size() == last_state.size())
+  {
+    unsigned int n_switched = 0, n_status = 0;
+    for(unsigned int p = 0; p < last_state.size(); ++p)
+    {
+      if(last_state[p].active() != lin_state[p].active())
+        ++n_status;
+      else if(last_state[p].active() and last_state[p].master != lin_state[p].master)
+        ++n_switched;
+    }
+    std::cout << "      residual: master switches " << n_switched << ", status changes " << n_status
+              << " with respect to the linearization state" << std::endl;
+  }
+
   ScopedTime timer(stats.t_residual);
   for(unsigned int p = 0; p < slave_points.size(); ++p)
   {
@@ -611,6 +627,8 @@ DeformableContact<dim, Number>::set_linearization(VectorType const & u) const
   Configuration x;
   compute_positions(u, x);
 
+  std::vector<ContactProjection<dim>> const previous = lin_state;
+
   // the Newton solver linearizes at the last accepted trial, whose residual has just been
   // evaluated: reuse that search result if the positions are bitwise identical
   if(last_state.size() == slave_points.size() and x.x == last_positions.x)
@@ -626,7 +644,217 @@ DeformableContact<dim, Number>::set_linearization(VectorType const & u) const
     ScopedTime timer(stats.t_lin);
     lin_positions = x;
   }
+
+  // changes of the contact state with respect to the previous linearization
+  if(previous.size() == lin_state.size())
+  {
+    unsigned int n_activated = 0, n_deactivated = 0, n_switched = 0, n_zone = 0, n_active = 0;
+    double       max_angle = 0.0, min_gap = std::numeric_limits<double>::max();
+    for(unsigned int p = 0; p < lin_state.size(); ++p)
+    {
+      ContactProjection<dim> const &old_state = previous[p], &new_state = lin_state[p];
+      if(new_state.active())
+      {
+        ++n_active;
+        if(new_state.xi < 0.0 or new_state.xi > 1.0)
+          ++n_zone;
+      }
+      if(new_state.active() != old_state.active())
+      {
+        if(new_state.active())
+          ++n_activated;
+        else
+          ++n_deactivated;
+        min_gap = std::min(min_gap,
+                           std::min(old_state.found() ? std::abs(old_state.gap) : min_gap,
+                                    new_state.found() ? std::abs(new_state.gap) : min_gap));
+      }
+      else if(new_state.active() and new_state.master != old_state.master)
+      {
+        ++n_switched;
+        double const cosine = std::max(-1.0, std::min(1.0, new_state.normal * old_state.normal));
+        max_angle           = std::max(max_angle, std::acos(cosine));
+      }
+    }
+    stats.n_activated += n_activated;
+    stats.n_deactivated += n_deactivated;
+    stats.n_switched += n_switched;
+    stats.n_in_tolerance_zone += n_zone;
+    stats.max_switch_angle    = std::max(stats.max_switch_angle, max_angle);
+    stats.min_abs_gap_changed = std::min(stats.min_abs_gap_changed, min_gap);
+
+    // active points with a second admissible master face (overlap of the projection domains at a
+    // master vertex): angle between the two normals and relative difference of |g|
+    unsigned int n_overlap         = 0;
+    double       max_overlap_angle = 0.0, min_relative_difference = 1.0;
+    if(data.log_linearization)
+      for(unsigned int p = 0; p < lin_state.size(); ++p)
+      {
+        if(not lin_state[p].active())
+          continue;
+        SlaveFace const &            slave_face = slave_faces[slave_points[p].slave_face];
+        dealii::Point<dim> const     x_s        = slave_position(x, p);
+        dealii::Tensor<1, dim> const n_s        = face_normal(x, slave_face.face);
+        ContactProjection<dim>       candidate;
+        bool                         overlap = false;
+        for(unsigned int const master : pairs[slave_face.pair].master_faces)
+        {
+          if(master == slave_face.face or master == lin_state[p].master)
+            continue;
+          if(project(x_s, n_s, x, master, candidate) and std::abs(candidate.gap) <= data.radius)
+          {
+            overlap = true;
+            double const cosine =
+              std::max(-1.0, std::min(1.0, candidate.normal * lin_state[p].normal));
+            max_overlap_angle = std::max(max_overlap_angle, std::acos(cosine));
+            min_relative_difference =
+              std::min(min_relative_difference,
+                       (std::abs(candidate.gap) - std::abs(lin_state[p].gap)) /
+                         std::max(std::abs(lin_state[p].gap), 1e-300));
+          }
+        }
+        n_overlap += overlap ? 1 : 0;
+      }
+
+    if(data.log_linearization)
+      std::cout << "    overlap: " << n_overlap
+                << " active points with two admissible faces (max angle " << std::scientific
+                << std::setprecision(2) << max_overlap_angle << ", min relative |g| difference "
+                << min_relative_difference << ")" << std::defaultfloat << std::endl;
+
+    if(data.log_linearization)
+      std::cout << "    contact state: active " << n_active << " (+" << n_activated << " -"
+                << n_deactivated << "), master switches " << n_switched << " (max angle "
+                << std::scientific << std::setprecision(2) << max_angle << "), tolerance zone "
+                << n_zone << ", min |g| of status changes "
+                << (min_gap < std::numeric_limits<double>::max() ? min_gap : 0.0)
+                << std::defaultfloat << std::endl;
+  }
 }
+
+template<int dim, typename Number>
+bool
+DeformableContact<dim, Number>::pattern_contains_couplings() const
+{
+  for(unsigned int p = 0; p < lin_state.size(); ++p)
+  {
+    if(not lin_state[p].active())
+      continue;
+    for(unsigned int const a : faces[slave_faces[slave_points[p].slave_face].face].vertex)
+      for(unsigned int const b : faces[lin_state[p].master].vertex)
+        if(a != b and pattern_couplings.find({a, b}) == pattern_couplings.end())
+          return false;
+  }
+  return true;
+}
+
+template<int dim, typename Number>
+void
+DeformableContact<dim, Number>::add_couplings_to_pattern(dealii::DynamicSparsityPattern & dsp) const
+{
+  for(unsigned int p = 0; p < lin_state.size(); ++p)
+  {
+    if(not lin_state[p].active())
+      continue;
+    for(unsigned int const a : faces[slave_faces[slave_points[p].slave_face].face].vertex)
+      for(unsigned int const b : faces[lin_state[p].master].vertex)
+        if(a != b)
+          pattern_couplings.insert({a, b});
+  }
+
+  for(auto const & pair : pattern_couplings)
+    for(unsigned int c = 0; c < dim; ++c)
+      for(unsigned int d = 0; d < dim; ++d)
+      {
+        dsp.add(vertices[pair.first].dof[c], vertices[pair.second].dof[d]);
+        dsp.add(vertices[pair.second].dof[d], vertices[pair.first].dof[c]);
+      }
+
+  ++stats.n_pattern_updates;
+  stats.n_pattern_couplings = pattern_couplings.size();
+}
+
+#ifdef DEAL_II_WITH_TRILINOS
+template<int dim, typename Number>
+void
+DeformableContact<dim, Number>::add_to_matrix(dealii::TrilinosWrappers::SparseMatrix & matrix) const
+{
+  if(lin_state.size() != slave_points.size())
+    return;
+
+  ScopedTime timer(stats.t_matrix);
+  ++stats.n_matrix_updates;
+
+  // epsilon w (N_i n) (x) (N_j n) for the vertices i, j of one face with weights N
+  auto const add_block = [&](std::array<unsigned int, 2> const & vertex,
+                             std::array<double, 2> const &       N,
+                             dealii::Tensor<1, dim> const &      n,
+                             double const                        factor) {
+    for(unsigned int i = 0; i < 2; ++i)
+      for(unsigned int c = 0; c < dim; ++c)
+      {
+        if(vertices[vertex[i]].constrained[c])
+          continue;
+        for(unsigned int j = 0; j < 2; ++j)
+          for(unsigned int d = 0; d < dim; ++d)
+          {
+            if(vertices[vertex[j]].constrained[d])
+              continue;
+            matrix.add(vertices[vertex[i]].dof[c],
+                       vertices[vertex[j]].dof[d],
+                       factor * N[i] * N[j] * n[c] * n[d]);
+          }
+      }
+  };
+
+  for(unsigned int p = 0; p < slave_points.size(); ++p)
+  {
+    ContactProjection<dim> const & state = lin_state[p];
+    if(not state.active())
+      continue;
+
+    SlavePoint const & sp     = slave_points[p];
+    double const       factor = data.penalty * sp.weight;
+    if(data.preconditioner_coupling)
+    {
+      // dg/du = (N_a n, N_b n, -N_1 n, -N_2 n) for the slave vertices a, b and the master
+      // vertices 1, 2
+      std::array<unsigned int, 2> const & slave_vertex =
+        faces[slave_faces[sp.slave_face].face].vertex;
+      std::array<unsigned int, 4> const vertex = {{slave_vertex[0],
+                                                   slave_vertex[1],
+                                                   faces[state.master].vertex[0],
+                                                   faces[state.master].vertex[1]}};
+      std::array<double, 4> const       N = {{1.0 - sp.eta, sp.eta, -(1.0 - state.xi), -state.xi}};
+      for(unsigned int i = 0; i < 4; ++i)
+        for(unsigned int c = 0; c < dim; ++c)
+        {
+          if(vertices[vertex[i]].constrained[c])
+            continue;
+          for(unsigned int j = 0; j < 4; ++j)
+            for(unsigned int d = 0; d < dim; ++d)
+            {
+              if(vertices[vertex[j]].constrained[d])
+                continue;
+              matrix.add(vertices[vertex[i]].dof[c],
+                         vertices[vertex[j]].dof[d],
+                         factor * N[i] * N[j] * state.normal[c] * state.normal[d]);
+            }
+        }
+    }
+    else
+    {
+      add_block(faces[slave_faces[sp.slave_face].face].vertex,
+                {{1.0 - sp.eta, sp.eta}},
+                state.normal,
+                factor);
+      add_block(faces[state.master].vertex, {{1.0 - state.xi, state.xi}}, state.normal, factor);
+    }
+  }
+
+  matrix.compress(dealii::VectorOperation::add);
+}
+#endif
 
 template<int dim, typename Number>
 void
@@ -874,6 +1102,14 @@ DeformableContact<dim, Number>::print_statistics(dealii::ConditionalOStream cons
         << "  max 2 D_max / skin (valid lists)   = " << s.max_ratio_D_to_skin << std::endl
         << "  ties / cutoff hits                 = " << s.n_ties << " / " << s.n_cutoff
         << std::endl;
+  pcout << "  state changes between linearizations: activated " << s.n_activated << ", deactivated "
+        << s.n_deactivated << ", master switches " << s.n_switched << " (max angle "
+        << s.max_switch_angle << "), tolerance zone " << s.n_in_tolerance_zone << std::endl;
+  if(data.add_to_preconditioner)
+    pcout << "  preconditioner matrix: " << s.n_matrix_updates << " updates, " << s.t_matrix
+          << " s, coupling " << (data.preconditioner_coupling ? "yes" : "no")
+          << ", pattern extensions " << s.n_pattern_updates << " (" << s.n_pattern_couplings
+          << " vertex pairs)" << std::endl;
   if(data.verify)
     pcout << "  verification mismatches            = " << s.n_verify_mismatches << " of "
           << s.n_verified << std::endl;
