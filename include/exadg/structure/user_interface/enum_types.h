@@ -66,6 +66,19 @@ enum class ContactMethod
   Nitsche
 };
 
+/*
+ * Search strategy for the contact between deformable surfaces:
+ *
+ *  Exhaustive: all master faces are tested for each slave point (reference),
+ *  Verlet:     persistent list of candidate face pairs with a global skin, rebuilt when the
+ *              certificate 2 D_max <= skin is violated.
+ */
+enum class ContactSearchStrategy
+{
+  Exhaustive,
+  Verlet
+};
+
 enum class MaterialType
 {
   Undefined,

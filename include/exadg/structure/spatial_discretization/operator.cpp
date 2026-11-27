@@ -299,9 +299,39 @@ Operator<dim, Number>::setup_operators()
                                              affine_constraints,
                                              operator_data,
                                              false /* assemble_matrix */);
+
+    // contact between deformable surfaces (fine level only)
+    if(not boundary_descriptor->deformable_contact_pairs.empty())
+    {
+      AssertThrow(param.mapping_degree == 1,
+                  dealii::ExcMessage("The deformable contact requires a linear mapping."));
+
+      DeformableContactData contact_data;
+      contact_data.pairs                = boundary_descriptor->deformable_contact_pairs;
+      contact_data.penalty              = param.deformable_contact_penalty_parameter;
+      contact_data.radius               = param.deformable_contact_radius;
+      contact_data.skin                 = param.deformable_contact_skin;
+      contact_data.projection_tolerance = param.deformable_contact_projection_tolerance;
+      contact_data.search               = param.deformable_contact_search;
+      contact_data.verify               = param.deformable_contact_verify_search;
+
+      // constrained DoFs (Dirichlet), global indices
+      std::vector<dealii::types::global_dof_index> constrained_dofs;
+      VectorType                                   vector;
+      matrix_free->initialize_dof_vector(vector, get_dof_index());
+      for(unsigned int const i : matrix_free->get_constrained_dofs(get_dof_index()))
+        constrained_dofs.push_back(vector.get_partitioner()->local_to_global(i));
+
+      auto contact = std::make_shared<DeformableContact<dim, Number>>();
+      contact->setup(dof_handler, constrained_dofs, contact_data);
+      elasticity_operator_nonlinear.set_deformable_contact(contact);
+    }
   }
   else
   {
+    AssertThrow(boundary_descriptor->deformable_contact_pairs.empty(),
+                dealii::ExcMessage("The deformable contact requires large_deformation = true."));
+
     elasticity_operator_linear.initialize(*matrix_free,
                                           affine_constraints,
                                           operator_data,
@@ -1095,6 +1125,33 @@ Operator<dim, Number>::apply_elasticity_operator(VectorType & dst, VectorType co
   {
     elasticity_operator_linear.vmult(dst, src);
   }
+}
+
+template<int dim, typename Number>
+std::shared_ptr<DeformableContact<dim, Number> const>
+Operator<dim, Number>::get_deformable_contact() const
+{
+  if(not param.large_deformation)
+    return nullptr;
+  return elasticity_operator_nonlinear.get_deformable_contact();
+}
+
+template<int dim, typename Number>
+void
+Operator<dim, Number>::print_contact_cost_statistics(dealii::ConditionalOStream const & pcout) const
+{
+  if(not param.large_deformation)
+    return;
+
+  elasticity_operator_nonlinear.print_cost_statistics(pcout);
+  if(newton_solver)
+    pcout << "  preconditioner updates (Newton)   " << std::setw(24) << std::scientific
+          << std::setprecision(4) << newton_solver->get_timings().update_preconditioner << " s"
+          << std::endl
+          << "  linear solves (Newton)            " << std::setw(24)
+          << newton_solver->get_timings().linear_solve << " s" << std::defaultfloat << std::endl;
+  if(auto const contact = get_deformable_contact())
+    contact->print_statistics(pcout);
 }
 
 template<int dim, typename Number>

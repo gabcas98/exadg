@@ -49,6 +49,12 @@ Parameters::Parameters()
     contact_penalty_parameter(0.0),
     contact_nitsche_theta(0.0),
     contact_friction_coefficient(0.0),
+    deformable_contact_penalty_parameter(0.0),
+    deformable_contact_radius(0.0),
+    deformable_contact_skin(0.0),
+    deformable_contact_projection_tolerance(0.0),
+    deformable_contact_search(ContactSearchStrategy::Verlet),
+    deformable_contact_verify_search(false),
 
     // TEMPORAL DISCRETIZATION
     start_time(0.0),
@@ -212,6 +218,23 @@ Parameters::print_parameters_physical_quantities(dealii::ConditionalOStream cons
       print_parameter(pcout, "Nitsche parameter theta", contact_nitsche_theta);
     if(contact_friction_coefficient > 0.0)
       print_parameter(pcout, "Friction coefficient", contact_friction_coefficient);
+  }
+
+  if(deformable_contact_penalty_parameter > 0.0)
+  {
+    print_parameter(pcout,
+                    "Deformable contact penalty parameter",
+                    deformable_contact_penalty_parameter);
+    print_parameter(pcout, "Deformable contact radius", deformable_contact_radius);
+    print_parameter(pcout,
+                    "Deformable contact projection tolerance",
+                    deformable_contact_projection_tolerance);
+    print_parameter(pcout, "Deformable contact search", deformable_contact_search);
+    if(deformable_contact_search == ContactSearchStrategy::Verlet)
+    {
+      print_parameter(pcout, "Verlet skin", deformable_contact_skin);
+      print_parameter(pcout, "Verify Verlet search", deformable_contact_verify_search);
+    }
   }
 }
 

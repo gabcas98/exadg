@@ -89,7 +89,7 @@ private:
   invalidate_derived_fields();
 
   void
-  evaluate_contact(VectorType const & solution) const;
+  evaluate_contact(VectorType const & solution, double const time) const;
 
   PostProcessorData<dim> pp_data;
 

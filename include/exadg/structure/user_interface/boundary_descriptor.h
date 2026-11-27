@@ -106,6 +106,14 @@ struct BoundaryDescriptor
   std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>>
     contact_friction_coefficient;
 
+  // Frictionless contact between deformable surfaces of the same mesh (penalty method, see
+  // DeformableContact and Parameters::deformable_contact_*): pairs (slave boundary id, master
+  // boundary id), slave == master for self-contact. The contact term is added to the boundary
+  // condition of these boundaries, which therefore need a boundary type of their own (typically
+  // Neumann with zero traction).
+  std::vector<std::pair<dealii::types::boundary_id, dealii::types::boundary_id>>
+    deformable_contact_pairs;
+
   inline DEAL_II_ALWAYS_INLINE //
     BoundaryType
     get_boundary_type(dealii::types::boundary_id const & boundary_id) const

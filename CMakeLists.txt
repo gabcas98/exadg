@@ -181,6 +181,7 @@ SET(TARGET_SRC
      include/exadg/structure/material/library/incompressible_neo_hookean.cpp
      include/exadg/structure/spatial_discretization/operators/elasticity_operator_base.cpp
      include/exadg/structure/spatial_discretization/operators/nonlinear_operator.cpp
+     include/exadg/structure/spatial_discretization/operators/deformable_contact.cpp
      include/exadg/structure/spatial_discretization/operators/linear_operator.cpp
      include/exadg/structure/spatial_discretization/operators/body_force_operator.cpp
      include/exadg/structure/spatial_discretization/operator.cpp

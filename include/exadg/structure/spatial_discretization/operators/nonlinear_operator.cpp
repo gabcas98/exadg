@@ -24,6 +24,10 @@
 #include <exadg/structure/spatial_discretization/operators/continuum_mechanics.h>
 #include <exadg/structure/spatial_discretization/operators/nonlinear_operator.h>
 
+// C/C++
+#include <chrono>
+#include <iomanip>
+
 namespace ExaDG
 {
 namespace Structure
@@ -390,6 +394,8 @@ template<int dim, typename Number>
 void
 NonLinearOperator<dim, Number>::evaluate_nonlinear(VectorType & dst, VectorType const & src) const
 {
+  auto const start = std::chrono::steady_clock::now();
+
   // the current history is used from now on
   history_updated = false;
 
@@ -400,6 +406,70 @@ NonLinearOperator<dim, Number>::evaluate_nonlinear(VectorType & dst, VectorType 
                           dst,
                           src,
                           true /* zero_dst_vector */);
+
+  if(deformable_contact)
+    deformable_contact->evaluate_residual_add(dst, src);
+
+  ++cost_statistics.n_residuals;
+  cost_statistics.t_residual +=
+    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
+
+template<int dim, typename Number>
+void
+NonLinearOperator<dim, Number>::vmult(VectorType & dst, VectorType const & src) const
+{
+  auto const start = std::chrono::steady_clock::now();
+
+  Base::vmult(dst, src);
+
+  if(deformable_contact)
+    deformable_contact->apply_jacobian_add(dst, src);
+
+  ++cost_statistics.n_vmults;
+  cost_statistics.t_vmult +=
+    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
+
+template<int dim, typename Number>
+void
+NonLinearOperator<dim, Number>::set_deformable_contact(
+  std::shared_ptr<DeformableContact<dim, Number> const> contact)
+{
+  deformable_contact = contact;
+}
+
+template<int dim, typename Number>
+std::shared_ptr<DeformableContact<dim, Number> const>
+NonLinearOperator<dim, Number>::get_deformable_contact() const
+{
+  return deformable_contact;
+}
+
+template<int dim, typename Number>
+typename NonLinearOperator<dim, Number>::CostStatistics const &
+NonLinearOperator<dim, Number>::get_cost_statistics() const
+{
+  return cost_statistics;
+}
+
+template<int dim, typename Number>
+void
+NonLinearOperator<dim, Number>::print_cost_statistics(
+  dealii::ConditionalOStream const & pcout) const
+{
+  CostStatistics const & s = cost_statistics;
+  auto const line          = [&](std::string const & name, unsigned long const n, double const t) {
+    pcout << "  " << std::left << std::setw(34) << name << std::right << std::setw(10) << n
+          << std::setw(14) << std::scientific << std::setprecision(4) << t << " s"
+          << std::defaultfloat << std::endl;
+  };
+  pcout << std::endl << "Nonlinear operator (incl. contact terms):" << std::endl;
+  pcout << "  " << std::left << std::setw(34) << "operation" << std::right << std::setw(10)
+        << "calls" << std::setw(16) << "wall time" << std::endl;
+  line("residual evaluations", s.n_residuals, s.t_residual);
+  line("linearizations", s.n_linearizations, s.t_linearization);
+  line("Jacobian-vector products", s.n_vmults, s.t_vmult);
 }
 
 template<int dim, typename Number>
@@ -427,13 +497,22 @@ NonLinearOperator<dim, Number>::set_solution_linearization(VectorType const & ve
 {
   // Only update linearized operator if deformation state is valid. It is better to continue
   // with an old deformation state in the linearized operator than with an invalid one.
+  auto const start = std::chrono::steady_clock::now();
+
   if(valid_deformation(vector))
   {
     displacement_lin = vector;
     displacement_lin.update_ghost_values();
 
+    if(deformable_contact)
+      deformable_contact->set_linearization(vector);
+
     this->assemble_matrix_if_matrix_based();
   }
+
+  ++cost_statistics.n_linearizations;
+  cost_statistics.t_linearization +=
+    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
 
 template<int dim, typename Number>

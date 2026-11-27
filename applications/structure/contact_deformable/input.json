@@ -1,0 +1,39 @@
+{
+    "General": {
+        "Precision": "double",
+        "Dim": "2",
+        "IsTest": "false"
+    },
+    "SpatialResolution": {
+        "DegreeMin": "1",
+        "DegreeMax": "1",
+        "RefineSpaceMin": "3",
+        "RefineSpaceMax": "3"
+    },
+    "TemporalResolution": {
+        "RefineTimeMin": "0",
+        "RefineTimeMax": "0"
+    },
+    "Application": {
+        "ContactSurfaces": "Faces",
+        "InitialGap": "0.05",
+        "Compression": "0.02",
+        "Slide": "0.3",
+        "YoungsModulus": "1.0",
+        "PoissonsRatio": "0.3",
+        "PenaltyParameter": "100.0",
+        "ContactRadius": "0.05",
+        "Skin": "0.05",
+        "ProjectionTolerance": "0.01",
+        "Search": "Verlet",
+        "VerifySearch": "false",
+        "LoadIncrement": "0.05",
+        "NewtonAbsTol": "1e-8",
+        "Preconditioner": "AMG"
+    },
+    "Output": {
+        "OutputDirectory": "output/contact_deformable/",
+        "OutputName": "two_blocks",
+        "WriteOutput": "false"
+    }
+}

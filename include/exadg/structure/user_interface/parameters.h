@@ -169,6 +169,20 @@ public:
   //                                       quadrature points; return mapping).
   double contact_friction_coefficient;
 
+  // Frictionless contact between deformable surfaces (BoundaryDescriptor::deformable_contact_pairs,
+  // penalty method, Gauss-point-to-segment, 2d, linear elements, serial), see DeformableContact:
+  // penalty parameter epsilon, detection radius r_c (maximum detectable penetration, smaller than
+  // the thickness of the bodies), skin delta of the Verlet list, projection tolerance tau (a
+  // projection xi in [-tau, 1 + tau] onto a master segment is admissible) and search strategy. With
+  // deformable_contact_verify_search, every Verlet query is repeated with the exhaustive search
+  // and differences are counted (diagnostic).
+  double                deformable_contact_penalty_parameter;
+  double                deformable_contact_radius;
+  double                deformable_contact_skin;
+  double                deformable_contact_projection_tolerance;
+  ContactSearchStrategy deformable_contact_search;
+  bool                  deformable_contact_verify_search;
+
   /**************************************************************************************/
   /*                                                                                    */
   /*                             TEMPORAL DISCRETIZATION                                */

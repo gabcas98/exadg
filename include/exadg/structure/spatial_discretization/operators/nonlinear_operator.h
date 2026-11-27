@@ -28,6 +28,7 @@
 
 // ExaDG
 #include <exadg/structure/spatial_discretization/operators/boundary_conditions.h>
+#include <exadg/structure/spatial_discretization/operators/deformable_contact.h>
 #include <exadg/structure/spatial_discretization/operators/elasticity_operator_base.h>
 
 namespace ExaDG
@@ -152,6 +153,45 @@ public:
 
   double
   get_time_previous() const;
+
+  /*
+   * Contact between deformable surfaces (fine level only): the contact residual is added in
+   * evaluate_nonlinear(), the search at the point of linearization is done in
+   * set_solution_linearization(), and the contact part of the Jacobian is added in vmult().
+   */
+  void
+  set_deformable_contact(std::shared_ptr<DeformableContact<dim, Number> const> contact);
+
+  std::shared_ptr<DeformableContact<dim, Number> const>
+  get_deformable_contact() const;
+
+  /*
+   * Linearized operator J(u_k) v: matrix-free elasticity operator (OperatorBase::vmult) plus the
+   * deformable contact. Hides OperatorBase::vmult(), which is called by the Krylov solver through
+   * the type NonLinearOperator.
+   */
+  void
+  vmult(VectorType & dst, VectorType const & src) const;
+
+  /*
+   * Calls and wall times of the residual evaluations, linearizations and Jacobian-vector products
+   * (whole operator, including the contact terms of the matrix-free loops).
+   */
+  struct CostStatistics
+  {
+    unsigned long n_residuals      = 0;
+    unsigned long n_linearizations = 0;
+    unsigned long n_vmults         = 0;
+    double        t_residual       = 0.0;
+    double        t_linearization  = 0.0;
+    double        t_vmult          = 0.0;
+  };
+
+  CostStatistics const &
+  get_cost_statistics() const;
+
+  void
+  print_cost_statistics(dealii::ConditionalOStream const & pcout) const;
 
 private:
   /*
@@ -436,6 +476,11 @@ private:
   mutable double                          time_before     = 0.0;
   mutable bool                            history_updated = false;
   mutable std::shared_ptr<IntegratorFace> integrator_previous_face;
+
+  // contact between deformable surfaces
+  std::shared_ptr<DeformableContact<dim, Number> const> deformable_contact;
+
+  mutable CostStatistics cost_statistics;
 };
 
 } // namespace Structure

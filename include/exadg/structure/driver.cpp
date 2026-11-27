@@ -186,6 +186,11 @@ Driver<dim, Number>::print_performance_results(double const total_time) const
   pcout << std::endl << "Timings for level 2:" << std::endl;
   timer_tree.print_level(pcout, 2);
 
+  // contact: calls and wall times of the nonlinear operator and of the deformable contact
+  if(application->get_parameters().large_deformation and
+     (pde_operator->contact_is_active() or pde_operator->get_deformable_contact()))
+    pde_operator->print_contact_cost_statistics(pcout);
+
   // Throughput in DoFs/s per time step per core
   dealii::types::global_dof_index const DoFs = pde_operator->get_number_of_dofs();
   unsigned int const N_mpi_processes         = dealii::Utilities::MPI::n_mpi_processes(mpi_comm);

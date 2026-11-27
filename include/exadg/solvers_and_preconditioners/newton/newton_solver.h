@@ -25,6 +25,9 @@
 // deal.II
 #include <deal.II/base/exceptions.h>
 
+// C/C++
+#include <chrono>
+
 // ExaDG
 #include <exadg/solvers_and_preconditioners/newton/newton_solver_data.h>
 
@@ -85,10 +88,17 @@ public:
         update.do_update and (newton_iterations % update.update_every_newton_iter == 0);
 
       // update the preconditioner
+      auto const start_preconditioner = std::chrono::steady_clock::now();
       linear_solver.update_preconditioner(update_now);
+      timings.update_preconditioner +=
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start_preconditioner)
+          .count();
 
       // solve linear problem
+      auto const         start_linear  = std::chrono::steady_clock::now();
       unsigned int const n_iter_linear = linear_solver.solve(increment, residual);
+      timings.linear_solve +=
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start_linear).count();
 
       // damped Newton scheme
       double             omega         = 1.0; // damping factor (begin with 1)
@@ -218,13 +228,36 @@ public:
       // update linear operator (set linearization point)
       linear_operator.set_solution_linearization(solution);
       // update preconditioner
+      auto const start_preconditioner = std::chrono::steady_clock::now();
       linear_solver.update_preconditioner(true);
+      timings.update_preconditioner +=
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start_preconditioner)
+          .count();
     }
 
     return std::tuple<unsigned int, unsigned int>(newton_iterations, linear_iterations);
   }
 
+  /*
+   * Accumulated wall times (seconds) of the preconditioner updates and of the linear solves
+   * (Krylov iterations including the Jacobian-vector products and the preconditioner
+   * applications) over all calls of solve().
+   */
+  struct Timings
+  {
+    double update_preconditioner = 0.0;
+    double linear_solve          = 0.0;
+  };
+
+  Timings const &
+  get_timings() const
+  {
+    return timings;
+  }
+
 private:
+  Timings timings;
+
   // auxiliary vectors of the line search refinement
   VectorType best_solution, best_residual;
 

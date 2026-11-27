@@ -350,6 +350,15 @@ public:
   ContactQuantities<dim>
   compute_contact_quantities(VectorType const & displacement, bool const collect_point_data) const;
 
+  // contact between deformable surfaces (nullptr if BoundaryDescriptor::deformable_contact_pairs
+  // is empty)
+  std::shared_ptr<DeformableContact<dim, Number> const>
+  get_deformable_contact() const;
+
+  // calls and wall times of the nonlinear operator and the deformable contact
+  void
+  print_contact_cost_statistics(dealii::ConditionalOStream const & pcout) const;
+
   // displacement magnitude
   void
   compute_displacement_magnitude(VectorType &       dst_scalar_valued,

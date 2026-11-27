@@ -76,12 +76,25 @@ PostProcessor<dim, Number>::setup(Operator<dim, Number> const & pde_operator_in)
 
   if(pp_data.contact_data.time_control_data.is_active)
   {
-    AssertThrow(pde_operator->contact_is_active(),
+    AssertThrow(pde_operator->contact_is_active() or pde_operator->get_deformable_contact(),
                 dealii::ExcMessage("Contact output requested, but no contact boundaries exist."));
 
     create_directories(pp_data.contact_data.directory, mpi_comm);
 
-    if(dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)
+    if(pde_operator->get_deformable_contact() and
+       dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)
+    {
+      std::ofstream f(pp_data.contact_data.directory + pp_data.contact_data.filename +
+                        "_deformable.txt",
+                      std::ios::trunc);
+      f << "# time";
+      for(unsigned int d = 0; d < dim; ++d)
+        f << " force_" << d;
+      f << " n_active active_area max_pressure min_gap" << std::endl;
+    }
+
+    if(pde_operator->contact_is_active() and
+       dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)
     {
       std::ofstream f(pp_data.contact_data.directory + pp_data.contact_data.filename + ".txt",
                       std::ios::trunc);
@@ -98,9 +111,45 @@ PostProcessor<dim, Number>::setup(Operator<dim, Number> const & pde_operator_in)
 
 template<int dim, typename Number>
 void
-PostProcessor<dim, Number>::evaluate_contact(VectorType const & solution) const
+PostProcessor<dim, Number>::evaluate_contact(VectorType const & solution, double const time) const
 {
   ContactCalculationData const & data = pp_data.contact_data;
+
+  if(auto const deformable_contact = pde_operator->get_deformable_contact())
+  {
+    // the displacement contains the inhomogeneous Dirichlet values
+    DeformableContactQuantities<dim> const q = deformable_contact->compute_quantities(solution);
+
+    dealii::ConditionalOStream pcout(std::cout,
+                                     dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0);
+    pcout << std::endl << "Contact between deformable surfaces:" << std::endl << std::scientific;
+    pcout << "  Contact force on slave:   ";
+    for(unsigned int d = 0; d < dim; ++d)
+      pcout << " " << std::setprecision(5) << q.force[d];
+    pcout << std::endl
+          << "  Active points / area:      " << q.n_active << " / " << std::setprecision(5)
+          << q.active_area << std::endl
+          << "  Max. contact pressure:     " << std::setprecision(5) << q.max_pressure << std::endl
+          << "  Min. gap:                  " << std::setprecision(5) << q.min_gap << std::endl
+          << std::defaultfloat;
+
+    if(dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)
+    {
+      std::ofstream f(data.directory + data.filename + "_deformable.txt", std::ios::app);
+      // time (load factor) of the operator, as for the rigid obstacles (the quasi-static driver
+      // does not pass the time to the postprocessor)
+      (void)time;
+      f << std::scientific << std::setprecision(16)
+        << pde_operator->compute_contact_quantities(solution, false).time;
+      for(unsigned int d = 0; d < dim; ++d)
+        f << " " << q.force[d];
+      f << " " << q.n_active << " " << q.active_area << " " << q.max_pressure << " " << q.min_gap
+        << std::endl;
+    }
+  }
+
+  if(not pde_operator->contact_is_active())
+    return;
 
   ContactQuantities<dim> const contact =
     pde_operator->compute_contact_quantities(solution, data.write_pressure_profile);
@@ -243,7 +292,7 @@ PostProcessor<dim, Number>::do_postprocessing(VectorType const &     solution,
    *  contact quantities
    */
   if(contact_time_control.needs_evaluation(time, time_step_number))
-    evaluate_contact(solution);
+    evaluate_contact(solution, time);
 }
 
 template<int dim, typename Number>
