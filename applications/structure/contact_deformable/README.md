@@ -239,3 +239,33 @@ Also fixed: `PreconditionerML::update()` now clears the old AMG hierarchy before
 re-calculated; otherwise the extension of the sparsity pattern (A2) re-created the matrix while the
 old hierarchy referred to it (segmentation fault in `ML_Ifpack_Destroy`, observed at L3).
 
+## Newton: non-monotone factor (measured 2026-11-27)
+
+Deformable blocks, smoothed surface, L6: factor 1e6 (default of the rigid obstacle application):
+1 failed load step, 89 Newton, 143 s; factor 10: 0 failed, 89, 142 s; factor 2: 0 failed, 71,
+119 s; non-monotone steps disabled: identical to factor 2. With factor 2: no failed load step at
+L3-L6 (Newton 56 / 58 / 61 / 71), reaction unchanged (relative 1e-9). Default of this
+application: `NonmonotoneFactor = 2`.
+
+## Speed compared with the classical penalty and Nitsche contact (measured 2026-11-27)
+
+Same problem for all methods: rigid plane y = 0 (lower block clamped), upper block approach,
+compression and frictionless sliding, AMG (updated every Newton iteration), Newton abs. tol.
+1e-10, non-monotone factor 2, sequential runs, one thread. Ours = `LowerBlock = Clamped`
+(master faces found by the Verlet search, contact in the AMG matrix); classical = `LowerBlock =
+AnalyticPlane` with `contact_bc` (penalty eps = 100, Nitsche theta = 0, gamma_0 E = 10, GMRES).
+
+| L (DoFs) | ours smoothed | ours segment | classical penalty | classical Nitsche |
+|---|---|---|---|---|
+| 4 (13860) | 1.95 s (18 / 125) | 1.82 s (18 / 125) | 1.70 s (18 / 125) | 1.72 s (18 / 116) |
+| 5 (54340) | 7.93 s (21 / 144) | 7.56 s (21 / 144) | 7.04 s (21 / 144) | 7.09 s (20 / 135) |
+| 6 (215172) | 39.5 s (27 / 204) | 37.7 s (27 / 204) | 35.6 s (27 / 204) | 34.1 s (26 / 180) |
+
+(solve time, Newton / Krylov iterations). Both penalty variants give the same reaction
+(4.2339380242e-02 at L6, penetration 4.5e-4); Nitsche enforces the constraint (4.3195e-02, 2 %
+larger reaction, i.e. penalty with eps = 100 is 2 % too soft for this compression). Overhead of
+ours (smoothed) against the classical penalty at L6: 3.9 s = extensions of the AMG sparsity
+pattern 1.97 s (25 extensions, partly couplings to Dirichlet-constrained vertices), projections
+onto the smoothed curve in the search 1.08 s (segment: 0.007 s), Hessians at the linearization
+0.50 s. AMG setup dominates all methods (30-32 s of 34-40 s at L6).
+

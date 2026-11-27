@@ -165,6 +165,18 @@ public:
       prm.add_parameter("PreconditionerCoupling",
                         preconditioner_coupling,
                         "Slave-master coupling in the AMG matrix (extended sparsity pattern).");
+      prm.add_parameter("AnalyticContactMethod",
+                        analytic_contact_method,
+                        "LowerBlock = AnalyticPlane: Penalty or Nitsche (theta = 0).");
+      prm.add_parameter("NitscheParameter",
+                        nitsche_parameter,
+                        "Nitsche: gamma_0 E (gamma = gamma_0 E (k+1)^2 |dK| / |K|).");
+      prm.add_parameter("NonmonotoneFactor",
+                        nonmonotone_factor,
+                        "Newton: maximum growth of the residual for a non-monotone full step.");
+      prm.add_parameter("NonmonotoneSteps",
+                        nonmonotone_steps,
+                        "Newton: number of non-monotone full steps per solve.");
       prm.add_parameter("SmoothNormals",
                         smooth_normals,
                         "Continuous master normal (averaged nodal normals).");
@@ -195,8 +207,9 @@ private:
     // AnalyticPlane: existing penalty contact with a rigid obstacle, same penalty parameter
     if(lower_block == LowerBlock::AnalyticPlane)
     {
-      this->param.contact_method            = ContactMethod::Penalty;
-      this->param.contact_penalty_parameter = penalty_parameter;
+      this->param.contact_method = analytic_contact_method;
+      this->param.contact_penalty_parameter =
+        (analytic_contact_method == ContactMethod::Nitsche) ? nitsche_parameter : penalty_parameter;
     }
 
     this->param.deformable_contact_penalty_parameter       = penalty_parameter;
@@ -224,13 +237,17 @@ private:
 
     // Newton's method with the line search settings of the rigid obstacle application
     this->param.newton_solver_data = Newton::SolverData(50, newton_abs_tol, 1.e-9, 6);
-    this->param.newton_solver_data.n_nonmonotone_steps = 3;
-    this->param.newton_solver_data.nonmonotone_factor  = 1.e6;
+    this->param.newton_solver_data.n_nonmonotone_steps = nonmonotone_steps;
+    this->param.newton_solver_data.nonmonotone_factor  = nonmonotone_factor;
     this->param.newton_solver_data.max_iter_damping    = 20;
     this->param.newton_solver_data.print_residuals     = log_contact_state;
 
     // the frictionless penalty contact has a symmetric tangent
-    this->param.solver_data    = SolverData(1e4, 1.e-14, 1.e-6, LinearSolver::CG, 100);
+    // (Nitsche's method with theta = 0 has a non-symmetric tangent)
+    bool const symmetric = not(lower_block == LowerBlock::AnalyticPlane and
+                               analytic_contact_method == ContactMethod::Nitsche);
+    this->param.solver_data =
+      SolverData(1e4, 1.e-14, 1.e-6, symmetric ? LinearSolver::CG : LinearSolver::GMRES, 100);
     this->param.preconditioner = preconditioner;
 
     this->param.update_preconditioner                         = true;
@@ -435,6 +452,10 @@ private:
   bool                  preconditioner_coupling   = true;
   bool                  log_contact_state         = false;
   bool                  smooth_normals            = false;
+  ContactMethod         analytic_contact_method   = ContactMethod::Penalty;
+  double                nitsche_parameter         = 10.0;
+  double                nonmonotone_factor        = 2.0;
+  unsigned int          nonmonotone_steps         = 3;
 
   double load_increment = 0.05;
   double newton_abs_tol = 1.e-8;
