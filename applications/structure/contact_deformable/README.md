@@ -332,3 +332,25 @@ same Krylov iterations as the analytic contact. Remaining overhead of ours at L6
 Hessians at the fine linearization (~0.5 s), gradients and search in the residual (~0.4 s),
 contact linearization on the levels (~0.4 s).
 
+## Cheaper derivatives of the smoothed surface (measured 2026-11-27)
+
+Gradient and Hessian of the gap are computed in one forward pass with all directions at once
+(`Dual<N>`: value and gradient; `Taylor2<N>`: value, gradient and packed Hessian) instead of one
+hyper-dual evaluation per pair of directions (78 for 12 DoFs, each repeating the Newton
+projection), and only with respect to the unconstrained local DoFs (the entries of constrained DoFs
+are never used; postprocessing and the verification use all directions). The hyper-dual
+implementation is kept as reference: `verify_smooth_derivatives()` (search_tests) gives relative
+differences of ~1e-14. Reactions unchanged (rigid: same digits; deformable L6: 3e-15 relative).
+
+Rigid plane with multigrid (sequential, one thread, same session):
+
+| | ours (smoothed) | classical penalty | classical Nitsche |
+|---|---|---|---|
+| L5 | 2.57 s | 2.50 s | 2.60 s |
+| L6 | 13.2 s | 12.4 s | 12.9 s |
+
+(before: 3.21 s / 13.9 s). Fine linearization at L6: 0.51 s -> 0.13 s (penalty 0.074 s). The
+remaining difference at L6 (~0.8 s, 6.5 %) is the search (projections onto the curves, ~0.3 s) and
+the contact on the multigrid levels (~0.3 s). Deformable blocks L6 with multigrid: 59.9 s (no
+constrained DoFs at the contact, unchanged).
+

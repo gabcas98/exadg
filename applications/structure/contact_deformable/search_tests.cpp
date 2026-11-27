@@ -861,6 +861,12 @@ test_smooth_normals()
     check(d_segment < 1e-14 and d_smooth < 1e-14,
           "diagonal of the contact Jacobian == diagonal entries of J e_i (two blocks)");
   }
+  {
+    double const d = smooth.verify_smooth_derivatives(u);
+    std::cout << "    one-pass derivatives vs. reference (hyper-dual per direction pair): " << d
+              << std::endl;
+    check(d < 1e-12, "smooth normals: one-pass gradient and Hessian == reference (two blocks)");
+  }
   std::cout << "    finite differences, two blocks, curved master:" << std::endl;
   double const fd_blocks = finite_difference_check(smooth, u, 5);
   check(fd_blocks < 1e-6,
@@ -988,6 +994,11 @@ test_smooth_self_contact(double & fd_error)
     u);
   auto const result = compare(contact, u, "U strip, theta / pi = 1.06");
   check(count_active(result) > 0, "smooth normals: the arms of the U are in contact");
+  {
+    double const d = contact.verify_smooth_derivatives(u);
+    std::cout << "    one-pass derivatives vs. reference: " << d << std::endl;
+    check(d < 1e-12, "smooth normals: one-pass gradient and Hessian == reference (U strip)");
+  }
   double const d_self = diagonal_check(contact, u);
   std::cout << "    diagonal vs. columns of J: " << d_self << std::endl;
   check(d_self < 1e-14, "diagonal of the contact Jacobian == diagonal entries of J e_i (U strip)");

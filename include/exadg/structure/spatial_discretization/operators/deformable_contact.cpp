@@ -164,6 +164,201 @@ value(HyperDual const & x)
   return x.v;
 }
 
+/*
+ * Forward automatic differentiation in all N directions in one pass: value and gradient.
+ */
+template<int N>
+struct Dual
+{
+  double                v = 0.0;
+  std::array<double, N> g{};
+
+  Dual() = default;
+  Dual(double const value) : v(value)
+  {
+  }
+};
+
+template<int N>
+inline Dual<N>
+operator+(Dual<N> const & a, Dual<N> const & b)
+{
+  Dual<N> r(a.v + b.v);
+  for(int i = 0; i < N; ++i)
+    r.g[i] = a.g[i] + b.g[i];
+  return r;
+}
+
+template<int N>
+inline Dual<N>
+operator-(Dual<N> const & a, Dual<N> const & b)
+{
+  Dual<N> r(a.v - b.v);
+  for(int i = 0; i < N; ++i)
+    r.g[i] = a.g[i] - b.g[i];
+  return r;
+}
+
+template<int N>
+inline Dual<N>
+operator-(Dual<N> const & a)
+{
+  Dual<N> r(-a.v);
+  for(int i = 0; i < N; ++i)
+    r.g[i] = -a.g[i];
+  return r;
+}
+
+template<int N>
+inline Dual<N>
+operator*(Dual<N> const & a, Dual<N> const & b)
+{
+  Dual<N> r(a.v * b.v);
+  for(int i = 0; i < N; ++i)
+    r.g[i] = a.g[i] * b.v + a.v * b.g[i];
+  return r;
+}
+
+// f(a) with f'(a.v) = d1
+template<int N>
+inline Dual<N>
+chain(Dual<N> const & a, double const f, double const d1)
+{
+  Dual<N> r(f);
+  for(int i = 0; i < N; ++i)
+    r.g[i] = d1 * a.g[i];
+  return r;
+}
+
+template<int N>
+inline Dual<N>
+operator/(Dual<N> const & a, Dual<N> const & b)
+{
+  double const inv = 1.0 / b.v;
+  return a * chain(b, inv, -inv * inv);
+}
+
+template<int N>
+inline Dual<N>
+sqrt(Dual<N> const & a)
+{
+  double const r = std::sqrt(a.v);
+  return chain(a, r, 0.5 / r);
+}
+
+template<int N>
+inline double
+value(Dual<N> const & a)
+{
+  return a.v;
+}
+
+/*
+ * Forward automatic differentiation of second order in all N directions in one pass: value,
+ * gradient and the upper triangle of the Hessian (packed row by row, h[k] for i <= j).
+ */
+template<int N>
+struct Taylor2
+{
+  static constexpr int  M = N * (N + 1) / 2;
+  double                v = 0.0;
+  std::array<double, N> g{};
+  std::array<double, M> h{};
+
+  Taylor2() = default;
+  Taylor2(double const value) : v(value)
+  {
+  }
+};
+
+template<int N>
+inline Taylor2<N>
+operator+(Taylor2<N> const & a, Taylor2<N> const & b)
+{
+  Taylor2<N> r(a.v + b.v);
+  for(int i = 0; i < N; ++i)
+    r.g[i] = a.g[i] + b.g[i];
+  for(int k = 0; k < Taylor2<N>::M; ++k)
+    r.h[k] = a.h[k] + b.h[k];
+  return r;
+}
+
+template<int N>
+inline Taylor2<N>
+operator-(Taylor2<N> const & a, Taylor2<N> const & b)
+{
+  Taylor2<N> r(a.v - b.v);
+  for(int i = 0; i < N; ++i)
+    r.g[i] = a.g[i] - b.g[i];
+  for(int k = 0; k < Taylor2<N>::M; ++k)
+    r.h[k] = a.h[k] - b.h[k];
+  return r;
+}
+
+template<int N>
+inline Taylor2<N>
+operator-(Taylor2<N> const & a)
+{
+  Taylor2<N> r(-a.v);
+  for(int i = 0; i < N; ++i)
+    r.g[i] = -a.g[i];
+  for(int k = 0; k < Taylor2<N>::M; ++k)
+    r.h[k] = -a.h[k];
+  return r;
+}
+
+template<int N>
+inline Taylor2<N>
+operator*(Taylor2<N> const & a, Taylor2<N> const & b)
+{
+  Taylor2<N> r(a.v * b.v);
+  for(int i = 0; i < N; ++i)
+    r.g[i] = a.g[i] * b.v + a.v * b.g[i];
+  int k = 0;
+  for(int i = 0; i < N; ++i)
+    for(int j = i; j < N; ++j, ++k)
+      r.h[k] = a.h[k] * b.v + a.v * b.h[k] + a.g[i] * b.g[j] + a.g[j] * b.g[i];
+  return r;
+}
+
+// f(a) with f'(a.v) = d1, f''(a.v) = d2
+template<int N>
+inline Taylor2<N>
+chain(Taylor2<N> const & a, double const f, double const d1, double const d2)
+{
+  Taylor2<N> r(f);
+  for(int i = 0; i < N; ++i)
+    r.g[i] = d1 * a.g[i];
+  int k = 0;
+  for(int i = 0; i < N; ++i)
+    for(int j = i; j < N; ++j, ++k)
+      r.h[k] = d1 * a.h[k] + d2 * a.g[i] * a.g[j];
+  return r;
+}
+
+template<int N>
+inline Taylor2<N>
+operator/(Taylor2<N> const & a, Taylor2<N> const & b)
+{
+  double const inv = 1.0 / b.v;
+  return a * chain(b, inv, -inv * inv, 2.0 * inv * inv * inv);
+}
+
+template<int N>
+inline Taylor2<N>
+sqrt(Taylor2<N> const & a)
+{
+  double const r = std::sqrt(a.v);
+  return chain(a, r, 0.5 / r, -0.25 / (r * a.v));
+}
+
+template<int N>
+inline double
+value(Taylor2<N> const & a)
+{
+  return a.v;
+}
+
 template<typename T>
 using Vector2 = std::array<T, 2>;
 
@@ -965,7 +1160,7 @@ DeformableContact<dim, Number>::local_topology(unsigned int const point,
 
 template<int dim, typename Number>
 void
-DeformableContact<dim, Number>::smooth_gap_derivatives(
+DeformableContact<dim, Number>::smooth_gap_derivatives_reference(
   LocalTopology const &     topology,
   Configuration const &     x,
   bool const                hessian,
@@ -1037,6 +1232,203 @@ DeformableContact<dim, Number>::smooth_gap_derivatives(
         gap = g.v;
       }
   }
+}
+
+template<int dim, typename Number>
+template<typename T>
+T
+DeformableContact<dim, Number>::smooth_gap_of_positions(
+  LocalTopology const &                   topology,
+  std::array<std::array<T, 2>, 6> const & X) const
+{
+  double const     eta = topology.eta;
+  Vector2<T> const x_s = {
+    {T(1.0 - eta) * X[topology.slave_a][0] + T(eta) * X[topology.slave_b][0],
+     T(1.0 - eta) * X[topology.slave_a][1] + T(eta) * X[topology.slave_b][1]}};
+
+  T          xi, g;
+  Vector2<T> nu;
+  bool const found = smooth_projection<T>(x_s,
+                                          X[topology.master_1],
+                                          X[topology.master_2],
+                                          topology.orientation,
+                                          topology.has_neighbor[0],
+                                          X[topology.neighbor_vertex[0][0]],
+                                          X[topology.neighbor_vertex[0][1]],
+                                          topology.neighbor_orientation[0],
+                                          topology.has_neighbor[1],
+                                          X[topology.neighbor_vertex[1][0]],
+                                          X[topology.neighbor_vertex[1][1]],
+                                          topology.neighbor_orientation[1],
+                                          std::cos(data.smoothing_angle),
+                                          xi,
+                                          g,
+                                          nu);
+  AssertThrow(found, dealii::ExcInternalError());
+  return g;
+}
+
+template<int dim, typename Number>
+template<int N>
+void
+DeformableContact<dim, Number>::smooth_gap_derivatives_fixed(
+  LocalTopology const &                topology,
+  Configuration const &                x,
+  std::array<unsigned int, 12> const & directions,
+  unsigned int const                   n_directions,
+  bool const                           hessian,
+  double &                             gap,
+  std::array<double, 12> &             gradient,
+  std::array<double, 144> *            hessian_values) const
+{
+  // seed direction d on the local DoF directions[d] (d < n_directions <= N)
+  gradient.fill(0.0);
+  if(hessian)
+  {
+    std::array<std::array<Taylor2<N>, 2>, 6> X;
+    for(unsigned int k = 0; k < topology.n; ++k)
+      for(unsigned int c = 0; c < 2; ++c)
+        X[k][c] = Taylor2<N>(x.x[topology.vertex[k]][c]);
+    for(unsigned int d = 0; d < n_directions; ++d)
+      X[directions[d] / 2][directions[d] % 2].g[d] = 1.0;
+    Taylor2<N> const g = smooth_gap_of_positions(topology, X);
+    gap                = g.v;
+    hessian_values->fill(0.0);
+    int k = 0;
+    for(int a = 0; a < N; ++a)
+      for(int b = a; b < N; ++b, ++k)
+        if(a < int(n_directions) and b < int(n_directions))
+        {
+          (*hessian_values)[directions[a] * 12 + directions[b]] = g.h[k];
+          (*hessian_values)[directions[b] * 12 + directions[a]] = g.h[k];
+        }
+    for(unsigned int d = 0; d < n_directions; ++d)
+      gradient[directions[d]] = g.g[d];
+  }
+  else
+  {
+    std::array<std::array<Dual<N>, 2>, 6> X;
+    for(unsigned int k = 0; k < topology.n; ++k)
+      for(unsigned int c = 0; c < 2; ++c)
+        X[k][c] = Dual<N>(x.x[topology.vertex[k]][c]);
+    for(unsigned int d = 0; d < n_directions; ++d)
+      X[directions[d] / 2][directions[d] % 2].g[d] = 1.0;
+    Dual<N> const g = smooth_gap_of_positions(topology, X);
+    gap             = g.v;
+    for(unsigned int d = 0; d < n_directions; ++d)
+      gradient[directions[d]] = g.g[d];
+  }
+}
+
+template<int dim, typename Number>
+void
+DeformableContact<dim, Number>::smooth_gap_derivatives(LocalTopology const &     topology,
+                                                       Configuration const &     x,
+                                                       bool const                hessian,
+                                                       double &                  gap,
+                                                       std::array<double, 12> &  gradient,
+                                                       std::array<double, 144> * hessian_values,
+                                                       bool const all_directions) const
+{
+  // derivatives in one forward pass with respect to the local DoFs, by default only the
+  // unconstrained ones (the entries of constrained DoFs are never used: residual and matrix skip
+  // them, Jacobian-vector products treat them as zero); entries of skipped DoFs are zero
+  std::array<unsigned int, 12> directions;
+  unsigned int                 n_directions = 0;
+  for(unsigned int k = 0; k < topology.n; ++k)
+    for(unsigned int c = 0; c < 2; ++c)
+      if(all_directions or not vertices[topology.vertex[k]].constrained[c])
+        directions[n_directions++] = 2 * k + c;
+
+  switch((n_directions + 1) / 2)
+  {
+    case 0:
+    case 1:
+      smooth_gap_derivatives_fixed<2>(
+        topology, x, directions, n_directions, hessian, gap, gradient, hessian_values);
+      break;
+    case 2:
+      smooth_gap_derivatives_fixed<4>(
+        topology, x, directions, n_directions, hessian, gap, gradient, hessian_values);
+      break;
+    case 3:
+      smooth_gap_derivatives_fixed<6>(
+        topology, x, directions, n_directions, hessian, gap, gradient, hessian_values);
+      break;
+    case 4:
+      smooth_gap_derivatives_fixed<8>(
+        topology, x, directions, n_directions, hessian, gap, gradient, hessian_values);
+      break;
+    case 5:
+      smooth_gap_derivatives_fixed<10>(
+        topology, x, directions, n_directions, hessian, gap, gradient, hessian_values);
+      break;
+    case 6:
+      smooth_gap_derivatives_fixed<12>(
+        topology, x, directions, n_directions, hessian, gap, gradient, hessian_values);
+      break;
+    default:
+      AssertThrow(false, dealii::ExcInternalError());
+  }
+}
+
+template<int dim, typename Number>
+double
+DeformableContact<dim, Number>::verify_smooth_derivatives(VectorType const & u) const
+{
+  AssertThrow(data.smooth_normals, dealii::ExcMessage("Requires smooth normals."));
+
+  Configuration x;
+  compute_positions(u, x);
+  DeformableContactStatistics const   stats_before = stats;
+  std::vector<ContactProjection<dim>> state;
+  search_all(x, ContactSearchStrategy::Exhaustive, state);
+  stats = stats_before;
+
+  double max_difference = 0.0;
+  for(unsigned int p = 0; p < state.size(); ++p)
+  {
+    if(not state[p].active())
+      continue;
+    LocalTopology const     topology = local_topology(p, state[p].master);
+    double                  gap_ref, gap_fast, gap_grad;
+    std::array<double, 12>  grad_ref, grad_fast, grad_only;
+    std::array<double, 144> hess_ref, hess_fast;
+    smooth_gap_derivatives_reference(topology, x, true, gap_ref, grad_ref, &hess_ref);
+    smooth_gap_derivatives(topology, x, true, gap_fast, grad_fast, &hess_fast, true);
+    smooth_gap_derivatives(topology, x, false, gap_grad, grad_only, nullptr, true);
+
+    // unconstrained directions only: equal to the reference on the unconstrained entries
+    double                  gap_free;
+    std::array<double, 12>  grad_free;
+    std::array<double, 144> hess_free;
+    smooth_gap_derivatives(topology, x, true, gap_free, grad_free, &hess_free, false);
+    auto const free = [&](unsigned int const i) {
+      return not vertices[topology.vertex[i / 2]].constrained[i % 2];
+    };
+
+    double scale_g = 0.0, scale_h = 0.0, diff_g = 0.0, diff_h = 0.0;
+    for(unsigned int i = 0; i < 2 * topology.n; ++i)
+    {
+      scale_g = std::max(scale_g, std::abs(grad_ref[i]));
+      if(free(i))
+        diff_g = std::max(diff_g, std::abs(grad_ref[i] - grad_free[i]));
+      diff_g = std::max(diff_g,
+                        std::max(std::abs(grad_ref[i] - grad_fast[i]),
+                                 std::abs(grad_ref[i] - grad_only[i])));
+      for(unsigned int j = 0; j < 2 * topology.n; ++j)
+      {
+        scale_h = std::max(scale_h, std::abs(hess_ref[i * 12 + j]));
+        diff_h  = std::max(diff_h, std::abs(hess_ref[i * 12 + j] - hess_fast[i * 12 + j]));
+        if(free(i) and free(j))
+          diff_h = std::max(diff_h, std::abs(hess_ref[i * 12 + j] - hess_free[i * 12 + j]));
+      }
+    }
+    max_difference = std::max(max_difference,
+                              std::max(std::abs(gap_ref - gap_fast) + std::abs(gap_ref - gap_grad),
+                                       std::max(diff_g / scale_g, diff_h / scale_h)));
+  }
+  return max_difference;
 }
 
 template<int dim, typename Number>
@@ -1610,7 +2002,7 @@ DeformableContact<dim, Number>::compute_quantities(VectorType const & u) const
       LocalTopology const    topology = local_topology(p, state[p].master);
       double                 gap;
       std::array<double, 12> gradient;
-      smooth_gap_derivatives(topology, x, false, gap, gradient, nullptr);
+      smooth_gap_derivatives(topology, x, false, gap, gradient, nullptr, true);
       for(unsigned int c = 0; c < dim; ++c)
         result.force[c] +=
           slave_points[p].weight * lambda *

@@ -368,6 +368,14 @@ public:
   dealii::Point<dim>
   slave_point_position(VectorType const & u, unsigned int const point) const;
 
+  /*
+   * Smooth normals: maximum relative difference of gap, gradient and Hessian between the
+   * one-pass automatic differentiation and the reference implementation over the active points
+   * at u (test).
+   */
+  double
+  verify_smooth_derivatives(VectorType const & u) const;
+
   DeformableContactData const &
   get_data() const;
 
@@ -443,15 +451,47 @@ private:
   LocalTopology
   local_topology(unsigned int const point, unsigned int const master) const;
 
+  // gap of a slave point and a master face as a function of the local vertex positions X (number
+  // type T, e.g. for automatic differentiation)
+  template<typename T>
+  T
+  smooth_gap_of_positions(LocalTopology const &                   topology,
+                          std::array<std::array<T, 2>, 6> const & X) const;
+
+  // derivatives in one forward pass with respect to the local DoFs directions[0, n_directions)
+  // (N >= n_directions)
+  template<int N>
+  void
+  smooth_gap_derivatives_fixed(LocalTopology const &                topology,
+                               Configuration const &                x,
+                               std::array<unsigned int, 12> const & directions,
+                               unsigned int const                   n_directions,
+                               bool const                           hessian,
+                               double &                             gap,
+                               std::array<double, 12> &             gradient,
+                               std::array<double, 144> *            hessian_values) const;
+
+  // reference implementation: one hyper-dual evaluation per pair of directions (used to verify
+  // smooth_gap_derivatives(), see verify_smooth_derivatives())
+  void
+  smooth_gap_derivatives_reference(LocalTopology const &     topology,
+                                   Configuration const &     x,
+                                   bool const                hessian,
+                                   double &                  gap,
+                                   std::array<double, 12> &  gradient,
+                                   std::array<double, 144> * hessian_values) const;
+
   // gap of a slave point and a master face and its gradient (and Hessian) with respect to the
-  // local vertex coordinates (smooth normal formulation)
+  // local vertex coordinates (smooth normal formulation); unless all_directions, only with respect
+  // to the unconstrained local DoFs (the other entries are zero)
   void
   smooth_gap_derivatives(LocalTopology const &     topology,
                          Configuration const &     x,
                          bool const                hessian,
                          double &                  gap,
                          std::array<double, 12> &  gradient,
-                         std::array<double, 144> * hessian_values) const;
+                         std::array<double, 144> * hessian_values,
+                         bool const                all_directions = false) const;
 
   // true if all components of the vertex are constrained (no matrix entries)
   bool
