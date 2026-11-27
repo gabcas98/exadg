@@ -156,6 +156,14 @@ struct DeformableContactData
    * that g depends on. The Verlet certificate includes the deviation of the curve from the chord
    * (<= 0.16 l), which requires smoothing_angle <= pi/3 and projection_tolerance <= 0.05.
    */
+  // multigrid: re-discretize the contact on the multigrid levels (see MultigridPreconditioner)
+  bool on_multigrid_levels = true;
+
+  // Jacobian without the geometric part - lambda w d^2g/du^2, i.e. the positive semi-definite
+  // part epsilon w (dg/du) (x) (dg/du) only (used on the multigrid levels, where the operator
+  // serves as a preconditioner and has to be positive definite also for large penetrations)
+  bool penalty_part_only = false;
+
   bool   smooth_normals  = false;
   double smoothing_angle = 1.0471975511965976; // pi / 3
 };
@@ -291,6 +299,13 @@ public:
    */
   void
   apply_jacobian_add(VectorType & dst, VectorType const & v) const;
+
+  /*
+   * diagonal += diagonal of J_c(u_k) (unconstrained DoFs), consistent with apply_jacobian_add()
+   * (point Jacobi smoother, e.g. Chebyshev in multigrid).
+   */
+  void
+  add_diagonal(VectorType & diagonal) const;
 
   /*
    * Sparsity pattern of the slave-master coupling for the preconditioner matrix: the pattern
@@ -441,6 +456,12 @@ private:
   // true if all components of the vertex are constrained (no matrix entries)
   bool
   fully_constrained(unsigned int const vertex) const;
+
+  // J_c v of one active point at the linearization state: read(vertex) returns the direction at a
+  // vertex, write(vertex, value) receives the contribution
+  template<typename Read, typename Write>
+  void
+  apply_point_jacobian(unsigned int const point, Read const & read, Write const & write) const;
 
   // local vertices of the contact term of an active point (for the sparsity pattern)
   std::vector<unsigned int>

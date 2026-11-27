@@ -59,6 +59,7 @@ Parameters::Parameters()
     deformable_contact_preconditioner_coupling(true),
     deformable_contact_log(false),
     deformable_contact_smooth_normals(false),
+    deformable_contact_on_multigrid_levels(true),
 
     // TEMPORAL DISCRETIZATION
     start_time(0.0),
@@ -231,6 +232,9 @@ Parameters::print_parameters_physical_quantities(dealii::ConditionalOStream cons
                     deformable_contact_penalty_parameter);
     print_parameter(pcout, "Deformable contact radius", deformable_contact_radius);
     print_parameter(pcout, "Smooth master normals", deformable_contact_smooth_normals);
+    print_parameter(pcout,
+                    "Deformable contact on multigrid levels",
+                    deformable_contact_on_multigrid_levels);
     print_parameter(pcout,
                     "Deformable contact projection tolerance",
                     deformable_contact_projection_tolerance);

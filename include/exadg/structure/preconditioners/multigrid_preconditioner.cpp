@@ -282,6 +282,46 @@ MultigridPreconditioner<dim, Number>::initialize_operator(
                                    data,
                                    assemble_matrix);
 
+    // contact between deformable surfaces: re-discretization on the mesh of this level with the
+    // data of the fine level (own contact faces, slave points, Verlet list and linearization
+    // state, which is set by set_solution_linearization() with the displacement interpolated to
+    // this level)
+    PDEOperatorNonlinear const * pde_operator_nonlinear =
+      dynamic_cast<PDEOperatorNonlinear const *>(pde_operator);
+    if(pde_operator_nonlinear and pde_operator_nonlinear->get_deformable_contact() and
+       pde_operator_nonlinear->get_deformable_contact()->get_data().on_multigrid_levels)
+    {
+      AssertThrow(this->level_info[level].dealii_tria_level() ==
+                    dealii::numbers::invalid_unsigned_int,
+                  dealii::ExcMessage("The deformable contact on multigrid levels requires "
+                                     "separate coarse triangulations (h-multigrid with "
+                                     "GridData::create_coarse_triangulations = true)."));
+
+      dealii::MatrixFree<dim, MultigridNumber> const & matrix_free_level =
+        *this->matrix_free_objects[level];
+      VectorTypeMG vector;
+      matrix_free_level.initialize_dof_vector(vector, data.dof_index);
+      std::vector<dealii::types::global_dof_index> constrained_dofs;
+      for(unsigned int const i : matrix_free_level.get_constrained_dofs(data.dof_index))
+        constrained_dofs.push_back(vector.get_partitioner()->local_to_global(i));
+
+      // the level operators are part of the preconditioner: only the positive semi-definite
+      // part of the contact Jacobian (the geometric part makes the operator indefinite for
+      // large penetrations, e.g. in the first Newton iteration after the first contact, for which
+      // the Chebyshev smoother is not suited)
+      DeformableContactData level_data =
+        pde_operator_nonlinear->get_deformable_contact()->get_data();
+      level_data.penalty_part_only = true;
+      level_data.log_linearization = false;
+      level_data.verify            = false;
+
+      auto contact = std::make_shared<DeformableContact<dim, MultigridNumber>>();
+      contact->setup(matrix_free_level.get_dof_handler(data.dof_index),
+                     constrained_dofs,
+                     level_data);
+      pde_operator_level->set_deformable_contact(contact);
+    }
+
     mg_operator_level = std::make_shared<MGOperatorNonlinear>(pde_operator_level);
   }
   else // linear

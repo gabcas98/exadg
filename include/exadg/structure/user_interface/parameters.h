@@ -196,6 +196,10 @@ public:
   // continuous master normal (averaged nodal normals), see DeformableContactData::smooth_normals
   bool deformable_contact_smooth_normals;
 
+  // multigrid preconditioner: re-discretize the deformable contact on all multigrid levels
+  // (h-multigrid with coarse triangulations); otherwise the levels contain the elasticity only
+  bool deformable_contact_on_multigrid_levels;
+
   /**************************************************************************************/
   /*                                                                                    */
   /*                             TEMPORAL DISCRETIZATION                                */

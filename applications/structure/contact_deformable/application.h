@@ -177,6 +177,15 @@ public:
       prm.add_parameter("NonmonotoneSteps",
                         nonmonotone_steps,
                         "Newton: number of non-monotone full steps per solve.");
+      prm.add_parameter("SmootherIterations",
+                        smoother_iterations,
+                        "Multigrid: Chebyshev degree of the point Jacobi smoother.");
+      prm.add_parameter("CoarseRelativeTolerance",
+                        coarse_relative_tolerance,
+                        "Multigrid: relative tolerance of the coarse-grid solver (CG + AMG).");
+      prm.add_parameter("ContactOnMultigridLevels",
+                        contact_on_multigrid_levels,
+                        "Multigrid: re-discretize the deformable contact on all levels.");
       prm.add_parameter("SmoothNormals",
                         smooth_normals,
                         "Continuous master normal (averaged nodal normals).");
@@ -228,9 +237,11 @@ private:
     this->param.mapping_degree              = 1;
     this->param.mapping_degree_coarse_grids = 1;
 
-    this->param.grid.element_type                 = ElementType::Hypercube;
-    this->param.grid.triangulation_type           = TriangulationType::Serial;
-    this->param.grid.create_coarse_triangulations = false;
+    this->param.grid.element_type       = ElementType::Hypercube;
+    this->param.grid.triangulation_type = TriangulationType::Serial;
+    // h-multigrid with separate coarse triangulations (required by the deformable contact on the
+    // multigrid levels)
+    this->param.grid.create_coarse_triangulations = (preconditioner == Preconditioner::Multigrid);
 
     this->param.use_matrix_based_operator = false;
     this->param.sparse_matrix_type        = SparseMatrixType::Trilinos;
@@ -249,6 +260,16 @@ private:
     this->param.solver_data =
       SolverData(1e4, 1.e-14, 1.e-6, symmetric ? LinearSolver::CG : LinearSolver::GMRES, 100);
     this->param.preconditioner = preconditioner;
+
+    this->param.multigrid_data.type                          = MultigridType::hMG;
+    this->param.multigrid_data.smoother_data.smoother        = MultigridSmoother::Chebyshev;
+    this->param.multigrid_data.smoother_data.preconditioner  = PreconditionerSmoother::PointJacobi;
+    this->param.multigrid_data.smoother_data.iterations      = smoother_iterations;
+    this->param.multigrid_data.smoother_data.smoothing_range = 20;
+    this->param.multigrid_data.coarse_problem.solver         = MultigridCoarseGridSolver::AMG;
+    this->param.multigrid_data.coarse_problem.solver_data =
+      SolverData(1e3, 1.e-14, coarse_relative_tolerance, LinearSolver::Undefined, 100);
+    this->param.deformable_contact_on_multigrid_levels = contact_on_multigrid_levels;
 
     this->param.update_preconditioner                         = true;
     this->param.update_preconditioner_every_time_steps        = 1;
@@ -442,20 +463,23 @@ private:
   double youngs_modulus = 1.0;
   double poissons_ratio = 0.3;
 
-  double                penalty_parameter         = 1000.0;
-  double                contact_radius            = 0.05;
-  double                skin                      = 0.05;
-  double                projection_tolerance      = 0.01;
-  ContactSearchStrategy search                    = ContactSearchStrategy::Verlet;
-  bool                  verify_search             = false;
-  bool                  contact_in_preconditioner = false;
-  bool                  preconditioner_coupling   = true;
-  bool                  log_contact_state         = false;
-  bool                  smooth_normals            = false;
-  ContactMethod         analytic_contact_method   = ContactMethod::Penalty;
-  double                nitsche_parameter         = 10.0;
-  double                nonmonotone_factor        = 2.0;
-  unsigned int          nonmonotone_steps         = 3;
+  double                penalty_parameter           = 1000.0;
+  double                contact_radius              = 0.05;
+  double                skin                        = 0.05;
+  double                projection_tolerance        = 0.01;
+  ContactSearchStrategy search                      = ContactSearchStrategy::Verlet;
+  bool                  verify_search               = false;
+  bool                  contact_in_preconditioner   = false;
+  bool                  preconditioner_coupling     = true;
+  bool                  log_contact_state           = false;
+  bool                  smooth_normals              = false;
+  unsigned int          smoother_iterations         = 5;
+  bool                  contact_on_multigrid_levels = true;
+  double                coarse_relative_tolerance   = 1.e-3;
+  ContactMethod         analytic_contact_method     = ContactMethod::Penalty;
+  double                nitsche_parameter           = 10.0;
+  double                nonmonotone_factor          = 2.0;
+  unsigned int          nonmonotone_steps           = 3;
 
   double load_increment = 0.05;
   double newton_abs_tol = 1.e-8;

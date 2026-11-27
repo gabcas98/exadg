@@ -153,6 +153,30 @@ compare(Contact const & verlet, VectorType const & u, std::string const & label,
 }
 
 /*
+ * Diagonal of the contact Jacobian (add_diagonal) compared with the entries of J e_i for all DoFs
+ * (column by column); returns the maximum difference relative to the maximum diagonal entry.
+ */
+double
+diagonal_check(Contact const & contact, VectorType const & u)
+{
+  contact.set_linearization(u);
+  VectorType diagonal(u);
+  diagonal = 0.0;
+  contact.add_diagonal(diagonal);
+  double max_difference = 0.0;
+  for(unsigned int i = 0; i < u.size(); ++i)
+  {
+    VectorType e(u), Je(u);
+    e    = 0.0;
+    Je   = 0.0;
+    e(i) = 1.0;
+    contact.apply_jacobian_add(Je, e);
+    max_difference = std::max(max_difference, std::abs(Je(i) - diagonal(i)));
+  }
+  return max_difference / diagonal.linfty_norm();
+}
+
+/*
  * Two blocks: lower [0, 2] x [-0.5, 0] (8 x 2 cells), upper [0.5, 1.5] x [g0, g0 + 0.5] (5 x 2
  * cells), refined globally. Boundary ids: 10 top of the lower block (master), 11 bottom of the
  * upper block (slave), 0 otherwise.
@@ -448,6 +472,12 @@ test_adjacent_fold(double & fd_error)
 
   // Jacobian of the self-contact at a penetrated state (common DoFs of slave and master)
   interpolate(dof_handler, hinge(185.0 * M_PI / 180.0), u);
+  {
+    double const d_hinge = diagonal_check(verlet, u);
+    std::cout << "    diagonal vs. columns of J (shared vertex): " << d_hinge << std::endl;
+    check(d_hinge < 1e-14,
+          "diagonal of the contact Jacobian == diagonal entries of J e_i (adjacent fold)");
+  }
   std::mt19937                           generator(7);
   std::uniform_real_distribution<double> distribution(-1.0, 1.0);
   VectorType                             v(u);
@@ -824,6 +854,13 @@ test_smooth_normals()
   }
 
   // (c) tangent: finite differences
+  {
+    double const d_segment = diagonal_check(segment, u), d_smooth = diagonal_check(smooth, u);
+    std::cout << "    diagonal vs. columns of J: segment " << d_segment << ", smooth " << d_smooth
+              << std::endl;
+    check(d_segment < 1e-14 and d_smooth < 1e-14,
+          "diagonal of the contact Jacobian == diagonal entries of J e_i (two blocks)");
+  }
   std::cout << "    finite differences, two blocks, curved master:" << std::endl;
   double const fd_blocks = finite_difference_check(smooth, u, 5);
   check(fd_blocks < 1e-6,
@@ -951,6 +988,9 @@ test_smooth_self_contact(double & fd_error)
     u);
   auto const result = compare(contact, u, "U strip, theta / pi = 1.06");
   check(count_active(result) > 0, "smooth normals: the arms of the U are in contact");
+  double const d_self = diagonal_check(contact, u);
+  std::cout << "    diagonal vs. columns of J: " << d_self << std::endl;
+  check(d_self < 1e-14, "diagonal of the contact Jacobian == diagonal entries of J e_i (U strip)");
   std::cout << "    finite differences:" << std::endl;
   fd_error = finite_difference_check(contact, u, 9);
 }

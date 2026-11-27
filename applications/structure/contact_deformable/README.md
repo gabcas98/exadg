@@ -289,3 +289,46 @@ All reaction files are bitwise identical to the runs before the optimizations; a
 On the rigid plane, the deformable contact is now within 3 % (smoothed) and 1.4 % (segment) of
 the classical penalty contact, which is the order of the run-to-run variation (~3 %).
 
+## Matrix-free multigrid with the contact on all levels (measured 2026-11-27)
+
+`Preconditioner = Multigrid` (h-multigrid with separate coarse triangulations, Chebyshev(5) with
+point Jacobi, AMG on the coarsest level): on every level, a `DeformableContact` is set up on the
+mesh of the level with the data of the fine level (re-discretization: own contact faces, slave
+points, Verlet list); its linearization state is set by `set_solution_linearization()` with the
+displacement interpolated to the level. The level operators contain the contact in `vmult`,
+`vmult_add`, `vmult_interface_down` / `vmult_add_interface_up` (used by the multigrid algorithm for
+the residual before the restriction; without them the V-cycle was not symmetric once contact was
+active: b.Pa = -18.87 vs. a.Pb = -19.23, and CG failed), in the inverse diagonal of the smoother
+(`DeformableContact::add_diagonal()`, equal to the diagonal of J e_i column by column, tested) and
+in the coarse AMG matrix. On the levels, only the positive semi-definite part
+eps w (dg/du) (x) (dg/du) is used (the geometric part makes the level operators indefinite for
+large penetrations, e.g. at the first contact; Chebyshev then needs 910 instead of 250
+iterations at L5), and no Hessians are computed there. The fine operator is unchanged (Newton
+iterations and reactions are identical).
+
+Two deformable blocks, smoothed surface (sequential, one thread):
+
+| L | AMG: Krylov / solve | MG without contact on the levels | MG with contact on the levels |
+|---|---|---|---|
+| 3 | 517 / 1.17 s | 2121 / 2.21 s | 328 / 0.97 s |
+| 4 | 709 / 4.56 s | 2821 / 9.94 s | 524 / 3.36 s |
+| 5 | 1531 / 23.0 s | 3178 / 43.4 s | 612 / 12.4 s |
+| 6 | 2136 / 115 s | - | 878 / 60.8 s |
+
+Most load steps need 4-5 Krylov iterations per Newton iteration independently of L; the first
+Newton iteration after the first contact (penetration 0.006, all points active) is the most
+expensive one for all preconditioners (L5: MG 250, AMG 717).
+
+Rigid plane with multigrid (the classical penalty and Nitsche contact support multigrid levels):
+
+| method | L5 | L6 | L6 with AMG |
+|---|---|---|---|
+| ours (smoothed) | 3.21 s (108 Krylov) | 13.9 s (147) | 35.9 s |
+| classical penalty | 2.53 s (108) | 12.5 s (147) | 34.9 s |
+| classical Nitsche | 2.62 s (103) | 13.5 s (135) | 34.3 s |
+
+Multigrid is 2.5x faster than AMG for all methods; the deformable contact on the levels needs the
+same Krylov iterations as the analytic contact. Remaining overhead of ours at L6 (+1.4 s):
+Hessians at the fine linearization (~0.5 s), gradients and search in the residual (~0.4 s),
+contact linearization on the levels (~0.4 s).
+

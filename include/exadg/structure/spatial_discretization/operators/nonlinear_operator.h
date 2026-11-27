@@ -176,6 +176,30 @@ public:
   void
   vmult(VectorType & dst, VectorType const & src) const;
 
+  // dst += J(u_k) src, including the deformable contact (hides OperatorBase::vmult_add())
+  void
+  vmult_add(VectorType & dst, VectorType const & src) const;
+
+  /*
+   * Multigrid: the multigrid algorithm computes the residual of the levels with
+   * vmult_interface_down() and vmult_add_interface_up(), which call the vmult functions of
+   * OperatorBase; they are hidden here so that the deformable contact is included (otherwise, the
+   * V-cycle is not symmetric when contact is active).
+   */
+  void
+  vmult_interface_down(VectorType & dst, VectorType const & src) const;
+
+  void
+  vmult_add_interface_up(VectorType & dst, VectorType const & src) const;
+
+  /*
+   * Inverse diagonal of the linearized operator including the deformable contact (hides
+   * OperatorBase::calculate_inverse_diagonal(), which is called by the point Jacobi
+   * preconditioner and the Chebyshev smoothers of multigrid through the type NonLinearOperator).
+   */
+  void
+  calculate_inverse_diagonal(VectorType & inverse_diagonal) const;
+
   // keep the other overloads (PETSc) of OperatorBase visible
   using Base::calculate_system_matrix;
 

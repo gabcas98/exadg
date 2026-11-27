@@ -23,6 +23,7 @@
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 
 #include <exadg/operators/interior_penalty_parameter.h>
+#include <exadg/solvers_and_preconditioners/utilities/invert_diagonal.h>
 #include <exadg/structure/spatial_discretization/operators/boundary_conditions.h>
 #include <exadg/structure/spatial_discretization/operators/continuum_mechanics.h>
 #include <exadg/structure/spatial_discretization/operators/nonlinear_operator.h>
@@ -477,6 +478,44 @@ NonLinearOperator<dim, Number>::calculate_system_matrix(
     deformable_contact->add_to_matrix(system_matrix);
 }
 #endif
+
+template<int dim, typename Number>
+void
+NonLinearOperator<dim, Number>::vmult_add(VectorType & dst, VectorType const & src) const
+{
+  Base::vmult_add(dst, src);
+
+  if(deformable_contact)
+    deformable_contact->apply_jacobian_add(dst, src);
+}
+
+template<int dim, typename Number>
+void
+NonLinearOperator<dim, Number>::vmult_interface_down(VectorType & dst, VectorType const & src) const
+{
+  // global coarsening (separate coarse triangulations): no interface, as in OperatorBase
+  vmult(dst, src);
+}
+
+template<int dim, typename Number>
+void
+NonLinearOperator<dim, Number>::vmult_add_interface_up(VectorType &       dst,
+                                                       VectorType const & src) const
+{
+  vmult_add(dst, src);
+}
+
+template<int dim, typename Number>
+void
+NonLinearOperator<dim, Number>::calculate_inverse_diagonal(VectorType & inverse_diagonal) const
+{
+  this->calculate_diagonal(inverse_diagonal);
+
+  if(deformable_contact)
+    deformable_contact->add_diagonal(inverse_diagonal);
+
+  invert_diagonal(inverse_diagonal);
+}
 
 template<int dim, typename Number>
 void

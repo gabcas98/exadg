@@ -1157,8 +1157,13 @@ DeformableContact<dim, Number>::set_linearization(VectorType const & u) const
       {
         lin_smooth[p].topology = local_topology(p, lin_state[p].master);
         double gap;
-        smooth_gap_derivatives(
-          lin_smooth[p].topology, x, true, gap, lin_smooth[p].gradient, &lin_smooth[p].hessian);
+        // the Hessian is only needed for the geometric part of the Jacobian
+        smooth_gap_derivatives(lin_smooth[p].topology,
+                               x,
+                               not data.penalty_part_only,
+                               gap,
+                               lin_smooth[p].gradient,
+                               &lin_smooth[p].hessian);
       }
   }
 
@@ -1422,6 +1427,95 @@ DeformableContact<dim, Number>::add_to_matrix(dealii::TrilinosWrappers::SparseMa
 #endif
 
 template<int dim, typename Number>
+template<typename Read, typename Write>
+void
+DeformableContact<dim, Number>::apply_point_jacobian(unsigned int const point,
+                                                     Read const &       read,
+                                                     Write const &      write) const
+{
+  ContactProjection<dim> const & state   = lin_state[point];
+  SlavePoint const &             sp      = slave_points[point];
+  double const                   epsilon = data.penalty;
+
+  if(data.smooth_normals)
+  {
+    // J v = w (epsilon (dg/du . v) dg/du - lambda d^2g/du^2 v), lambda = epsilon (-g)
+    SmoothLinearization const & lin    = lin_smooth[point];
+    unsigned int const          n_dofs = 2 * lin.topology.n;
+    std::array<double, 12>      v_local;
+    for(unsigned int k = 0; k < lin.topology.n; ++k)
+    {
+      dealii::Tensor<1, dim> const value = read(lin.topology.vertex[k]);
+      for(unsigned int c = 0; c < dim; ++c)
+        v_local[2 * k + c] = value[c];
+    }
+    double delta_g = 0.0;
+    for(unsigned int i = 0; i < n_dofs; ++i)
+      delta_g += lin.gradient[i] * v_local[i];
+    double const lambda = epsilon * (-state.gap);
+    for(unsigned int k = 0; k < lin.topology.n; ++k)
+    {
+      dealii::Tensor<1, dim> value;
+      for(unsigned int c = 0; c < dim; ++c)
+      {
+        unsigned int const i  = 2 * k + c;
+        double             Hv = 0.0;
+        if(not data.penalty_part_only)
+          for(unsigned int j = 0; j < n_dofs; ++j)
+            Hv += lin.hessian[i * 12 + j] * v_local[j];
+        value[c] = sp.weight * (epsilon * delta_g * lin.gradient[i] -
+                                (data.penalty_part_only ? 0.0 : lambda * Hv));
+      }
+      write(lin.topology.vertex[k], value);
+    }
+    return;
+  }
+
+  Face const & slave  = faces[slave_faces[sp.slave_face].face];
+  Face const & master = faces[state.master];
+
+  double const                   xi = state.xi, g = state.gap, l = state.length;
+  dealii::Tensor<1, dim> const & n = state.normal;
+  dealii::Tensor<1, dim> const & t = state.tangent;
+
+  // directions at the slave point and at the master vertices
+  dealii::Tensor<1, dim> const delta_s =
+    (1.0 - sp.eta) * read(slave.vertex[0]) + sp.eta * read(slave.vertex[1]);
+  dealii::Tensor<1, dim> const delta_1 = read(master.vertex[0]);
+  dealii::Tensor<1, dim> const delta_2 = read(master.vertex[1]);
+  dealii::Tensor<1, dim> const delta_r = delta_s - (1.0 - xi) * delta_1 - xi * delta_2;
+
+  // first variation Delta g = (Delta x_s - Delta x_m) . n
+  double const delta_g = delta_r * n;
+
+  // second variation of g (straight master segment, 2d):
+  //  Delta delta g = - alpha / l (delta x_s - delta x_m) . t - (beta / l + g alpha / l^2)
+  //                  n . (delta x_2 - delta x_1)
+  // with alpha = n . (Delta x_2 - Delta x_1), beta = (Delta x_s - Delta x_m) . t
+  double const alpha = n * (delta_2 - delta_1);
+  double const beta  = delta_r * t;
+  double const c_n   = beta / l + g * alpha / (l * l);
+  double const c_t   = alpha / l;
+
+  dealii::Tensor<1, dim> const c_s = -c_t * t;
+  dealii::Tensor<1, dim> const c_1 = c_t * (1.0 - xi) * t + c_n * n;
+  dealii::Tensor<1, dim> const c_2 = c_t * xi * t - c_n * n;
+
+  // J v = w (epsilon H(-g) Delta g dg/du - lambda Delta delta g), lambda = epsilon (-g)
+  double const lambda = data.penalty_part_only ? 0.0 : epsilon * (-g);
+  double const k      = sp.weight * epsilon * delta_g;
+
+  dealii::Tensor<1, dim> const f_s = k * n - sp.weight * lambda * c_s;
+  dealii::Tensor<1, dim> const f_1 = -k * (1.0 - xi) * n - sp.weight * lambda * c_1;
+  dealii::Tensor<1, dim> const f_2 = -k * xi * n - sp.weight * lambda * c_2;
+
+  write(slave.vertex[0], (1.0 - sp.eta) * f_s);
+  write(slave.vertex[1], sp.eta * f_s);
+  write(master.vertex[0], f_1);
+  write(master.vertex[1], f_2);
+}
+
+template<int dim, typename Number>
 void
 DeformableContact<dim, Number>::apply_jacobian_add(VectorType & dst, VectorType const & v) const
 {
@@ -1431,6 +1525,7 @@ DeformableContact<dim, Number>::apply_jacobian_add(VectorType & dst, VectorType 
   AssertThrow(lin_state.size() == slave_points.size(),
               dealii::ExcMessage("Deformable contact: linearization state not set."));
 
+  // constrained entries of v are treated as zero, constrained rows of dst are not written
   auto const read = [&](unsigned int const vertex) {
     dealii::Tensor<1, dim> value;
     for(unsigned int c = 0; c < dim; ++c)
@@ -1438,91 +1533,52 @@ DeformableContact<dim, Number>::apply_jacobian_add(VectorType & dst, VectorType 
         value[c] = v(vertices[vertex].dof[c]);
     return value;
   };
+  auto const write = [&](unsigned int const vertex, dealii::Tensor<1, dim> const & value) {
+    add(dst, vertex, value);
+  };
 
-  double const epsilon = data.penalty;
+  for(unsigned int p = 0; p < slave_points.size(); ++p)
+    if(lin_state[p].active())
+      apply_point_jacobian(p, read, write);
+}
+
+template<int dim, typename Number>
+void
+DeformableContact<dim, Number>::add_diagonal(VectorType & diagonal) const
+{
+  if(lin_state.size() != slave_points.size())
+    return;
 
   for(unsigned int p = 0; p < slave_points.size(); ++p)
   {
-    ContactProjection<dim> const & state = lin_state[p];
-    if(not state.active())
+    if(not lin_state[p].active())
       continue;
 
-    SlavePoint const & sp = slave_points[p];
-
-    if(data.smooth_normals)
-    {
-      // J v = w (epsilon (dg/du . v) dg/du - lambda d^2g/du^2 v), lambda = epsilon (-g)
-      SmoothLinearization const & lin    = lin_smooth[p];
-      unsigned int const          n_dofs = 2 * lin.topology.n;
-      std::array<double, 12>      v_local;
-      for(unsigned int k = 0; k < lin.topology.n; ++k)
+    // diagonal entry of the point contribution for each unconstrained DoF of its vertices:
+    // apply the point Jacobian to the unit vector of this DoF (vertices that appear in several
+    // roles, e.g. common vertices of slave and master faces in self-contact, are one DoF)
+    std::vector<unsigned int> local = point_vertices(p, lin_state[p]);
+    std::sort(local.begin(), local.end());
+    local.erase(std::unique(local.begin(), local.end()), local.end());
+    for(unsigned int const vertex : local)
+      for(unsigned int c = 0; c < dim; ++c)
       {
-        dealii::Tensor<1, dim> const value = read(lin.topology.vertex[k]);
-        for(unsigned int c = 0; c < dim; ++c)
-          v_local[2 * k + c] = value[c];
+        if(vertices[vertex].constrained[c])
+          continue;
+        auto const read = [&](unsigned int const w) {
+          dealii::Tensor<1, dim> value;
+          if(w == vertex)
+            value[c] = 1.0;
+          return value;
+        };
+        double     entry = 0.0;
+        auto const write = [&](unsigned int const w, dealii::Tensor<1, dim> const & value) {
+          if(w == vertex)
+            entry += value[c];
+        };
+        apply_point_jacobian(p, read, write);
+        diagonal(vertices[vertex].dof[c]) += entry;
       }
-      double delta_g = 0.0;
-      for(unsigned int i = 0; i < n_dofs; ++i)
-        delta_g += lin.gradient[i] * v_local[i];
-      double const lambda = epsilon * (-state.gap);
-      for(unsigned int k = 0; k < lin.topology.n; ++k)
-      {
-        dealii::Tensor<1, dim> value;
-        for(unsigned int c = 0; c < dim; ++c)
-        {
-          unsigned int const i  = 2 * k + c;
-          double             Hv = 0.0;
-          for(unsigned int j = 0; j < n_dofs; ++j)
-            Hv += lin.hessian[i * 12 + j] * v_local[j];
-          value[c] = sp.weight * (epsilon * delta_g * lin.gradient[i] - lambda * Hv);
-        }
-        add(dst, lin.topology.vertex[k], value);
-      }
-      continue;
-    }
-
-    Face const & slave  = faces[slave_faces[sp.slave_face].face];
-    Face const & master = faces[state.master];
-
-    double const                   xi = state.xi, g = state.gap, l = state.length;
-    dealii::Tensor<1, dim> const & n = state.normal;
-    dealii::Tensor<1, dim> const & t = state.tangent;
-
-    // directions at the slave point and at the master vertices
-    dealii::Tensor<1, dim> const delta_s =
-      (1.0 - sp.eta) * read(slave.vertex[0]) + sp.eta * read(slave.vertex[1]);
-    dealii::Tensor<1, dim> const delta_1 = read(master.vertex[0]);
-    dealii::Tensor<1, dim> const delta_2 = read(master.vertex[1]);
-    dealii::Tensor<1, dim> const delta_r = delta_s - (1.0 - xi) * delta_1 - xi * delta_2;
-
-    // first variation Delta g = (Delta x_s - Delta x_m) . n
-    double const delta_g = delta_r * n;
-
-    // second variation of g (straight master segment, 2d):
-    //  Delta delta g = - alpha / l (delta x_s - delta x_m) . t - (beta / l + g alpha / l^2)
-    //                  n . (delta x_2 - delta x_1)
-    // with alpha = n . (Delta x_2 - Delta x_1), beta = (Delta x_s - Delta x_m) . t
-    double const alpha = n * (delta_2 - delta_1);
-    double const beta  = delta_r * t;
-    double const c_n   = beta / l + g * alpha / (l * l);
-    double const c_t   = alpha / l;
-
-    dealii::Tensor<1, dim> const c_s = -c_t * t;
-    dealii::Tensor<1, dim> const c_1 = c_t * (1.0 - xi) * t + c_n * n;
-    dealii::Tensor<1, dim> const c_2 = c_t * xi * t - c_n * n;
-
-    // J v = w (epsilon H(-g) Delta g dg/du - lambda Delta delta g), lambda = epsilon (-g)
-    double const lambda = epsilon * (-g);
-    double const k      = sp.weight * epsilon * delta_g;
-
-    dealii::Tensor<1, dim> const f_s = k * n - sp.weight * lambda * c_s;
-    dealii::Tensor<1, dim> const f_1 = -k * (1.0 - xi) * n - sp.weight * lambda * c_1;
-    dealii::Tensor<1, dim> const f_2 = -k * xi * n - sp.weight * lambda * c_2;
-
-    add(dst, slave.vertex[0], (1.0 - sp.eta) * f_s);
-    add(dst, slave.vertex[1], sp.eta * f_s);
-    add(dst, master.vertex[0], f_1);
-    add(dst, master.vertex[1], f_2);
   }
 }
 
