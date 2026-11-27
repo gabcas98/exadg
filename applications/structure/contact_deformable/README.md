@@ -197,3 +197,45 @@ locus of the C0 master surface. With a clamped (flat) master, the angles are zer
 fails. Conclusion: the stagnation is caused by the discontinuous master normal at master vertices,
 not by active-set changes or the search; next step B2: continuous master normal.
 
+## Step B2: smoothed (G1) master surface (measured 2026-11-27)
+
+`SmoothNormals = true`: Hermite cubic on each master face with tangents perpendicular to the
+averaged nodal normals (no averaging at corners of the reference configuration or folds > 60
+degrees), closest point projection onto the curve, gap and residual/tangent by automatic
+differentiation (hyper-dual numbers; Newton in double precision followed by two hyper-dual Newton
+steps, which gives exact first and second derivatives). The Verlet certificate includes the
+deviation of the curve from the chord (<= 0.16 l). A first variant with averaged normals but
+straight faces made the gap continuous but not its gradient: the force direction still jumped at
+the vertex (test 6e showed the same jump of 5e-4 as the segment formulation), so it was replaced.
+
+Checks (`search_tests`, test 6 and 7, all passing): straight surface: identical projection, gap
+and slave forces as the segment formulation; patch test with uniform pressure on non-matching
+meshes: master nodal forces deviate by 2.7e-5 from p h (segment: 2.55e-4); Verlet == exhaustive
+bitwise; tangent vs. directional finite differences (two blocks with curved master, U strip
+self-contact): O(h^2) down to ~1e-10; total force and moment of the contact residual ~1e-16;
+continuity across a convex master vertex: the residual change over a sliding step ds is
+proportional to ds (2.25e-5 for 1e-4, 2.25e-6 for 1e-5), while the segment formulation jumps by
+5e-4 independently of ds.
+
+Mechanics (sequential, one thread, coupled AMG preconditioner, Newton abs. tol. 1e-10):
+
+| case | Newton (load steps; 21 = no failure) | Krylov | solve [s] | F_y |
+|---|---|---|---|---|
+| rigid master L4, smoothed / analytic penalty | 18 (21) / 18 (21) | 125 / 125 | 1.96 / 1.72 | 4.2353415683e-02 / 4.2353415683e-02 |
+| deformable L3, segment / smoothed | 79 (22) / 65 (21) | 790 / 620 | 1.48 / 1.32 | 2.43869e-02 / 2.43689e-02 |
+| deformable L4, segment / smoothed | 73 (22) / 67 (21) | 657 / 799 | 5.19 / 4.93 | 2.43584e-02 / 2.43500e-02 |
+| deformable L5, segment / smoothed | 90 (23) / 69 (21) | 1988 / 1690 | 41.2 / 25.4 | 2.43488e-02 / 2.43463e-02 |
+| deformable L6, segment / smoothed | 105 (26) / 89 (22) | 2631 / 2541 | 281 / 143 | 2.434554e-02 / 2.434423e-02 |
+
+The difference of the reaction between the formulations decreases with refinement (1.8e-5,
+8.4e-6, 2.5e-6, 1.3e-6), i.e. both converge to the same solution. Smoothed L4 with
+`VerifySearch`: 0 mismatches in 14080 queries. The remaining failed load step of the smoothed run
+at L6 (load factor 0.65) is not caused by the contact discretization: the non-monotone rule of
+Newton's method (factor 1e6, from the rigid obstacle application) accepts a full step that
+increases the residual from 5e-3 to 0.36, after which the line search fails (next candidate:
+a smaller non-monotone factor).
+
+Also fixed: `PreconditionerML::update()` now clears the old AMG hierarchy before the matrix is
+re-calculated; otherwise the extension of the sparsity pattern (A2) re-created the matrix while the
+old hierarchy referred to it (segmentation fault in `ML_Ifpack_Destroy`, observed at L3).
+

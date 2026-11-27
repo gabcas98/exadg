@@ -1,0 +1,217 @@
+
+
+
+________________________________________________________________________________
+                                                                                
+                ////////                      ///////   ////////                
+                ///                           ///  ///  ///                     
+                //////    ///  ///  ///////   ///  ///  /// ////                
+                ///         ////    //   //   ///  ///  ///  ///                
+                ////////  ///  ///  ///////// ///////   ////////                
+                                                                                
+               High-Order Discontinuous Galerkin for the Exa-Scale              
+________________________________________________________________________________
+
+
+MPI info:
+
+  Number of processes:                       1
+
+Setting up elasticity solver:
+
+List of parameters:
+
+Mathematical model:
+  Problem type:                              QuasiStatic
+  Body force:                                false
+  Large deformation:                         true
+  Pull back body force:                      false
+  Pull back traction:                        false
+  Material type:                             StVenantKirchhoff
+
+Physical quantities:
+  Deformable contact penalty parameter:      1.0000e+02
+  Deformable contact radius:                 5.0000e-02
+  Smooth master normals:                     true
+  Deformable contact projection tolerance:   1.0000e-02
+  Deformable contact search:                 Verlet
+  Deformable contact in preconditioner:      true
+  Slave-master coupling in preconditioner:   true
+  Verlet skin:                               5.0000e-02
+  Verify Verlet search:                      true
+
+Temporal discretization:
+  load_increment:                            5.0000e-02
+
+Spatial Discretization:
+  Triangulation type:                        Serial
+  Element type:                              Hypercube
+  Number of global refinements:              2
+  Create coarse triangulations:              false
+  Mapping degree:                            1
+  Polynomial degree:                         1
+  Use matrix-based operator:                 false
+
+Solver:
+
+Newton:
+  Maximum number of iterations:              50
+  Absolute solver tolerance:                 1.0000e-10
+  Relative solver tolerance:                 1.0000e-09
+  Line search refinements:                   6
+  Non-monotone full steps:                   3
+  Non-monotone factor:                       1.0000e+06
+  Maximum number of damping steps:           20
+
+Linear solver:
+  Solver:                                    CG
+  Maximum number of iterations:              10000
+  Absolute solver tolerance:                 1.0000e-14
+  Relative solver tolerance:                 1.0000e-06
+  Preconditioner:                            AMG
+
+Generating grid for 2-dimensional problem:
+
+  Max. number of refinements:                2
+  Number of cells:                           416
+
+Construct elasticity operator ...
+
+Continuous Galerkin finite element discretization:
+
+  degree of 1D polynomials:                  1
+  number of dofs per cell:                   8
+  number of dofs (total):                    972
+
+Discontinuous Galerkin finite element discretization of scalar field:
+
+  degree of 1D polynomials:                  1
+  number of dofs per cell:                   4
+  number of dofs (total):                    1664
+
+... done!
+
+Setup elasticity operator ...
+
+... done!
+
+Contact between deformable surfaces:
+  Contact force on slave:    0.00000e+00 0.00000e+00
+  Active points / area:      0 / 0.00000e+00
+  Max. contact pressure:     0.00000e+00
+  Min. gap:                  5.00000e-02
+
+Solving quasi-static problem ...
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 5.0000e-04
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 5.0000e-02
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 1.0000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 1.5000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 2.0000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 2.5000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 3.0000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 3.5000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 4.0000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 4.5000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 5.0000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 5.5000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 6.0000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 6.5000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 7.0000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 7.5000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 8.0000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 8.5000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 9.0000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 9.5000e-01
+________________________________________________________________________________
+
+________________________________________________________________________________
+
+ Solve non-linear problem for load factor = 1.0000e+00
+________________________________________________________________________________
+
+... done!
+
+Contact between deformable surfaces:
+  Contact force on slave:    2.05863e-05 2.43999e-02
+  Active points / area:      40 / 1.00000e+00
+  Max. contact pressure:     4.02636e-02
+  Min. gap:                  -4.02636e-04

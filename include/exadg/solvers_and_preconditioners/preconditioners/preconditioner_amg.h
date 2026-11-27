@@ -221,6 +221,11 @@ public:
   void
   update() override
   {
+    // Release the old AMG hierarchy before the matrix is re-calculated: the operator may re-create
+    // the matrix with an extended sparsity pattern (e.g. contact between deformable surfaces), and
+    // the old hierarchy refers to the matrix, which would be accessed when it is destroyed.
+    amg.clear();
+
     // Clear content of matrix since calculate_system_matrix() adds the result.
     system_matrix *= 0.0;
 

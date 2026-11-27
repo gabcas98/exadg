@@ -28,6 +28,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <type_traits>
 
 // deal.II
 #include <deal.II/base/mpi.h>
@@ -78,6 +79,248 @@ rotate(dealii::Tensor<1, dim> const & t)
     AssertThrow(false, dealii::ExcNotImplemented());
   }
   return r;
+}
+/*
+ * Hyper-dual number v + a e_1 + b e_2 + ab e_1 e_2 (e_1^2 = e_2^2 = 0) for exact first and second
+ * derivatives by forward automatic differentiation: seeding a = 1 for variable i and b = 1 for
+ * variable j gives a = df/dx_i, b = df/dx_j, ab = d^2f/(dx_i dx_j).
+ */
+struct HyperDual
+{
+  double v = 0.0, a = 0.0, b = 0.0, ab = 0.0;
+
+  HyperDual() = default;
+  HyperDual(double const value) : v(value)
+  {
+  }
+  HyperDual(double const v, double const a, double const b, double const ab)
+    : v(v), a(a), b(b), ab(ab)
+  {
+  }
+};
+
+inline HyperDual
+operator+(HyperDual const & x, HyperDual const & y)
+{
+  return HyperDual(x.v + y.v, x.a + y.a, x.b + y.b, x.ab + y.ab);
+}
+
+inline HyperDual
+operator-(HyperDual const & x, HyperDual const & y)
+{
+  return HyperDual(x.v - y.v, x.a - y.a, x.b - y.b, x.ab - y.ab);
+}
+
+inline HyperDual
+operator-(HyperDual const & x)
+{
+  return HyperDual(-x.v, -x.a, -x.b, -x.ab);
+}
+
+inline HyperDual
+operator*(HyperDual const & x, HyperDual const & y)
+{
+  return HyperDual(x.v * y.v,
+                   x.a * y.v + x.v * y.a,
+                   x.b * y.v + x.v * y.b,
+                   x.ab * y.v + x.a * y.b + x.b * y.a + x.v * y.ab);
+}
+
+inline HyperDual
+inverse(HyperDual const & y)
+{
+  double const inv = 1.0 / y.v;
+  return HyperDual(inv,
+                   -y.a * inv * inv,
+                   -y.b * inv * inv,
+                   -y.ab * inv * inv + 2.0 * y.a * y.b * inv * inv * inv);
+}
+
+inline HyperDual
+operator/(HyperDual const & x, HyperDual const & y)
+{
+  return x * inverse(y);
+}
+
+inline HyperDual
+sqrt(HyperDual const & x)
+{
+  double const r = std::sqrt(x.v);
+  return HyperDual(r,
+                   0.5 * x.a / r,
+                   0.5 * x.b / r,
+                   0.5 * x.ab / r - 0.25 * x.a * x.b / (r * r * r));
+}
+
+inline double
+value(double const x)
+{
+  return x;
+}
+
+inline double
+value(HyperDual const & x)
+{
+  return x.v;
+}
+
+template<typename T>
+using Vector2 = std::array<T, 2>;
+
+// outward unit normal orientation * (t_1, -t_0) / |t| of the face [x_0, x_1]
+template<typename T>
+Vector2<T>
+segment_normal(Vector2<T> const & x_0, Vector2<T> const & x_1, double const orientation)
+{
+  using std::sqrt;
+  T const t0 = x_1[0] - x_0[0], t1 = x_1[1] - x_0[1];
+  T const length = sqrt(t0 * t0 + t1 * t1);
+  return {{T(orientation) * t1 / length, T(-orientation) * t0 / length}};
+}
+
+/*
+ * Smoothed master surface: on the master face [m_1, m_2] (length l, orientation o), the Hermite
+ * cubic p(xi) = H00 m_1 + H10 l T_1 + H01 m_2 + H11 l T_2 with the unit nodal tangents
+ * T_k = o (-nu_k1, nu_k0) perpendicular to the nodal normals nu_k. The nodal normals are the
+ * normalized sum of the unit outward normals of the master face and of the neighbouring face
+ * [p_0, p_1] at m_1 resp. [q_0, q_1] at m_2 (if present and if the angle between the two face
+ * normals does not exceed arccos(cos_max); otherwise the normal of the master face). The curves of
+ * neighbouring faces have the same tangent direction at the common vertex (G1 surface); on a
+ * straight surface, p(xi) is the straight segment.
+ *
+ * Closest point projection: Newton's method for f(xi) = (x_s - p(xi)) . p'(xi) = 0 in double
+ * precision, started at the projection onto the chord; from the converged value, two Newton steps
+ * in the type T, which makes the first and second derivatives with respect to the input exact for
+ * T = HyperDual (the Newton map has zero derivative with respect to xi at the solution). The gap is
+ * g = (x_s - p(xi)) . n(xi) with the unit normal n = o (p'_1, -p'_0) / |p'|, and dg/dx_s = n.
+ * Returns false if Newton's method does not converge or the solution is not a local minimum of
+ * the distance.
+ */
+template<typename T>
+bool
+smooth_projection(Vector2<T> const & x_s,
+                  Vector2<T> const & m_1,
+                  Vector2<T> const & m_2,
+                  double const       orientation,
+                  bool const         has_p,
+                  Vector2<T> const & p_0,
+                  Vector2<T> const & p_1,
+                  double const       orientation_p,
+                  bool const         has_q,
+                  Vector2<T> const & q_0,
+                  Vector2<T> const & q_1,
+                  double const       orientation_q,
+                  double const       cos_max,
+                  T &                xi,
+                  T &                gap,
+                  Vector2<T> &       nu_hat)
+{
+  using std::sqrt;
+
+  Vector2<T> const n_m = segment_normal(m_1, m_2, orientation);
+
+  auto const nodal_normal =
+    [&](bool const has, Vector2<T> const & x_0, Vector2<T> const & x_1, double const o) {
+      if(not has)
+        return n_m;
+      Vector2<T> const n = segment_normal(x_0, x_1, o);
+      if(value(n[0] * n_m[0] + n[1] * n_m[1]) < cos_max)
+        return n_m;
+      T const s0 = n[0] + n_m[0], s1 = n[1] + n_m[1];
+      T const length = sqrt(s0 * s0 + s1 * s1);
+      return Vector2<T>{{s0 / length, s1 / length}};
+    };
+
+  Vector2<T> const nu_1 = nodal_normal(has_p, p_0, p_1, orientation_p);
+  Vector2<T> const nu_2 = nodal_normal(has_q, q_0, q_1, orientation_q);
+
+  Vector2<T> const a = {{m_2[0] - m_1[0], m_2[1] - m_1[1]}};
+  T const          l = sqrt(a[0] * a[0] + a[1] * a[1]);
+  T const          o(orientation);
+
+  // tangent vectors l T_k of the Hermite curve
+  Vector2<T> const t_1 = {{-o * nu_1[1] * l, o * nu_1[0] * l}};
+  Vector2<T> const t_2 = {{-o * nu_2[1] * l, o * nu_2[0] * l}};
+
+  // p(xi), p'(xi), p''(xi) for the coefficient type U (double or T)
+  auto const curve = [](auto const & z,
+                        auto const & q_1,
+                        auto const & q_2,
+                        auto const & s_1,
+                        auto const & s_2,
+                        auto &       p,
+                        auto &       dp,
+                        auto &       ddp) {
+    using U    = std::decay_t<decltype(z)>;
+    U const z2 = z * z, z3 = z2 * z;
+    U const h00 = U(2.0) * z3 - U(3.0) * z2 + U(1.0), h10 = z3 - U(2.0) * z2 + z;
+    U const h01 = U(-2.0) * z3 + U(3.0) * z2, h11 = z3 - z2;
+    U const d00 = U(6.0) * z2 - U(6.0) * z, d10 = U(3.0) * z2 - U(4.0) * z + U(1.0);
+    U const d01 = U(-6.0) * z2 + U(6.0) * z, d11 = U(3.0) * z2 - U(2.0) * z;
+    U const e00 = U(12.0) * z - U(6.0), e10 = U(6.0) * z - U(4.0);
+    U const e01 = U(-12.0) * z + U(6.0), e11 = U(6.0) * z - U(2.0);
+    for(unsigned int c = 0; c < 2; ++c)
+    {
+      p[c]   = h00 * q_1[c] + h10 * s_1[c] + h01 * q_2[c] + h11 * s_2[c];
+      dp[c]  = d00 * q_1[c] + d10 * s_1[c] + d01 * q_2[c] + d11 * s_2[c];
+      ddp[c] = e00 * q_1[c] + e10 * s_1[c] + e01 * q_2[c] + e11 * s_2[c];
+    }
+  };
+
+  // 1. Newton's method in double precision on the values, started at the projection onto the
+  // chord; tolerance well above the round-off of xi (~ eps |x| / l)
+  auto const to_double = [](Vector2<T> const & v) {
+    return Vector2<double>{{value(v[0]), value(v[1])}};
+  };
+  Vector2<double> const xd = to_double(x_s), q1 = to_double(m_1), q2 = to_double(m_2),
+                        s1 = to_double(t_1), s2 = to_double(t_2);
+  Vector2<double> const ad = {{q2[0] - q1[0], q2[1] - q1[1]}};
+  double zd = ((xd[0] - q1[0]) * ad[0] + (xd[1] - q1[1]) * ad[1]) / (ad[0] * ad[0] + ad[1] * ad[1]);
+  bool   converged = false;
+  for(unsigned int k = 0; k < 50 and not converged; ++k)
+  {
+    Vector2<double> p, dp, ddp;
+    curve(zd, q1, q2, s1, s2, p, dp, ddp);
+    double const f = (xd[0] - p[0]) * dp[0] + (xd[1] - p[1]) * dp[1];
+    double const df =
+      (xd[0] - p[0]) * ddp[0] + (xd[1] - p[1]) * ddp[1] - (dp[0] * dp[0] + dp[1] * dp[1]);
+    if(not(df < 0.0))
+      return false;
+    double const dz = f / df;
+    zd -= dz;
+    converged = (std::abs(dz) <= 1e-12);
+  }
+  if(not converged)
+    return false;
+
+  // 2. two Newton steps in the type T from the converged value: the Newton map has zero
+  // derivative with respect to xi at the solution, so that the first and second derivatives of xi
+  // are exact for T = HyperDual (and the value is unchanged up to round-off)
+  Vector2<T> p, dp, ddp;
+  T          z(zd);
+  for(unsigned int k = 0; k < 2; ++k)
+  {
+    curve(z, m_1, m_2, t_1, t_2, p, dp, ddp);
+    Vector2<T> const r  = {{x_s[0] - p[0], x_s[1] - p[1]}};
+    T const          f  = r[0] * dp[0] + r[1] * dp[1];
+    T const          df = r[0] * ddp[0] + r[1] * ddp[1] - (dp[0] * dp[0] + dp[1] * dp[1]);
+    z                   = z - f / df;
+  }
+
+  xi = z;
+  curve(z, m_1, m_2, t_1, t_2, p, dp, ddp);
+  T const length_dp = sqrt(dp[0] * dp[0] + dp[1] * dp[1]);
+  nu_hat            = {{o * dp[1] / length_dp, -o * dp[0] / length_dp}};
+  gap               = (x_s[0] - p[0]) * nu_hat[0] + (x_s[1] - p[1]) * nu_hat[1];
+
+  return true;
+}
+
+template<typename T, int dim>
+Vector2<T>
+to_vector2(dealii::Tensor<1, dim> const & x)
+{
+  return {{T(x[0]), T(x[1])}};
 }
 } // namespace
 
@@ -184,6 +427,44 @@ DeformableContact<dim, Number>::setup(
     }
   }
 
+  // smooth normals: neighbouring face with the same boundary id at each vertex, unless the angle
+  // between the face normals exceeds the smoothing angle in the reference configuration (corner)
+  if(data.smooth_normals)
+  {
+    AssertThrow(data.smoothing_angle > 0.0 and
+                  data.smoothing_angle <= dealii::numbers::PI / 3.0 * (1.0 + 1e-12),
+                dealii::ExcMessage("Deformable contact: smoothing angle not in (0, pi/3] (bound "
+                                   "of the curve deviation in the Verlet certificate)."));
+    AssertThrow(data.projection_tolerance <= 0.05,
+                dealii::ExcMessage("Deformable contact: smoothed surface requires a projection "
+                                   "tolerance <= 0.05 (bound of the curve deviation)."));
+    Configuration reference;
+    reference.x.resize(vertices.size());
+    reference.d.resize(vertices.size());
+    for(unsigned int a = 0; a < vertices.size(); ++a)
+      reference.x[a] = vertices[a].X;
+
+    std::map<std::pair<dealii::types::boundary_id, unsigned int>, std::vector<unsigned int>>
+      faces_at_vertex;
+    for(unsigned int f = 0; f < faces.size(); ++f)
+      for(unsigned int const v : faces[f].vertex)
+        faces_at_vertex[{faces[f].boundary_id, v}].push_back(f);
+
+    for(unsigned int f = 0; f < faces.size(); ++f)
+      for(unsigned int v = 0; v < 2; ++v)
+      {
+        std::vector<unsigned int> const & adjacent =
+          faces_at_vertex[{faces[f].boundary_id, faces[f].vertex[v]}];
+        AssertThrow(adjacent.size() <= 2,
+                    dealii::ExcMessage("Deformable contact: more than two faces of a contact "
+                                       "surface share a vertex."));
+        for(unsigned int const g : adjacent)
+          if(g != f and face_normal(reference, f) * face_normal(reference, g) >=
+                          std::cos(data.smoothing_angle))
+            faces[f].neighbor[v] = g;
+      }
+  }
+
   dealii::QGauss<1> const quadrature(n_q);
 
   for(unsigned int p = 0; p < data.pairs.size(); ++p)
@@ -220,6 +501,7 @@ DeformableContact<dim, Number>::setup(
 
   list_built = false;
   lin_state.clear();
+  lin_smooth.clear();
   last_state.clear();
   reset_statistics();
 }
@@ -265,6 +547,57 @@ DeformableContact<dim, Number>::project(dealii::Point<dim> const &     x_s,
                                         ContactProjection<dim> &       result) const
 {
   ++stats.n_projections;
+
+  if(data.smooth_normals)
+  {
+    Face const & m        = faces[master];
+    auto const   position = [&](unsigned int const v) { return to_vector2<double, dim>(x.x[v]); };
+    bool const   has_p    = (m.neighbor[0] != dealii::numbers::invalid_unsigned_int);
+    bool const   has_q    = (m.neighbor[1] != dealii::numbers::invalid_unsigned_int);
+    Face const & p        = has_p ? faces[m.neighbor[0]] : m;
+    Face const & q        = has_q ? faces[m.neighbor[1]] : m;
+
+    double          xi, gap;
+    Vector2<double> nu;
+    if(not smooth_projection<double>(to_vector2<double, dim>(x_s),
+                                     position(m.vertex[0]),
+                                     position(m.vertex[1]),
+                                     m.orientation,
+                                     has_p,
+                                     position(p.vertex[0]),
+                                     position(p.vertex[1]),
+                                     p.orientation,
+                                     has_q,
+                                     position(q.vertex[0]),
+                                     position(q.vertex[1]),
+                                     q.orientation,
+                                     std::cos(data.smoothing_angle),
+                                     xi,
+                                     gap,
+                                     nu))
+      return false;
+
+    // (ii) projection onto the face
+    if(xi < -data.projection_tolerance or xi > 1.0 + data.projection_tolerance)
+      return false;
+
+    dealii::Tensor<1, dim> normal;
+    normal[0] = nu[0];
+    normal[1] = nu[1];
+
+    // (iii) normals facing each other
+    if(not(n_s * normal < 0.0))
+      return false;
+
+    dealii::Tensor<1, dim> const a = x.x[m.vertex[1]] - x.x[m.vertex[0]];
+    result.master                  = master;
+    result.xi                      = xi;
+    result.gap                     = gap;
+    result.length                  = a.norm();
+    result.normal                  = normal;
+    result.tangent                 = a / result.length;
+    return true;
+  }
 
   dealii::Point<dim> const &   x_1 = x.x[faces[master].vertex[0]];
   dealii::Tensor<1, dim> const a   = x.x[faces[master].vertex[1]] - x_1;
@@ -457,7 +790,12 @@ DeformableContact<dim, Number>::build_list(Configuration const & x) const
   // margin for round-off in the projection)
   auto const inflation = [&](unsigned int const master) {
     double const length = (x.x[faces[master].vertex[1]] - x.x[faces[master].vertex[0]]).norm();
-    return (data.radius + data.skin + data.projection_tolerance * (length + data.skin)) *
+    // smoothed surface: the Hermite curve deviates from the chord by at most
+    // (4/27) (|l T_1 - a| + |l T_2 - a|) <= 0.16 l for nodal normals within 30 degrees of the face
+    // normal (smoothing angle <= 60 degrees) and tau <= 0.05
+    double const deviation = data.smooth_normals ? 0.16 : 0.0;
+    return (data.radius + data.skin +
+            (data.projection_tolerance + deviation) * (length + data.skin)) *
              (1.0 + 1e-10) +
            1e-13 * scale;
   };
@@ -574,6 +912,134 @@ DeformableContact<dim, Number>::add(VectorType &                   dst,
 }
 
 template<int dim, typename Number>
+typename DeformableContact<dim, Number>::LocalTopology
+DeformableContact<dim, Number>::local_topology(unsigned int const point,
+                                               unsigned int const master) const
+{
+  LocalTopology topology;
+  auto const    add_vertex = [&](unsigned int const v) {
+    for(unsigned int k = 0; k < topology.n; ++k)
+      if(topology.vertex[k] == v)
+        return k;
+    topology.vertex[topology.n] = v;
+    return topology.n++;
+  };
+
+  SlavePoint const & sp    = slave_points[point];
+  Face const &       slave = faces[slave_faces[sp.slave_face].face];
+  Face const &       m     = faces[master];
+
+  topology.slave_a     = add_vertex(slave.vertex[0]);
+  topology.slave_b     = add_vertex(slave.vertex[1]);
+  topology.master_1    = add_vertex(m.vertex[0]);
+  topology.master_2    = add_vertex(m.vertex[1]);
+  topology.eta         = sp.eta;
+  topology.orientation = m.orientation;
+  for(unsigned int v = 0; v < 2; ++v)
+  {
+    topology.has_neighbor[v]    = (m.neighbor[v] != dealii::numbers::invalid_unsigned_int);
+    Face const & neighbor       = topology.has_neighbor[v] ? faces[m.neighbor[v]] : m;
+    topology.neighbor_vertex[v] = {
+      {add_vertex(neighbor.vertex[0]), add_vertex(neighbor.vertex[1])}};
+    topology.neighbor_orientation[v] = neighbor.orientation;
+  }
+  return topology;
+}
+
+template<int dim, typename Number>
+void
+DeformableContact<dim, Number>::smooth_gap_derivatives(
+  LocalTopology const &     topology,
+  Configuration const &     x,
+  bool const                hessian,
+  double &                  gap,
+  std::array<double, 12> &  gradient,
+  std::array<double, 144> * hessian_values) const
+{
+  unsigned int const n_dofs = 2 * topology.n;
+
+  // gap with the hyper-dual seeds a on local DoF i and b on local DoF j (invalid: no seed)
+  auto const evaluate = [&](unsigned int const i, unsigned int const j) {
+    std::array<Vector2<HyperDual>, 6> X;
+    for(unsigned int k = 0; k < topology.n; ++k)
+      for(unsigned int c = 0; c < 2; ++c)
+        X[k][c] = HyperDual(x.x[topology.vertex[k]][c],
+                            (2 * k + c == i) ? 1.0 : 0.0,
+                            (2 * k + c == j) ? 1.0 : 0.0,
+                            0.0);
+
+    double const             eta = topology.eta;
+    Vector2<HyperDual> const x_s = {
+      {HyperDual(1.0 - eta) * X[topology.slave_a][0] + HyperDual(eta) * X[topology.slave_b][0],
+       HyperDual(1.0 - eta) * X[topology.slave_a][1] + HyperDual(eta) * X[topology.slave_b][1]}};
+
+    HyperDual          xi, g;
+    Vector2<HyperDual> nu;
+    bool const         found = smooth_projection<HyperDual>(x_s,
+                                                    X[topology.master_1],
+                                                    X[topology.master_2],
+                                                    topology.orientation,
+                                                    topology.has_neighbor[0],
+                                                    X[topology.neighbor_vertex[0][0]],
+                                                    X[topology.neighbor_vertex[0][1]],
+                                                    topology.neighbor_orientation[0],
+                                                    topology.has_neighbor[1],
+                                                    X[topology.neighbor_vertex[1][0]],
+                                                    X[topology.neighbor_vertex[1][1]],
+                                                    topology.neighbor_orientation[1],
+                                                    std::cos(data.smoothing_angle),
+                                                    xi,
+                                                    g,
+                                                    nu);
+    AssertThrow(found, dealii::ExcInternalError());
+    return g;
+  };
+
+  gradient.fill(0.0);
+  unsigned int const invalid = dealii::numbers::invalid_unsigned_int;
+  if(not hessian)
+  {
+    for(unsigned int i = 0; i < n_dofs; ++i)
+    {
+      HyperDual const g = evaluate(i, invalid);
+      gradient[i]       = g.a;
+      gap               = g.v;
+    }
+  }
+  else
+  {
+    hessian_values->fill(0.0);
+    for(unsigned int i = 0; i < n_dofs; ++i)
+      for(unsigned int j = i; j < n_dofs; ++j)
+      {
+        HyperDual const g             = evaluate(i, j);
+        (*hessian_values)[i * 12 + j] = g.ab;
+        (*hessian_values)[j * 12 + i] = g.ab;
+        if(i == j)
+          gradient[i] = g.a;
+        gap = g.v;
+      }
+  }
+}
+
+template<int dim, typename Number>
+std::vector<unsigned int>
+DeformableContact<dim, Number>::point_vertices(unsigned int const             point,
+                                               ContactProjection<dim> const & state) const
+{
+  if(data.smooth_normals)
+  {
+    LocalTopology const topology = local_topology(point, state.master);
+    return std::vector<unsigned int>(topology.vertex.begin(), topology.vertex.begin() + topology.n);
+  }
+  Face const & slave = faces[slave_faces[slave_points[point].slave_face].face];
+  return {slave.vertex[0],
+          slave.vertex[1],
+          faces[state.master].vertex[0],
+          faces[state.master].vertex[1]};
+}
+
+template<int dim, typename Number>
 void
 DeformableContact<dim, Number>::evaluate_residual_add(VectorType & dst, VectorType const & u) const
 {
@@ -605,9 +1071,28 @@ DeformableContact<dim, Number>::evaluate_residual_add(VectorType & dst, VectorTy
     if(not state.active())
       continue;
 
-    SlavePoint const & sp     = slave_points[p];
-    Face const &       slave  = faces[slave_faces[sp.slave_face].face];
-    Face const &       master = faces[state.master];
+    SlavePoint const & sp = slave_points[p];
+
+    if(data.smooth_normals)
+    {
+      // R = - w lambda dg/du (gradient by automatic differentiation)
+      LocalTopology const    topology = local_topology(p, state.master);
+      double                 gap;
+      std::array<double, 12> gradient;
+      smooth_gap_derivatives(topology, last_positions, false, gap, gradient, nullptr);
+      double const factor = -sp.weight * data.penalty * (-gap);
+      for(unsigned int k = 0; k < topology.n; ++k)
+      {
+        dealii::Tensor<1, dim> value;
+        for(unsigned int c = 0; c < dim; ++c)
+          value[c] = factor * gradient[2 * k + c];
+        add(dst, topology.vertex[k], value);
+      }
+      continue;
+    }
+
+    Face const & slave  = faces[slave_faces[sp.slave_face].face];
+    Face const & master = faces[state.master];
 
     // R = - w lambda dg/du with lambda = epsilon (-g), dg = (dx_s - dx_m) . n
     dealii::Tensor<1, dim> const f = (sp.weight * data.penalty * (-state.gap)) * state.normal;
@@ -643,6 +1128,21 @@ DeformableContact<dim, Number>::set_linearization(VectorType const & u) const
     search_all(x, data.search, lin_state);
     ScopedTime timer(stats.t_lin);
     lin_positions = x;
+  }
+
+  // smooth normals: gradient and Hessian of the gap of the active points
+  if(data.smooth_normals)
+  {
+    ScopedTime timer(stats.t_lin);
+    lin_smooth.resize(lin_state.size());
+    for(unsigned int p = 0; p < lin_state.size(); ++p)
+      if(lin_state[p].active())
+      {
+        lin_smooth[p].topology = local_topology(p, lin_state[p].master);
+        double gap;
+        smooth_gap_derivatives(
+          lin_smooth[p].topology, x, true, gap, lin_smooth[p].gradient, &lin_smooth[p].hessian);
+      }
   }
 
   // changes of the contact state with respect to the previous linearization
@@ -740,9 +1240,10 @@ DeformableContact<dim, Number>::pattern_contains_couplings() const
   {
     if(not lin_state[p].active())
       continue;
-    for(unsigned int const a : faces[slave_faces[slave_points[p].slave_face].face].vertex)
-      for(unsigned int const b : faces[lin_state[p].master].vertex)
-        if(a != b and pattern_couplings.find({a, b}) == pattern_couplings.end())
+    std::vector<unsigned int> const local = point_vertices(p, lin_state[p]);
+    for(unsigned int const a : local)
+      for(unsigned int const b : local)
+        if(a < b and pattern_couplings.find({a, b}) == pattern_couplings.end())
           return false;
   }
   return true;
@@ -756,9 +1257,10 @@ DeformableContact<dim, Number>::add_couplings_to_pattern(dealii::DynamicSparsity
   {
     if(not lin_state[p].active())
       continue;
-    for(unsigned int const a : faces[slave_faces[slave_points[p].slave_face].face].vertex)
-      for(unsigned int const b : faces[lin_state[p].master].vertex)
-        if(a != b)
+    std::vector<unsigned int> const local = point_vertices(p, lin_state[p]);
+    for(unsigned int const a : local)
+      for(unsigned int const b : local)
+        if(a < b)
           pattern_couplings.insert({a, b});
   }
 
@@ -815,6 +1317,41 @@ DeformableContact<dim, Number>::add_to_matrix(dealii::TrilinosWrappers::SparseMa
 
     SlavePoint const & sp     = slave_points[p];
     double const       factor = data.penalty * sp.weight;
+    if(data.smooth_normals)
+    {
+      // epsilon w (dg/du) (x) (dg/du) on all local vertices (with coupling) or on the slave and
+      // master face blocks
+      SmoothLinearization const & lin = lin_smooth[p];
+      for(unsigned int k = 0; k < lin.topology.n; ++k)
+        for(unsigned int c = 0; c < dim; ++c)
+        {
+          Vertex const & vk = vertices[lin.topology.vertex[k]];
+          if(vk.constrained[c])
+            continue;
+          for(unsigned int l = 0; l < lin.topology.n; ++l)
+          {
+            if(not data.preconditioner_coupling)
+            {
+              bool const slave_k = (k == lin.topology.slave_a or k == lin.topology.slave_b);
+              bool const slave_l = (l == lin.topology.slave_a or l == lin.topology.slave_b);
+              bool const face_k  = (k == lin.topology.master_1 or k == lin.topology.master_2);
+              bool const face_l  = (l == lin.topology.master_1 or l == lin.topology.master_2);
+              if(not((slave_k and slave_l) or (face_k and face_l)))
+                continue;
+            }
+            for(unsigned int d = 0; d < dim; ++d)
+            {
+              Vertex const & vl = vertices[lin.topology.vertex[l]];
+              if(vl.constrained[d])
+                continue;
+              matrix.add(vk.dof[c],
+                         vl.dof[d],
+                         factor * lin.gradient[2 * k + c] * lin.gradient[2 * l + d]);
+            }
+          }
+        }
+      continue;
+    }
     if(data.preconditioner_coupling)
     {
       // dg/du = (N_a n, N_b n, -N_1 n, -N_2 n) for the slave vertices a, b and the master
@@ -882,9 +1419,42 @@ DeformableContact<dim, Number>::apply_jacobian_add(VectorType & dst, VectorType 
     if(not state.active())
       continue;
 
-    SlavePoint const & sp     = slave_points[p];
-    Face const &       slave  = faces[slave_faces[sp.slave_face].face];
-    Face const &       master = faces[state.master];
+    SlavePoint const & sp = slave_points[p];
+
+    if(data.smooth_normals)
+    {
+      // J v = w (epsilon (dg/du . v) dg/du - lambda d^2g/du^2 v), lambda = epsilon (-g)
+      SmoothLinearization const & lin    = lin_smooth[p];
+      unsigned int const          n_dofs = 2 * lin.topology.n;
+      std::array<double, 12>      v_local;
+      for(unsigned int k = 0; k < lin.topology.n; ++k)
+      {
+        dealii::Tensor<1, dim> const value = read(lin.topology.vertex[k]);
+        for(unsigned int c = 0; c < dim; ++c)
+          v_local[2 * k + c] = value[c];
+      }
+      double delta_g = 0.0;
+      for(unsigned int i = 0; i < n_dofs; ++i)
+        delta_g += lin.gradient[i] * v_local[i];
+      double const lambda = epsilon * (-state.gap);
+      for(unsigned int k = 0; k < lin.topology.n; ++k)
+      {
+        dealii::Tensor<1, dim> value;
+        for(unsigned int c = 0; c < dim; ++c)
+        {
+          unsigned int const i  = 2 * k + c;
+          double             Hv = 0.0;
+          for(unsigned int j = 0; j < n_dofs; ++j)
+            Hv += lin.hessian[i * 12 + j] * v_local[j];
+          value[c] = sp.weight * (epsilon * delta_g * lin.gradient[i] - lambda * Hv);
+        }
+        add(dst, lin.topology.vertex[k], value);
+      }
+      continue;
+    }
+
+    Face const & slave  = faces[slave_faces[sp.slave_face].face];
+    Face const & master = faces[state.master];
 
     double const                   xi = state.xi, g = state.gap, l = state.length;
     dealii::Tensor<1, dim> const & n = state.normal;
@@ -950,7 +1520,20 @@ DeformableContact<dim, Number>::compute_quantities(VectorType const & u) const
     if(not state[p].active())
       continue;
     double const lambda = data.penalty * (-state[p].gap);
-    result.force += (slave_points[p].weight * lambda) * state[p].normal;
+    if(data.smooth_normals)
+    {
+      // force on the slave face: w lambda dg/dx_s (derivatives with respect to the slave vertices)
+      LocalTopology const    topology = local_topology(p, state[p].master);
+      double                 gap;
+      std::array<double, 12> gradient;
+      smooth_gap_derivatives(topology, x, false, gap, gradient, nullptr);
+      for(unsigned int c = 0; c < dim; ++c)
+        result.force[c] +=
+          slave_points[p].weight * lambda *
+          (gradient[2 * topology.slave_a + c] + gradient[2 * topology.slave_b + c]);
+    }
+    else
+      result.force += (slave_points[p].weight * lambda) * state[p].normal;
     result.n_active += 1;
     result.active_area += slave_points[p].weight;
     result.max_pressure = std::max(result.max_pressure, lambda);

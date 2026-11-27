@@ -317,6 +317,7 @@ Operator<dim, Number>::setup_operators()
       contact_data.add_to_preconditioner   = param.deformable_contact_in_preconditioner;
       contact_data.log_linearization       = param.deformable_contact_log;
       contact_data.preconditioner_coupling = param.deformable_contact_preconditioner_coupling;
+      contact_data.smooth_normals          = param.deformable_contact_smooth_normals;
 
       // constrained DoFs (Dirichlet), global indices
       std::vector<dealii::types::global_dof_index> constrained_dofs;

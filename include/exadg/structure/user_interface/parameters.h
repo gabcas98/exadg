@@ -193,6 +193,9 @@ public:
   // diagnostics: changes of the contact state per linearization and Newton residuals
   bool deformable_contact_log;
 
+  // continuous master normal (averaged nodal normals), see DeformableContactData::smooth_normals
+  bool deformable_contact_smooth_normals;
+
   /**************************************************************************************/
   /*                                                                                    */
   /*                             TEMPORAL DISCRETIZATION                                */

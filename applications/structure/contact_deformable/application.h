@@ -165,6 +165,9 @@ public:
       prm.add_parameter("PreconditionerCoupling",
                         preconditioner_coupling,
                         "Slave-master coupling in the AMG matrix (extended sparsity pattern).");
+      prm.add_parameter("SmoothNormals",
+                        smooth_normals,
+                        "Continuous master normal (averaged nodal normals).");
       prm.add_parameter("LogContactState",
                         log_contact_state,
                         "Print the contact state changes and the Newton residuals.");
@@ -205,6 +208,7 @@ private:
     this->param.deformable_contact_in_preconditioner       = contact_in_preconditioner;
     this->param.deformable_contact_preconditioner_coupling = preconditioner_coupling;
     this->param.deformable_contact_log                     = log_contact_state;
+    this->param.deformable_contact_smooth_normals          = smooth_normals;
 
     this->param.load_increment = load_increment;
 
@@ -430,6 +434,7 @@ private:
   bool                  contact_in_preconditioner = false;
   bool                  preconditioner_coupling   = true;
   bool                  log_contact_state         = false;
+  bool                  smooth_normals            = false;
 
   double load_increment = 0.05;
   double newton_abs_tol = 1.e-8;

@@ -141,6 +141,23 @@ struct DeformableContactData
 
   // print one line per linearization with the changes of the contact state (diagnostics)
   bool log_linearization = false;
+
+  /*
+   * Smoothed master surface (B2): on each master face, a Hermite cubic through its vertices whose
+   * tangents are perpendicular to the nodal normals nu_a (normalized sum of the unit outward
+   * normals of the two master faces adjacent to vertex a), and closest point projection onto this
+   * curve. The surface is G1, so the gap and its gradient dg/dx_s = n (the curve normal, i.e. the
+   * direction of the contact force) are continuous across master vertices. A vertex is a corner (no
+   * averaging, nu_a = normal of the face) if the angle between the two face normals exceeds
+   * smoothing_angle in the reference configuration (corners of the body) or in the current
+   * configuration (folds). On straight surfaces, xi and g coincide with the segment formulation.
+   * Residual and tangent are the first and second derivatives of the penalty potential, computed by
+   * forward automatic differentiation (hyper-dual numbers) with respect to the up to six vertices
+   * that g depends on. The Verlet certificate includes the deviation of the curve from the chord
+   * (<= 0.16 l), which requires smoothing_angle <= pi/3 and projection_tolerance <= 0.05.
+   */
+  bool   smooth_normals  = false;
+  double smoothing_angle = 1.0471975511965976; // pi / 3
 };
 
 /*
@@ -367,7 +384,62 @@ private:
     // adjacent cell and local face number (data of the cell needed for tractions)
     typename dealii::DoFHandler<dim>::active_cell_iterator cell;
     unsigned int                                           face_no;
+    // neighbouring face (same boundary id) at vertex[v] used for the nodal normal of the smooth
+    // normal formulation (invalid: corner or end of the surface)
+    std::array<unsigned int, 2> neighbor = {
+      {dealii::numbers::invalid_unsigned_int, dealii::numbers::invalid_unsigned_int}};
   };
+
+  // vertex displacements d_a and positions x_a = X_a + d_a of a configuration
+  struct Configuration
+  {
+    std::vector<dealii::Point<dim>>     x;
+    std::vector<dealii::Tensor<1, dim>> d;
+  };
+
+  /*
+   * Smooth normal formulation: local vertices that the gap of a slave point and a master face
+   * depends on (slave face, master face, other vertices of the neighbouring master faces; each
+   * vertex once), and the local indices of the roles.
+   */
+  struct LocalTopology
+  {
+    unsigned int                n = 0;
+    std::array<unsigned int, 6> vertex;
+    unsigned int                slave_a, slave_b, master_1, master_2;
+    double                      eta;
+    double                      orientation;
+    // neighbouring faces at master_1 (index 0) and master_2 (index 1): local indices of their
+    // vertices in the order of the face, and orientation
+    std::array<bool, 2>                        has_neighbor;
+    std::array<std::array<unsigned int, 2>, 2> neighbor_vertex;
+    std::array<double, 2>                      neighbor_orientation;
+  };
+
+  // linearization of the gap of an active point (smooth normal formulation)
+  struct SmoothLinearization
+  {
+    LocalTopology           topology;
+    std::array<double, 12>  gradient;
+    std::array<double, 144> hessian;
+  };
+
+  LocalTopology
+  local_topology(unsigned int const point, unsigned int const master) const;
+
+  // gap of a slave point and a master face and its gradient (and Hessian) with respect to the
+  // local vertex coordinates (smooth normal formulation)
+  void
+  smooth_gap_derivatives(LocalTopology const &     topology,
+                         Configuration const &     x,
+                         bool const                hessian,
+                         double &                  gap,
+                         std::array<double, 12> &  gradient,
+                         std::array<double, 144> * hessian_values) const;
+
+  // local vertices of the contact term of an active point (for the sparsity pattern)
+  std::vector<unsigned int>
+  point_vertices(unsigned int const point, ContactProjection<dim> const & state) const;
 
   struct SlavePoint
   {
@@ -390,12 +462,6 @@ private:
     std::vector<unsigned int>  master_faces;
   };
 
-  // vertex displacements d_a and positions x_a = X_a + d_a of a configuration
-  struct Configuration
-  {
-    std::vector<dealii::Point<dim>>     x;
-    std::vector<dealii::Tensor<1, dim>> d;
-  };
 
   void
   compute_positions(VectorType const & u, Configuration & x) const;
@@ -471,6 +537,7 @@ private:
    */
   mutable Configuration                       lin_positions;
   mutable std::vector<ContactProjection<dim>> lin_state;
+  mutable std::vector<SmoothLinearization>    lin_smooth;
 
   // positions and search result of the last residual evaluation (reused by set_linearization()
   // if the positions are identical)
