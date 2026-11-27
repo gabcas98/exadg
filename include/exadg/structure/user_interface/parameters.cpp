@@ -60,6 +60,8 @@ Parameters::Parameters()
     deformable_contact_log(false),
     deformable_contact_method(ContactMethod::Penalty),
     deformable_contact_smooth_normals(false),
+    deformable_contact_augmented_lagrangian(false),
+    deformable_contact_uzawa_gap_tolerance(1.e-6),
     deformable_contact_on_multigrid_levels(true),
 
     // TEMPORAL DISCRETIZATION
@@ -234,6 +236,9 @@ Parameters::print_parameters_physical_quantities(dealii::ConditionalOStream cons
                     deformable_contact_penalty_parameter);
     print_parameter(pcout, "Deformable contact radius", deformable_contact_radius);
     print_parameter(pcout, "Smooth master normals", deformable_contact_smooth_normals);
+    print_parameter(pcout, "Augmented Lagrangian", deformable_contact_augmented_lagrangian);
+    if(deformable_contact_augmented_lagrangian)
+      print_parameter(pcout, "Uzawa gap tolerance", deformable_contact_uzawa_gap_tolerance);
     print_parameter(pcout,
                     "Deformable contact on multigrid levels",
                     deformable_contact_on_multigrid_levels);

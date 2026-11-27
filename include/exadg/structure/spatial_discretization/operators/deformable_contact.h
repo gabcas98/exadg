@@ -171,6 +171,19 @@ struct DeformableContactData
    * (normal traction > gamma r_c) are counted as cutoff hits. Requires St. Venant-Kirchhoff with
    * constant coefficients (youngs_modulus, poissons_ratio, plane_stress).
    */
+  /*
+   * Augmented Lagrangian method (penalty method only): contact pressure
+   * lambda = [lambda_bar - epsilon g]_+ with a multiplier estimate lambda_bar per slave point,
+   * which is updated after each converged Newton solve (Uzawa iteration, see
+   * update_multipliers()) until the maximum penetration of the active points is below
+   * uzawa_gap_tolerance (at most uzawa_max_iterations per load step). Residual and tangent are
+   * those of the penalty method with this pressure, so that Newton's method keeps the moderate
+   * stiffness epsilon while the constraint is enforced up to the tolerance.
+   */
+  bool         augmented_lagrangian = false;
+  double       uzawa_gap_tolerance  = 1.e-6;
+  unsigned int uzawa_max_iterations = 50;
+
   bool   nitsche        = false;
   double youngs_modulus = 0.0;
   double poissons_ratio = 0.0;
@@ -207,6 +220,7 @@ struct DeformableContactStatistics
   unsigned long n_active      = 0; // sum of active points over all queries
   unsigned long n_ties        = 0; // queries with two admissible faces at the same |g|
   unsigned long n_cutoff      = 0; // queries without admissible face within r_c, but with an
+  unsigned long n_uzawa       = 0; // Uzawa updates (augmented Lagrangian)
                                    // active admissible face beyond r_c (only counted by
                                    // exhaustive searches)
 
@@ -354,6 +368,29 @@ public:
 
   DeformableContactQuantities<dim>
   compute_quantities(VectorType const & u) const;
+
+  /*
+   * Augmented Lagrangian method: Uzawa update at the converged displacement u. Returns true if the
+   * maximum penetration of the active points is below the tolerance (the multipliers are then not
+   * changed); otherwise lambda_bar <- [lambda_bar - epsilon g]_+ (0 for points without an
+   * admissible master face) and false. max_penetration returns the maximum penetration.
+   */
+  bool
+  update_multipliers(VectorType const & u, double & max_penetration) const;
+
+  std::vector<double> const &
+  get_multipliers() const;
+
+  /*
+   * Multigrid levels of the augmented Lagrangian method: activation g <= shift instead of g <= 0,
+   * with shift = max(lambda_bar) / epsilon of the fine level (the fine active set
+   * lambda_bar - epsilon g >= 0 contains points with small positive gaps).
+   */
+  void
+  set_activation_shift(double const shift) const;
+
+  void
+  set_multipliers(std::vector<double> const & values) const;
 
   /*
    * Search for all slave points at u with the given strategy (for tests and diagnostics; the
@@ -692,6 +729,10 @@ private:
   mutable std::vector<ContactProjection<dim>> lin_state;
   mutable std::vector<SmoothLinearization>    lin_smooth;
   // active set and contact pressure at the linearization state (penalty: g <= 0, Nitsche: A >= 0)
+  // augmented Lagrangian method: multiplier estimates lambda_bar per slave point
+  mutable std::vector<double> multipliers;
+  mutable double              activation_shift = 0.0;
+
   mutable std::vector<char>         lin_active;
   mutable std::vector<double>       lin_lambda;
   mutable std::vector<NitscheState> lin_nitsche;

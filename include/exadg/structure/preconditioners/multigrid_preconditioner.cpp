@@ -105,6 +105,21 @@ MultigridPreconditioner<dim, Number>::update()
       vector_multigrid_type_ptr  = &vector_multigrid_type_copy;
     }
 
+    // deformable contact with the augmented Lagrangian method: activation shift of the levels
+    if(auto const fine_contact = pde_operator_nonlinear->get_deformable_contact())
+      if(fine_contact->get_data().augmented_lagrangian)
+      {
+        double max_multiplier = 0.0;
+        for(double const m : fine_contact->get_multipliers())
+          max_multiplier = std::max(max_multiplier, m);
+        double const shift = max_multiplier / fine_contact->get_data().penalty;
+        this->for_all_levels([&](unsigned int const level) {
+          if(auto const level_contact =
+               this->get_operator_nonlinear(level)->get_deformable_contact())
+            level_contact->set_activation_shift(shift);
+        });
+      }
+
     // Copy displacement vector to finest level
     // Note: This function also re-assembles the sparse matrix in case a matrix-based implementation
     // is used
@@ -311,9 +326,10 @@ MultigridPreconditioner<dim, Number>::initialize_operator(
       // the Chebyshev smoother is not suited)
       DeformableContactData level_data =
         pde_operator_nonlinear->get_deformable_contact()->get_data();
-      level_data.penalty_part_only = true;
-      level_data.log_linearization = false;
-      level_data.verify            = false;
+      level_data.penalty_part_only    = true;
+      level_data.augmented_lagrangian = false; // levels: penalty activation
+      level_data.log_linearization    = false;
+      level_data.verify               = false;
 
       auto contact = std::make_shared<DeformableContact<dim, MultigridNumber>>();
       contact->setup(matrix_free_level.get_dof_handler(data.dof_index),

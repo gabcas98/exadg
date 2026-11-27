@@ -197,6 +197,11 @@ public:
   // Nitsche (theta = 0, deformable_contact_penalty_parameter = gamma_0 E, St. Venant-Kirchhoff)
   ContactMethod deformable_contact_method;
 
+  // augmented Lagrangian method (penalty method only): Uzawa iteration until the maximum
+  // penetration is below the gap tolerance, see DeformableContactData::augmented_lagrangian
+  bool   deformable_contact_augmented_lagrangian;
+  double deformable_contact_uzawa_gap_tolerance;
+
   // continuous master normal (averaged nodal normals), see DeformableContactData::smooth_normals
   bool deformable_contact_smooth_normals;
 

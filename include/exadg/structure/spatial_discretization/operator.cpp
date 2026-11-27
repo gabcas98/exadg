@@ -319,6 +319,8 @@ Operator<dim, Number>::setup_operators()
       contact_data.preconditioner_coupling = param.deformable_contact_preconditioner_coupling;
       contact_data.smooth_normals          = param.deformable_contact_smooth_normals;
       contact_data.on_multigrid_levels     = param.deformable_contact_on_multigrid_levels;
+      contact_data.augmented_lagrangian    = param.deformable_contact_augmented_lagrangian;
+      contact_data.uzawa_gap_tolerance     = param.deformable_contact_uzawa_gap_tolerance;
 
       // Nitsche's method: material data of the slave traction (St. Venant-Kirchhoff with
       // constant coefficients, as the rigid obstacle Nitsche contact)
@@ -1207,6 +1209,39 @@ Operator<dim, Number>::solve_nonlinear(VectorType &       sol,
   update.do_update                = update_preconditioner;
   update.update_every_newton_iter = param.update_preconditioner_every_newton_iterations;
   update.update_once_converged    = param.update_preconditioner_once_newton_converged;
+
+  // contact between deformable surfaces with the augmented Lagrangian method: Uzawa iteration
+  // around Newton's method (the multipliers are restored if Newton's method fails, so that the
+  // load step can be repeated with a smaller increment)
+  auto const contact = get_deformable_contact();
+  if(contact and contact->get_data().augmented_lagrangian)
+  {
+    std::vector<double> const multipliers_start = contact->get_multipliers();
+    unsigned int              n_newton = 0, n_linear = 0;
+    try
+    {
+      for(unsigned int k = 0;; ++k)
+      {
+        auto const iter = newton_solver->solve(sol, update);
+        n_newton += std::get<0>(iter);
+        n_linear += std::get<1>(iter);
+
+        double max_penetration = 0.0;
+        if(contact->update_multipliers(sol, max_penetration))
+          break;
+        AssertThrow(k + 1 < contact->get_data().uzawa_max_iterations,
+                    dealii::ExcMessage("Uzawa iteration of the augmented Lagrangian method did not "
+                                       "converge (maximum penetration " +
+                                       std::to_string(max_penetration) + ")."));
+      }
+    }
+    catch(...)
+    {
+      contact->set_multipliers(multipliers_start);
+      throw;
+    }
+    return std::tuple<unsigned int, unsigned int>(n_newton, n_linear);
+  }
 
   // solve nonlinear problem
   auto const iter = newton_solver->solve(sol, update);

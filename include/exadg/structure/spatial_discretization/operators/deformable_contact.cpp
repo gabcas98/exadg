@@ -771,6 +771,11 @@ DeformableContact<dim, Number>::setup(
     }
   }
 
+  AssertThrow(not(data.augmented_lagrangian and data.nitsche),
+              dealii::ExcMessage("The augmented Lagrangian method is implemented for the penalty "
+                                 "method."));
+  multipliers.assign(slave_points.size(), 0.0);
+
   list_built = false;
   lin_state.clear();
   lin_smooth.clear();
@@ -1551,7 +1556,8 @@ DeformableContact<dim, Number>::pressure_argument(unsigned int const            
                                                   NitscheState * nitsche_state) const
 {
   if(not data.nitsche)
-    return -data.penalty * projection.gap;
+    return (data.augmented_lagrangian ? multipliers[point] : 0.0) +
+           data.penalty * (activation_shift - projection.gap);
 
   NitscheState state;
   slave_traction(point, u, state.F, state.S, state.traction);
@@ -2300,6 +2306,58 @@ DeformableContact<dim, Number>::compute_quantities(VectorType const & u) const
 }
 
 template<int dim, typename Number>
+bool
+DeformableContact<dim, Number>::update_multipliers(VectorType const & u,
+                                                   double &           max_penetration) const
+{
+  AssertThrow(data.augmented_lagrangian, dealii::ExcInternalError());
+
+  Configuration x;
+  compute_positions(u, x);
+  std::vector<ContactProjection<dim>> state;
+  search_all(x, data.search, state);
+
+  std::vector<double> updated(slave_points.size(), 0.0);
+  max_penetration = 0.0;
+  for(unsigned int p = 0; p < slave_points.size(); ++p)
+    if(state[p].found())
+    {
+      updated[p] = std::max(pressure_argument(p, state[p], u, nullptr), 0.0);
+      if(updated[p] > 0.0)
+        max_penetration = std::max(max_penetration, -state[p].gap);
+    }
+
+  if(max_penetration <= data.uzawa_gap_tolerance)
+    return true;
+
+  multipliers = updated;
+  ++stats.n_uzawa;
+  return false;
+}
+
+template<int dim, typename Number>
+void
+DeformableContact<dim, Number>::set_activation_shift(double const shift) const
+{
+  activation_shift = shift;
+}
+
+template<int dim, typename Number>
+std::vector<double> const &
+DeformableContact<dim, Number>::get_multipliers() const
+{
+  return multipliers;
+}
+
+template<int dim, typename Number>
+void
+DeformableContact<dim, Number>::set_multipliers(std::vector<double> const & values) const
+{
+  AssertThrow(values.size() == multipliers.size(), dealii::ExcInternalError());
+  multipliers = values;
+}
+
+template<int dim, typename Number>
 std::vector<ContactProjection<dim>>
 DeformableContact<dim, Number>::search(VectorType const &          u,
                                        ContactSearchStrategy const strategy) const
@@ -2443,6 +2501,7 @@ DeformableContact<dim, Number>::print_statistics(dealii::ConditionalOStream cons
         << (s.n_queries > 0 ? double(s.n_active) * slave_points.size() / s.n_queries : 0.0)
         << std::endl
         << "  max 2 D_max / skin (valid lists)   = " << s.max_ratio_D_to_skin << std::endl
+        << "  Uzawa updates (augmented Lagrangian) = " << s.n_uzawa << std::endl
         << "  ties / cutoff hits                 = " << s.n_ties << " / " << s.n_cutoff
         << std::endl;
   pcout << "  state changes between linearizations: activated " << s.n_activated << ", deactivated "

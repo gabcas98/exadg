@@ -398,3 +398,37 @@ success: non-monotone full steps (factor 1e6 or 100: worse), no extrapolation of
 (worse), keeping the previous active set in the first Jacobian of a step (no gain); these
 experiments were removed again.
 
+## Augmented Lagrangian method (Uzawa) on top of the penalty method (measured 2026-11-27)
+
+`AugmentedLagrangian = true`: contact pressure lambda = [lambda_bar - eps g]_+ with a multiplier
+estimate lambda_bar per slave point; residual and tangent are those of the penalty method with this
+pressure (tangent verified by finite differences and the diagonal test with non-zero multipliers).
+`Operator::solve_nonlinear()` runs Newton's method and then the Uzawa update
+lambda_bar <- [lambda_bar - eps g]_+ until the maximum penetration of the active points is below
+`UzawaGapTolerance` (multipliers are kept between load steps and restored if Newton's method fails).
+The multigrid levels use the activation g <= max(lambda_bar) / eps (otherwise they miss the active
+points with small positive gaps: L5 Krylov 4993 -> 1281, solve 70.7 s -> 24.0 s, same solution).
+
+Two deformable blocks, smoothed surface, sequential, one thread:
+
+| L | method | preconditioner | Newton | Uzawa | solve | F_y | min gap |
+|---|---|---|---|---|---|---|---|
+| 4 | penalty eps = 100 | AMG | 58 | - | 4.35 s | 2.43500e-02 (-1.2 %) | -4e-4 |
+| 4 | AL eps = 300, tol 1e-5 | AMG | 109 | 10 | 7.69 s | 2.46491e-02 | -4.5e-6 |
+| 4 | AL eps = 1000, tol 1e-5 | AMG | 134 | 3 | 11.5 s | 2.46491e-02 | -7.6e-6 |
+| 4 | AL eps = 1000, tol 1e-6 | AMG | 491 | 180 | 44.2 s | 2.46490e-02 | -3.7e-7 |
+| 4 | Nitsche gamma_0 E = 1 | AMG | 112 | - | 7.83 s | 2.46470e-02 | -1.7e-5 |
+| 4 | Nitsche gamma_0 E = 10 | AMG | 310 | - | 69.2 s | 2.46487e-02 | -4.5e-6 |
+| 4 | AL eps = 300, tol 1e-5 | MG | 109 | 10 | 5.78 s | 2.46491e-02 | -4.5e-6 |
+| 5 | penalty eps = 100 | MG | 61 | - | 12.4 s | (-1.2 %) | |
+| 5 | AL eps = 300, tol 1e-5 | MG | 120 | 15 | 24.0 s | 2.46431e-02 | -9.4e-6 |
+| 5 | Nitsche gamma_0 E = 1 | MG | 189 | - | 183 s | 2.46427e-02 | |
+| 6 | penalty eps = 100 | MG | 71 | - | 60.8 s | (-1.2 %) | |
+| 6 | AL eps = 300, tol 1e-5 | MG | 151 | 9 | 128 s | 2.46392e-02 | -6.8e-6 |
+
+The augmented Lagrangian method reaches the accuracy of Nitsche's method with gamma_0 E = 10 at
+the cost of about twice the plain penalty method with eps = 100, and its Newton iterations grow
+much less with refinement than those of Nitsche's method (L5 multigrid: 7.6x faster). With
+eps = 100 the Uzawa iteration converges too slowly at the first contact (rate ~ K / (K + eps)) and
+the load steps fail; eps should be a few times E / h of the contact cells.
+

@@ -165,6 +165,12 @@ public:
       prm.add_parameter("PreconditionerCoupling",
                         preconditioner_coupling,
                         "Slave-master coupling in the AMG matrix (extended sparsity pattern).");
+      prm.add_parameter("AugmentedLagrangian",
+                        augmented_lagrangian,
+                        "Penalty method with augmented Lagrangian (Uzawa) multipliers.");
+      prm.add_parameter("UzawaGapTolerance",
+                        uzawa_gap_tolerance,
+                        "Maximum penetration at which the Uzawa iteration stops.");
       prm.add_parameter("DeformableContactMethod",
                         deformable_contact_method,
                         "Deformable contact: Penalty (PenaltyParameter = epsilon) or Nitsche "
@@ -236,6 +242,8 @@ private:
     this->param.deformable_contact_log                     = log_contact_state;
     this->param.deformable_contact_smooth_normals          = smooth_normals;
     this->param.deformable_contact_method                  = deformable_contact_method;
+    this->param.deformable_contact_augmented_lagrangian    = augmented_lagrangian;
+    this->param.deformable_contact_uzawa_gap_tolerance     = uzawa_gap_tolerance;
 
     this->param.load_increment = load_increment;
 
@@ -480,6 +488,8 @@ private:
   bool                  preconditioner_coupling     = true;
   bool                  log_contact_state           = false;
   bool                  smooth_normals              = false;
+  bool                  augmented_lagrangian        = false;
+  double                uzawa_gap_tolerance         = 1.e-6;
   ContactMethod         deformable_contact_method   = ContactMethod::Penalty;
   unsigned int          smoother_iterations         = 5;
   bool                  contact_on_multigrid_levels = true;

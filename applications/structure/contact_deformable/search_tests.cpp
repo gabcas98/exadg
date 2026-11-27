@@ -1140,6 +1140,75 @@ test_nitsche(double & fd_worst)
   }
 }
 
+/*
+ * Test 9: augmented Lagrangian method: tangent with non-zero multipliers (points with g > 0 can be
+ * active), segment and smoothed master.
+ */
+void
+test_augmented_lagrangian(double & fd_worst)
+{
+  std::cout << std::endl << "Test 9: augmented Lagrangian (penalty with multipliers)" << std::endl;
+  fd_worst = 0.0;
+
+  dealii::Triangulation<dim> tria;
+  create_two_blocks(tria, 0.05, 2);
+  dealii::FESystem<dim>   fe(dealii::FE_Q<dim>(1), dim);
+  dealii::DoFHandler<dim> dof_handler(tria);
+  dof_handler.distribute_dofs(fe);
+
+  VectorType u;
+  interpolate(
+    dof_handler,
+    [](dealii::Point<dim> const & X) {
+      dealii::Tensor<1, dim> d;
+      if(X[1] > 0.0)
+      {
+        d[0] = 0.13 + 0.01 * std::sin(3.0 * X[0]);
+        d[1] = -0.0502 + 0.0003 * std::cos(5.0 * X[0]);
+      }
+      else
+        d[1] = 0.0002 * std::sin(4.0 * X[0]) * (X[1] + 0.5) / 0.5;
+      return d;
+    },
+    u);
+
+  for(bool const smooth : {false, true})
+  {
+    DeformableContactData data;
+    data.pairs                = {{11, 10}};
+    data.penalty              = 100.0;
+    data.radius               = 0.05;
+    data.skin                 = 0.05;
+    data.projection_tolerance = 0.01;
+    data.search               = ContactSearchStrategy::Exhaustive;
+    data.smooth_normals       = smooth;
+    data.augmented_lagrangian = true;
+    Contact contact;
+    contact.setup(dof_handler, {}, data);
+
+    std::mt19937                           generator(31);
+    std::uniform_real_distribution<double> distribution(0.0, 0.05);
+    std::vector<double>                    multipliers(contact.n_slave_points());
+    for(double & m : multipliers)
+      m = distribution(generator);
+    contact.set_multipliers(multipliers);
+
+    DeformableContactQuantities<dim> const q = contact.compute_quantities(u);
+    std::cout << "    " << (smooth ? "smooth " : "segment") << ": active " << q.n_active << " of "
+              << contact.n_slave_points() << ", min gap " << q.min_gap << std::endl;
+    double const d = diagonal_check(contact, u);
+    check(q.n_active > 0 and d < 1e-14,
+          std::string("augmented Lagrangian (") + (smooth ? "smooth" : "segment") +
+            "): diagonal == diagonal entries of J e_i");
+    std::cout << "    finite differences:" << std::endl;
+    double const fd = finite_difference_check(contact, u, 41);
+    fd_worst        = std::max(fd_worst, fd);
+    check(fd < 1e-6,
+          std::string("augmented Lagrangian (") + (smooth ? "smooth" : "segment") +
+            "): tangent agrees with finite differences");
+  }
+}
+
 int
 main(int argc, char ** argv)
 {
@@ -1156,6 +1225,8 @@ main(int argc, char ** argv)
   test_smooth_self_contact(fd_smooth_u);
   double fd_nitsche = 0.0;
   test_nitsche(fd_nitsche);
+  double fd_al = 0.0;
+  test_augmented_lagrangian(fd_al);
 
   std::cout << std::endl;
   check(fd_blocks < 1e-6, "tangent of the two blocks agrees with finite differences");

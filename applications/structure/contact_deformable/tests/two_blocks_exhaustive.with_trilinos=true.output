@@ -34,6 +34,7 @@ Physical quantities:
   Deformable contact penalty parameter:      1.0000e+02
   Deformable contact radius:                 5.0000e-02
   Smooth master normals:                     false
+  Augmented Lagrangian:                      false
   Deformable contact on multigrid levels:    true
   Deformable contact projection tolerance:   1.0000e-02
   Deformable contact search:                 Exhaustive
