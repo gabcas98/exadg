@@ -112,6 +112,39 @@ Operator<dim, Number>::initialize_dof_handler_and_constraints()
   // call deal.II utility function to add Dirichlet constraints
   add_homogeneous_dirichlet_constraints(affine_constraints, dof_handler, map_bid_to_mask);
 
+  // homogeneous constraints of single vertices
+  if(not boundary_descriptor->point_constraints.empty())
+  {
+    AssertThrow(param.preconditioner != Preconditioner::Multigrid,
+                dealii::ExcMessage("Point constraints are not available with the multigrid "
+                                   "preconditioner."));
+
+    std::vector<unsigned int> found(boundary_descriptor->point_constraints.size(), 0);
+    for(auto const & cell : dof_handler.active_cell_iterators())
+    {
+      if(not cell->is_locally_owned())
+        continue;
+      for(unsigned int const v : cell->vertex_indices())
+        for(unsigned int i = 0; i < boundary_descriptor->point_constraints.size(); ++i)
+        {
+          auto const & [point, mask] = boundary_descriptor->point_constraints[i];
+          if(cell->vertex(v).distance(point) > 1e-10 * cell->diameter())
+            continue;
+          found[i] = 1;
+          for(unsigned int d = 0; d < dim; ++d)
+          {
+            dealii::types::global_dof_index const dof = cell->vertex_dof_index(v, d);
+            if(mask[d] and affine_constraints.can_store_line(dof) and
+               not affine_constraints.is_constrained(dof))
+              affine_constraints.add_line(dof);
+          }
+        }
+    }
+    for(unsigned int i = 0; i < found.size(); ++i)
+      AssertThrow(dealii::Utilities::MPI::max(found[i], mpi_comm) == 1,
+                  dealii::ExcMessage("Point constraint: the point is not a vertex of the mesh."));
+  }
+
   // compress constraints *once after* complete setup, since affine constraints to copy from need to
   // be non-closed to add further constraints
   affine_constraints_periodicity_and_hanging_nodes.close();
@@ -357,6 +390,8 @@ Operator<dim, Number>::setup_operators()
   {
     AssertThrow(boundary_descriptor->deformable_contact_pairs.empty(),
                 dealii::ExcMessage("The deformable contact requires large_deformation = true."));
+    AssertThrow(boundary_descriptor->pressure_bc.empty(),
+                dealii::ExcMessage("The follower pressure requires large_deformation = true."));
 
     elasticity_operator_linear.initialize(*matrix_free,
                                           affine_constraints,

@@ -22,6 +22,7 @@
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 
+#include <exadg/functions_and_boundary_conditions/evaluate_functions.h>
 #include <exadg/operators/interior_penalty_parameter.h>
 #include <exadg/solvers_and_preconditioners/utilities/invert_diagonal.h>
 #include <exadg/structure/spatial_discretization/operators/boundary_conditions.h>
@@ -47,18 +48,26 @@ NonLinearOperator<dim, Number>::initialize_derived()
   this->matrix_free->initialize_dof_vector(displacement_lin, this->operator_data.dof_index);
   displacement_lin.update_ghost_values();
 
-  contact_active = not this->operator_data.bc->contact_bc.empty();
-  if(contact_active)
-  {
-    AssertThrow(this->operator_data.contact_penalty > 0.0,
-                dealii::ExcMessage("Contact boundaries require a positive contact penalty "
-                                   "parameter (Parameters::contact_penalty_parameter)."));
+  contact_active  = not this->operator_data.bc->contact_bc.empty();
+  pressure_active = not this->operator_data.bc->pressure_bc.empty();
 
+  if(contact_active or pressure_active)
     integrator_lin_face =
       std::make_shared<IntegratorFace>(*this->matrix_free,
                                        true,
                                        this->operator_data.dof_index_inhomogeneous,
                                        this->operator_data.quad_index);
+
+  // the linearized follower pressure requires the gradient of the displacement increment on faces
+  if(pressure_active)
+    this->integrator_flags.face_evaluate =
+      this->integrator_flags.face_evaluate | dealii::EvaluationFlags::gradients;
+
+  if(contact_active)
+  {
+    AssertThrow(this->operator_data.contact_penalty > 0.0,
+                dealii::ExcMessage("Contact boundaries require a positive contact penalty "
+                                   "parameter (Parameters::contact_penalty_parameter)."));
 
     // the linearized contact term requires the values of the displacement increment on faces
     this->integrator_flags.face_evaluate =
@@ -905,11 +914,13 @@ NonLinearOperator<dim, Number>::boundary_face_loop_nonlinear(
     }
     else
     {
-      // In case of a pull-back of the traction vector, we need to evaluate
-      // the displacement gradient to obtain the surface area ratio da/dA.
-      // We write the integrator flags explicitly in this case since they
+      // In case of a pull-back of the traction vector or a follower pressure, we need to
+      // evaluate the displacement gradient to obtain the surface area ratio da/dA (or the
+      // deformed area vector). We write the integrator flags explicitly in this case since they
       // depend on the parameter pull_back_traction.
-      if(this->operator_data.pull_back_traction)
+      if(this->operator_data.pull_back_traction or
+         (pressure_active and this->operator_data.bc->pressure_bc.find(boundary_id) !=
+                                this->operator_data.bc->pressure_bc.end()))
       {
         integrator_inhom.gather_evaluate(src, dealii::EvaluationFlags::gradients);
       }
@@ -966,6 +977,14 @@ NonLinearOperator<dim, Number>::do_boundary_integral_continuous_nonlinear(
 {
   BoundaryType boundary_type = this->operator_data.bc->get_boundary_type(boundary_id);
 
+  std::shared_ptr<dealii::Function<dim>> pressure_function;
+  if(pressure_active)
+  {
+    auto const it = this->operator_data.bc->pressure_bc.find(boundary_id);
+    if(it != this->operator_data.bc->pressure_bc.end())
+      pressure_function = it->second;
+  }
+
   for(unsigned int q = 0; q < integrator.n_q_points; ++q)
   {
     vector traction = calculate_neumann_value<dim, Number>(
@@ -980,6 +999,16 @@ NonLinearOperator<dim, Number>::do_boundary_integral_continuous_nonlinear(
       vector n_star = determinant(F) * transpose(invert(F)) * N;
       // t_0 = da/dA * t
       traction *= n_star.norm();
+    }
+
+    // follower pressure: t_0 = -p J F^{-T} N
+    if(pressure_function)
+    {
+      scalar const p = FunctionEvaluator<0, dim, Number>::value(*pressure_function,
+                                                                integrator.quadrature_point(q),
+                                                                this->time);
+      tensor const F = get_F<dim, Number>(integrator.get_gradient(q));
+      traction -= p * (determinant(F) * (transpose(invert(F)) * integrator.normal_vector(q)));
     }
 
     integrator.submit_value(-traction, q);
@@ -1063,6 +1092,15 @@ NonLinearOperator<dim, Number>::reinit_boundary_face_derived(IntegratorFace &   
       integrator_previous_face->evaluate(dealii::EvaluationFlags::values);
     }
   }
+  else if(pressure_active and
+          this->operator_data.bc->pressure_bc.find(this->matrix_free->get_boundary_id(face)) !=
+            this->operator_data.bc->pressure_bc.end())
+  {
+    // follower pressure: deformation gradient at the linearization point
+    integrator_lin_face->reinit(face);
+    integrator_lin_face->read_dof_values(displacement_lin);
+    integrator_lin_face->evaluate(dealii::EvaluationFlags::gradients);
+  }
 }
 
 template<int dim, typename Number>
@@ -1117,6 +1155,32 @@ NonLinearOperator<dim, Number>::do_boundary_integral_continuous(
      this->operator_data.bc->get_boundary_type(boundary_id) == BoundaryType::Contact)
   {
     do_boundary_integral_contact(integrator, boundary_id);
+  }
+  else if(operator_type == OperatorType::homogeneous and pressure_active and
+          this->operator_data.bc->pressure_bc.find(boundary_id) !=
+            this->operator_data.bc->pressure_bc.end())
+  {
+    // derivative of p J F^{-T} N (the residual contains -t_0 = p J F^{-T} N):
+    // d(J F^{-T}) = J (tr(F^{-1} dF) F^{-T} - F^{-T} dF^T F^{-T})
+    auto const & pressure_function = this->operator_data.bc->pressure_bc.find(boundary_id)->second;
+    for(unsigned int q = 0; q < integrator.n_q_points; ++q)
+    {
+      scalar const p = FunctionEvaluator<0, dim, Number>::value(*pressure_function,
+                                                                integrator.quadrature_point(q),
+                                                                this->time);
+      tensor const F       = get_F<dim, Number>(integrator_lin_face->get_gradient(q));
+      tensor const F_inv_T = transpose(invert(F));
+      tensor const dF      = integrator.get_gradient(q);
+      vector const N       = integrator.normal_vector(q);
+      vector const n_star  = F_inv_T * N;
+      vector const dn_star =
+        determinant(F) * (trace(invert(F) * dF) * n_star - F_inv_T * (transpose(dF) * n_star));
+      integrator.submit_value(p * dn_star, q);
+
+      if((this->integrator_flags.face_integrate & dealii::EvaluationFlags::gradients) !=
+         dealii::EvaluationFlags::nothing)
+        integrator.submit_gradient(tensor(), q);
+    }
   }
   else if(operator_type == OperatorType::homogeneous)
   {

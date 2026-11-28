@@ -77,6 +77,20 @@ struct BoundaryDescriptor
   // is required for fluid-structure interaction problems)
   std::set<dealii::types::boundary_id> neumann_cached_bc;
 
+  // Follower pressure on Neumann boundaries: p(X, t) (scalar function of the reference position X
+  // and the time or load factor) acting on the deformed surface against the outward normal n,
+  // i.e. the force -p n da = -p J F^{-T} N dA. It is added to the traction of the Neumann
+  // boundary condition of this boundary, which therefore has to be a Neumann boundary. Only for
+  // the nonlinear operator (large_deformation = true); the linearized operator contains the
+  // derivative of the deformed area vector J F^{-T} N (not symmetric in general).
+  std::map<dealii::types::boundary_id, std::shared_ptr<dealii::Function<dim>>> pressure_bc;
+
+  // Homogeneous Dirichlet constraints of single vertices (reference position, selected
+  // components), e.g. to suppress a rigid body mode in a direction in which the displacement of
+  // this vertex vanishes by symmetry. Not available with the multigrid preconditioner (the
+  // constraints of the multigrid levels are created from boundary IDs).
+  std::vector<std::pair<dealii::Point<dim>, dealii::ComponentMask>> point_constraints;
+
   // Frictionless contact with a rigid obstacle (penalty method, see
   // Parameters::contact_penalty_parameter). The function describes the obstacle by a signed
   // distance function phi(x) evaluated in the current configuration x = X + d:
@@ -169,6 +183,11 @@ struct BoundaryDescriptor
 
     if(neumann_bc.find(boundary_id) != neumann_bc.end())
       counter++;
+
+    AssertThrow(pressure_bc.find(boundary_id) == pressure_bc.end() or
+                  neumann_bc.find(boundary_id) != neumann_bc.end(),
+                dealii::ExcMessage("A follower pressure (pressure_bc) requires a Neumann boundary "
+                                   "(neumann_bc) with the same boundary ID."));
 
     if(neumann_cached_bc.find(boundary_id) != neumann_cached_bc.end())
       counter++;

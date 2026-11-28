@@ -57,6 +57,17 @@
  * (Nitsche, augmented Lagrangian) they converge to the same solution. The force of the upper plate
  * is written to <output>_contact_boundaries.txt (boundary id 5).
  *
+ * Setup "PressurizedRing" (self-contact, validation): the same ring (RingModel = Half or Quarter)
+ * under a uniform external follower pressure p = Pressure * t on the outer surface (no plates).
+ * The ring buckles into the two-lobe mode and the opposite sides of the inner surface come into
+ * contact (thin rings: Flaherty, Keller, Rubinow 1972, buckling at p R_o R^2 / D = 3, first
+ * contact at 5.247, D = E t^3 / (12 (1 - nu^2)), R mean radius, R_o = 1 outer radius). The initial
+ * shape is the ellipse x (1 + RingImperfection), y (1 - RingImperfection) (lobes in y direction).
+ * Half: the rigid translation in y is suppressed by u_y = 0 at the inner side point (R_i, 0)
+ * (zero by symmetry; constraint of a single vertex, a constraint of faces would excite the soft
+ * two-lobe mode of a thin ring). The
+ * displacements of the crown and side points are written to <output>_ring.txt.
+ *
  * LowerBlock = Deformable: as described above. LowerBlock = Clamped: the top face of the lower
  * block is clamped as well, i.e. the master surface is the rigid plane y = 0, represented by mesh
  * faces and found by the search. LowerBlock = AnalyticPlane: same mesh and clamping, but the
@@ -123,7 +134,31 @@ enum class Setup
 {
   TwoBlocks,
   SlottedBlock,
-  CrushedRing
+  CrushedRing,
+  PressurizedRing
+};
+
+/*
+ * Follower pressure p = p_max t (load factor t).
+ */
+template<int dim>
+class RampedPressure : public dealii::Function<dim>
+{
+public:
+  RampedPressure(double const p_max) : dealii::Function<dim>(1), p_max(p_max)
+  {
+  }
+
+  double
+  value(dealii::Point<dim> const & p, unsigned int const component = 0) const final
+  {
+    (void)p;
+    (void)component;
+    return p_max * this->get_time();
+  }
+
+private:
+  double const p_max;
 };
 
 // CrushedRing: half ring with self-contact or quarter ring with contact on the symmetry plane
@@ -233,6 +268,82 @@ public:
   }
 };
 
+/*
+ * PressurizedRing: in addition, the load factor, the pressure and the displacements of given
+ * vertices of the reference configuration after every postprocessing (serial).
+ */
+template<int dim, typename Number>
+class RingPostProcessor : public PostProcessor<dim, Number>
+{
+public:
+  typedef typename PostProcessor<dim, Number>::VectorType VectorType;
+
+  RingPostProcessor(PostProcessorData<dim> const &  pp_data,
+                    MPI_Comm const &                mpi_comm,
+                    std::vector<dealii::Point<dim>> points,
+                    std::string const &             filename,
+                    double const                    p_max)
+    : PostProcessor<dim, Number>(pp_data, mpi_comm),
+      points(points),
+      filename(filename),
+      p_max(p_max)
+  {
+  }
+
+  void
+  setup(Operator<dim, Number> const & pde_operator_in) final
+  {
+    PostProcessor<dim, Number>::setup(pde_operator_in);
+    pde_operator = &pde_operator_in;
+
+    // DoF indices of the vertices
+    dealii::DoFHandler<dim> const & dof_handler = pde_operator->get_dof_handler();
+    vertex_dofs.assign(points.size(), std::vector<dealii::types::global_dof_index>(dim, 0));
+    std::vector<bool> found(points.size(), false);
+    for(auto const & cell : dof_handler.active_cell_iterators())
+      for(unsigned int const v : cell->vertex_indices())
+        for(unsigned int i = 0; i < points.size(); ++i)
+          if(cell->vertex(v).distance(points[i]) < 1e-10)
+          {
+            for(unsigned int d = 0; d < dim; ++d)
+              vertex_dofs[i][d] = cell->vertex_dof_index(v, d);
+            found[i] = true;
+          }
+    for(unsigned int i = 0; i < points.size(); ++i)
+      AssertThrow(found[i], dealii::ExcMessage("Ring point is not a vertex of the mesh."));
+
+    std::ofstream f(filename);
+    f << "# load factor, pressure, displacements of the points";
+    for(auto const & point : points)
+      f << " (" << point << ")";
+    f << std::endl;
+  }
+
+  void
+  do_postprocessing(VectorType const &     solution,
+                    double const           time,
+                    types::time_step const time_step_number) final
+  {
+    PostProcessor<dim, Number>::do_postprocessing(solution, time, time_step_number);
+
+    // load factor of the operator (the quasi-static driver does not pass the time)
+    double const t = pde_operator->compute_contact_quantities(solution, false).time;
+    std::ofstream f(filename, std::ios::app);
+    f << std::scientific << std::setprecision(12) << t << " " << p_max * t;
+    for(auto const & dofs : vertex_dofs)
+      for(unsigned int d = 0; d < dim; ++d)
+        f << " " << solution(dofs[d]);
+    f << std::endl;
+  }
+
+private:
+  std::vector<dealii::Point<dim>>                           points;
+  std::string const                                         filename;
+  double const                                              p_max;
+  Operator<dim, Number> const *                             pde_operator = nullptr;
+  std::vector<std::vector<dealii::types::global_dof_index>> vertex_dofs;
+};
+
 template<int dim, typename Number>
 class Application : public ApplicationBase<dim, Number>
 {
@@ -251,11 +362,15 @@ public:
     {
       prm.add_parameter("Setup",
                         setup,
-                        "TwoBlocks, SlottedBlock (self-contact) or CrushedRing (self-contact).");
+                        "TwoBlocks, SlottedBlock, CrushedRing or PressurizedRing (self-contact).");
       prm.add_parameter("RingModel", ring_model, "CrushedRing: Half or Quarter.");
       prm.add_parameter("RingInnerRadius", ring_inner_radius, "CrushedRing: inner radius.");
       prm.add_parameter("RingCells", ring_cells, "CrushedRing: coarse cells per quarter.");
       prm.add_parameter("Crush", crush, "CrushedRing: total approach of the plates.");
+      prm.add_parameter("Pressure", pressure, "PressurizedRing: final external pressure.");
+      prm.add_parameter("RingImperfection",
+                        ring_imperfection,
+                        "PressurizedRing: ellipticity of the initial shape.");
       prm.add_parameter("SlotSurfaces", slot_surfaces, "SlottedBlock: SelfContact or TwoPass.");
       prm.add_parameter("SlotWidth", slot_width, "SlottedBlock: width of the slot.");
       prm.add_parameter("Push", push, "SlottedBlock: displacement of the loaded part of the top.");
@@ -394,9 +509,11 @@ private:
 
     // the frictionless penalty contact has a symmetric tangent
     // (Nitsche's method with theta = 0 has a non-symmetric tangent)
+    // (the follower pressure has a non-symmetric tangent as well)
     bool const symmetric =
       not(analytic_contact_used() and analytic_contact_method == ContactMethod::Nitsche) and
-      not(deformable_contact_used() and deformable_contact_method == ContactMethod::Nitsche);
+      not(deformable_contact_used() and deformable_contact_method == ContactMethod::Nitsche) and
+      setup != Setup::PressurizedRing;
     this->param.solver_data =
       SolverData(1e4, 1.e-14, 1.e-6, symmetric ? LinearSolver::CG : LinearSolver::GMRES, 100);
     this->param.preconditioner = preconditioner;
@@ -433,7 +550,7 @@ private:
         (void)periodic_face_pairs;
         (void)vector_local_refinements;
 
-        if(setup == Setup::CrushedRing)
+        if(setup == Setup::CrushedRing or setup == Setup::PressurizedRing)
         {
           dealii::Point<dim> const center;
           if(ring_model == RingModel::Half)
@@ -470,6 +587,18 @@ private:
 
           if(global_refinements > 0)
             tria.refine_global(global_refinements);
+
+          if(setup == Setup::PressurizedRing)
+          {
+            // elliptic imperfection (after the refinement, the manifold is not used afterwards
+            // since the mapping is linear)
+            double const delta = ring_imperfection;
+            dealii::GridTools::transform(
+              [delta](dealii::Point<dim> const & x) {
+                return dealii::Point<dim>(x[0] * (1.0 + delta), x[1] * (1.0 - delta));
+              },
+              tria);
+          }
           return;
         }
 
@@ -590,6 +719,44 @@ private:
     typedef typename std::pair<dealii::types::boundary_id, dealii::ComponentMask> pair_mask;
 
     auto & bc = *this->boundary_descriptor;
+
+    if(setup == Setup::PressurizedRing)
+    {
+      dealii::ComponentMask mask_x(dim, false), mask_y(dim, false);
+      mask_x.set(0, true);
+      mask_y.set(1, true);
+      bc.dirichlet_bc.insert(pair(4, new dealii::Functions::ZeroFunction<dim>(dim)));
+      bc.dirichlet_bc_initial_acceleration.insert(
+        pair(4, new dealii::Functions::ZeroFunction<dim>(dim)));
+      bc.dirichlet_bc_component_mask.insert(pair_mask(4, mask_x));
+
+      // outer surface: follower pressure
+      for(dealii::types::boundary_id const id : {5, 6})
+      {
+        if(ring_model == RingModel::Quarter and id == 6)
+          continue;
+        bc.neumann_bc.insert(pair(id, new dealii::Functions::ZeroFunction<dim>(dim)));
+        bc.pressure_bc.insert(pair(id, new RampedPressure<dim>(pressure)));
+      }
+
+      if(ring_model == RingModel::Half)
+      {
+        // u_y = 0 at the inner side point (zero by symmetry): suppresses the rigid translation
+        bc.point_constraints.push_back(
+          {dealii::Point<dim>(ring_inner_radius * (1.0 + ring_imperfection), 0.0), mask_y});
+        bc.neumann_bc.insert(pair(20, new dealii::Functions::ZeroFunction<dim>(dim)));
+        bc.deformable_contact_pairs.push_back({20, 20});
+      }
+      else
+      {
+        bc.dirichlet_bc.insert(pair(7, new dealii::Functions::ZeroFunction<dim>(dim)));
+        bc.dirichlet_bc_initial_acceleration.insert(
+          pair(7, new dealii::Functions::ZeroFunction<dim>(dim)));
+        bc.dirichlet_bc_component_mask.insert(pair_mask(7, mask_y));
+        bc.contact_bc.insert(pair(21, new HorizontalPlane<dim>()));
+      }
+      return;
+    }
 
     if(setup == Setup::CrushedRing)
     {
@@ -740,6 +907,23 @@ private:
     pp_data.contact_data.directory                   = this->output_parameters.directory;
     pp_data.contact_data.filename = this->output_parameters.filename + "_contact";
 
+    if(setup == Setup::PressurizedRing)
+    {
+      // vertices of the reference configuration (with imperfection): inner and outer crown,
+      // outer side point
+      double const                    delta = ring_imperfection;
+      std::vector<dealii::Point<dim>> points = {
+        dealii::Point<dim>(0.0, ring_inner_radius * (1.0 - delta)),
+        dealii::Point<dim>(0.0, 1.0 - delta),
+        dealii::Point<dim>(1.0 + delta, 0.0)};
+      return std::make_shared<RingPostProcessor<dim, Number>>(
+        pp_data,
+        this->mpi_comm,
+        points,
+        this->output_parameters.directory + this->output_parameters.filename + "_ring.txt",
+        pressure);
+    }
+
     std::shared_ptr<PostProcessor<dim, Number>> post(
       new PostProcessor<dim, Number>(pp_data, this->mpi_comm));
 
@@ -751,13 +935,14 @@ private:
   analytic_contact_used() const
   {
     return setup == Setup::CrushedRing or
+           (setup == Setup::PressurizedRing and ring_model == RingModel::Quarter) or
            (setup == Setup::TwoBlocks and lower_block == LowerBlock::AnalyticPlane);
   }
 
   bool
   deformable_contact_used() const
   {
-    if(setup == Setup::CrushedRing)
+    if(setup == Setup::CrushedRing or setup == Setup::PressurizedRing)
       return ring_model == RingModel::Half;
     return not(setup == Setup::TwoBlocks and lower_block == LowerBlock::AnalyticPlane);
   }
@@ -767,6 +952,8 @@ private:
   double       ring_inner_radius = 0.8;
   unsigned int ring_cells        = 8;
   double       crush             = 1.0;
+  double       pressure          = 0.0;
+  double       ring_imperfection = 0.0;
   SlotSurfaces slot_surfaces     = SlotSurfaces::SelfContact;
   double       slot_width        = 0.02;
   double       push              = 0.045;

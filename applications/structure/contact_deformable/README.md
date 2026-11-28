@@ -518,3 +518,41 @@ search. Note on the test harness: the contact tests write their files to `output
 collides with the file `output` of the deal.II test harness (ctest reports DIFF failed, the
 stdout is in `<test>.release/serial/output/stdout`); compared with numdiff (-a 1e-6 -r 1e-8), all
 deformable and rigid contact tests agree with their reference outputs.
+
+## Ring under external pressure: two-lobe collapse and self-contact (measured 2026-11-28)
+
+Setup `PressurizedRing`: thin ring 0.95 <= |x| <= 1 (t / R = 0.051, R = 0.975), plane strain,
+compressible neo-Hookean (E = 1, nu = 0.3), uniform external follower pressure on the outer surface,
+elliptic imperfection 1e-3 (lobes in y). Reference: Flaherty, Keller, Rubinow (SIAM J. Appl. Math.
+23, 1972) for a thin inextensible ring, sigma = p R_o R^2 / D (D = E t^3 / (12 (1 - nu^2)), load per
+length of the center line p R_o / R): buckling at sigma = 3, first contact of the opposite sides
+at sigma = 5.247 (confirmed by Djondjorov et al., Int. J. Mech. Sci., arXiv:1008.0533; the upper
+end 10.34 of the point contact given by FKR is disputed there). Half ring (self-contact, augmented
+Lagrangian) against quarter ring (rigid symmetry plane, Nitsche), RingCells = 32 (square
+elements), load increment 0.005 up to sigma = 8:
+
+| L | sigma_cr (Southwell, sigma in [1.5, 2.9]) | sigma first contact | half == quarter |
+|---|---|---|---|
+| 2 | 3.186 | 5.400 | all printed digits |
+| 3 | 3.107 | 5.280 | all printed digits |
+| 4 | 3.087 | 5.220 | all printed digits |
+| 5 | 3.082 | 5.215 | all printed digits (half: 2290 s serial) |
+| FKR | 3 | 5.247 | |
+
+The first contact converges to 5.21 (-0.6 % against the thin-ring value). The Southwell estimate
+of the buckling pressure (+2.7 %) includes the nonlinearity of the prebuckling range used for the
+fit; not separated from the finite thickness yet.
+
+New in the library for this test:
+- `BoundaryDescriptor::pressure_bc`: follower pressure on Neumann boundaries, t_0 = -p J F^{-T} N,
+  with its linearization in the matrix-free operator, the assembled matrix and the multigrid
+  levels. Checks: Lame solution of the thick cylinder (u_r within 4e-5), quadratic convergence of
+  Newton's method close to the solution (also in the postbuckling range).
+- `BoundaryDescriptor::point_constraints`: homogeneous Dirichlet constraints of single vertices,
+  used to suppress the rigid translation of the half ring at the side point (u_y = 0 by symmetry).
+  A constraint of the two adjacent faces instead excited the soft two-lobe mode (11 % ovalization
+  in the linear range), since the exact u_y is only zero at the vertex.
+- The application uses GMRES for the follower pressure (non-symmetric tangent).
+
+Test `tests/pressurized_ring_self_contact.json`: half ring t / R = 0.105, L = 2, up to sigma = 6.5,
+augmented Lagrangian, verified search (8 s).

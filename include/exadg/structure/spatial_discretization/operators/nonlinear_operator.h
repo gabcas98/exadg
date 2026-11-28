@@ -497,6 +497,9 @@ private:
 
   // contact with rigid obstacles
   bool                                    contact_active = false;
+
+  // follower pressure on Neumann boundaries (BoundaryDescriptor::pressure_bc)
+  bool pressure_active = false;
   mutable std::shared_ptr<IntegratorFace> integrator_lin_face;
 
   // Nitsche parameter gamma per cell
