@@ -242,6 +242,10 @@ public:
   // choose a value in [0,1] where 1 = maximum load (Neumann or Dirichlet)
   double load_increment;
 
+  // quasi-static problems: postprocessing after every converged load step (default: at the
+  // beginning and at the end only)
+  bool postprocess_every_load_step;
+
 
   /**************************************************************************************/
   /*                                                                                    */

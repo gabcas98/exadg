@@ -1,0 +1,48 @@
+{
+    "General": {
+        "Precision": "double",
+        "Dim": "2",
+        "IsTest": "true"
+    },
+    "SpatialResolution": {
+        "DegreeMin": "1",
+        "DegreeMax": "1",
+        "RefineSpaceMin": "2",
+        "RefineSpaceMax": "2"
+    },
+    "TemporalResolution": {
+        "RefineTimeMin": "0",
+        "RefineTimeMax": "0"
+    },
+    "Application": {
+        "Setup": "CrushedRing",
+        "RingModel": "Half",
+        "RingInnerRadius": "0.8",
+        "RingCells": "8",
+        "Crush": "1.75",
+        "Material": "IncompressibleNeoHookean",
+        "YoungsModulus": "1.0",
+        "PoissonsRatio": "0.3",
+        "PenaltyParameter": "1000.0",
+        "DeformableContactMethod": "Penalty",
+        "AugmentedLagrangian": "true",
+        "UzawaGapTolerance": "1e-6",
+        "AnalyticContactMethod": "Nitsche",
+        "NitscheParameter": "10.0",
+        "ContactRadius": "0.05",
+        "Skin": "0.05",
+        "ProjectionTolerance": "0.01",
+        "SmoothNormals": "true",
+        "Search": "Verlet",
+        "VerifySearch": "true",
+        "LoadIncrement": "0.02",
+        "NewtonAbsTol": "1e-10",
+        "ContactInPreconditioner": "true",
+        "Preconditioner": "AMG"
+    },
+    "Output": {
+        "OutputDirectory": "output/contact_deformable/",
+        "OutputName": "crushed_ring_self_contact",
+        "WriteOutput": "false"
+    }
+}

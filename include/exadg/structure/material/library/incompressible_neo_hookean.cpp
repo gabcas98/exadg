@@ -99,7 +99,11 @@ IncompressibleNeoHookean<dim, Number>::second_piola_kirchhoff_stress(
 
   tensor const F       = get_F<dim, Number>(gradient_displacement);
   scalar const J       = determinant(F);
-  scalar const trace_C = trace(compute_HT_times_H(F));
+  scalar trace_C = trace(compute_HT_times_H(F));
+  // plane strain: I_1 of the three-dimensional C with C_33 = 1 (otherwise, the isochoric stress
+  // does not vanish in the reference configuration)
+  if(dim == 2 and data.type_two_dim == Type2D::PlaneStrain)
+    trace_C += 1.0;
 
   tensor const           F_inv = invert(F);
   symmetric_tensor const C_inv = compute_H_times_HT(F_inv);
@@ -129,7 +133,10 @@ IncompressibleNeoHookean<dim, Number>::second_piola_kirchhoff_stress_displacemen
 
   scalar const           J   = determinant(deformation_gradient);
   symmetric_tensor const C   = compute_HT_times_H(deformation_gradient);
-  scalar const           I_1 = trace(C);
+  scalar                 I_1 = trace(C);
+  // plane strain: C_33 = 1, see second_piola_kirchhoff_stress()
+  if(dim == 2 and data.type_two_dim == Type2D::PlaneStrain)
+    I_1 += 1.0;
 
   tensor const           F_inv                 = invert(deformation_gradient);
   symmetric_tensor const C_inv                 = compute_H_times_HT(F_inv);

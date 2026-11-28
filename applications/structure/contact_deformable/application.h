@@ -22,6 +22,8 @@
 #ifndef STRUCTURE_CONTACT_DEFORMABLE
 #define STRUCTURE_CONTACT_DEFORMABLE
 
+#include <deal.II/grid/manifold_lib.h>
+
 /*
  * Frictionless contact between two deformable bodies (penalty method, Gauss-point-to-segment,
  * see DeformableContact), 2d, plane strain, linear elements.
@@ -43,6 +45,17 @@
  * faces of the slot form one contact surface in self-contact (pair (20, 20), the search has to
  * exclude the faces of the same side); TwoPass: the faces are two surfaces 21, 22 with the pairs
  * (21, 22) and (22, 21). Both describe the same problem and give the same solution.
+ *
+ * Setup "CrushedRing" (self-contact, validation): the ring R_i <= |x| <= 1 (R_i = RingInnerRadius)
+ * is crushed between two rigid frictionless plates y = +-(1 - d t / 2) (d = Crush, the total
+ * approach of the plates), existing rigid obstacle contact (AnalyticContactMethod) on the outer
+ * surface. RingModel = Half: the half ring x >= 0 (symmetry u_x = 0 at x = 0), the inner surface is
+ * one self-contact surface (pair (20, 20), DeformableContactMethod). RingModel = Quarter: the
+ * quarter ring x, y >= 0 with the additional symmetry u_y = 0 at y = 0, the inner surface is in
+ * contact with the rigid plane y = 0 (existing rigid obstacle contact). Both models describe the
+ * same problem (by symmetry) with independent contact implementations; with consistent methods
+ * (Nitsche, augmented Lagrangian) they converge to the same solution. The force of the upper plate
+ * is written to <output>_contact_boundaries.txt (boundary id 5).
  *
  * LowerBlock = Deformable: as described above. LowerBlock = Clamped: the top face of the lower
  * block is clamped as well, i.e. the master surface is the rigid plane y = 0, represented by mesh
@@ -109,7 +122,57 @@ private:
 enum class Setup
 {
   TwoBlocks,
-  SlottedBlock
+  SlottedBlock,
+  CrushedRing
+};
+
+// CrushedRing: half ring with self-contact or quarter ring with contact on the symmetry plane
+enum class RingModel
+{
+  Half,
+  Quarter
+};
+
+/*
+ * Rigid plate of the CrushedRing setup, y = side (1 - crush t / 2) (side = +1: upper plate, the
+ * body is below, side = -1: lower plate), phi(x) = 1 - crush t / 2 - side x_1.
+ */
+template<int dim>
+class Plate : public dealii::Function<dim>
+{
+public:
+  Plate(double const side, double const crush)
+    : dealii::Function<dim>(1), side(side), crush(crush)
+  {
+  }
+
+  double
+  value(dealii::Point<dim> const & x, unsigned int const component = 0) const final
+  {
+    (void)component;
+    return 1.0 - 0.5 * crush * this->get_time() - side * x[1];
+  }
+
+  dealii::Tensor<1, dim>
+  gradient(dealii::Point<dim> const & x, unsigned int const component = 0) const final
+  {
+    (void)x;
+    (void)component;
+    dealii::Tensor<1, dim> n;
+    n[1] = -side;
+    return n;
+  }
+
+  dealii::SymmetricTensor<2, dim>
+  hessian(dealii::Point<dim> const & x, unsigned int const component = 0) const final
+  {
+    (void)x;
+    (void)component;
+    return dealii::SymmetricTensor<2, dim>();
+  }
+
+private:
+  double const side, crush;
 };
 
 // SlottedBlock: the two faces of the slot as one self-contact surface or as two surfaces in
@@ -186,7 +249,13 @@ public:
 
     prm.enter_subsection("Application");
     {
-      prm.add_parameter("Setup", setup, "TwoBlocks or SlottedBlock (self-contact).");
+      prm.add_parameter("Setup",
+                        setup,
+                        "TwoBlocks, SlottedBlock (self-contact) or CrushedRing (self-contact).");
+      prm.add_parameter("RingModel", ring_model, "CrushedRing: Half or Quarter.");
+      prm.add_parameter("RingInnerRadius", ring_inner_radius, "CrushedRing: inner radius.");
+      prm.add_parameter("RingCells", ring_cells, "CrushedRing: coarse cells per quarter.");
+      prm.add_parameter("Crush", crush, "CrushedRing: total approach of the plates.");
       prm.add_parameter("SlotSurfaces", slot_surfaces, "SlottedBlock: SelfContact or TwoPass.");
       prm.add_parameter("SlotWidth", slot_width, "SlottedBlock: width of the slot.");
       prm.add_parameter("Push", push, "SlottedBlock: displacement of the loaded part of the top.");
@@ -198,6 +267,10 @@ public:
       prm.add_parameter("InitialGap", initial_gap, "Initial gap g_0 between the blocks.");
       prm.add_parameter("Compression", compression, "Compression c after contact.");
       prm.add_parameter("Slide", slide, "Tangential displacement s of the upper block.");
+      prm.add_parameter("Material",
+                        material,
+                        "StVenantKirchhoff or IncompressibleNeoHookean (compressible neo-Hookean, "
+                        "shear and bulk modulus from E and nu).");
       prm.add_parameter("YoungsModulus", youngs_modulus, "Young's modulus.");
       prm.add_parameter("PoissonsRatio", poissons_ratio, "Poisson's ratio.");
       prm.add_parameter("PenaltyParameter", penalty_parameter, "Penalty parameter epsilon.");
@@ -254,6 +327,9 @@ public:
                         verify_search,
                         "Repeat every Verlet query with the exhaustive search.");
       prm.add_parameter("LoadIncrement", load_increment, "Load increment (quasi-static).");
+      prm.add_parameter("PostprocessEveryLoadStep",
+                        postprocess_every_load_step,
+                        "Postprocessing (output, contact quantities) after every load step.");
       prm.add_parameter("Preconditioner", preconditioner, "Preconditioner (None, AMG, ...).");
       prm.add_parameter("NewtonAbsTol", newton_abs_tol, "Absolute tolerance of Newton's method.");
     }
@@ -269,10 +345,11 @@ private:
     this->param.large_deformation    = true;
     this->param.pull_back_body_force = false;
     this->param.pull_back_traction   = false;
-    this->param.material_type        = MaterialType::StVenantKirchhoff;
+    this->param.material_type        = material;
 
-    // AnalyticPlane: existing penalty contact with a rigid obstacle, same penalty parameter
-    if(lower_block == LowerBlock::AnalyticPlane)
+    // AnalyticPlane, CrushedRing: existing penalty contact with a rigid obstacle, same penalty
+    // parameter
+    if(analytic_contact_used())
     {
       this->param.contact_method = analytic_contact_method;
       this->param.contact_penalty_parameter =
@@ -293,7 +370,8 @@ private:
     this->param.deformable_contact_augmented_lagrangian    = augmented_lagrangian;
     this->param.deformable_contact_uzawa_gap_tolerance     = uzawa_gap_tolerance;
 
-    this->param.load_increment = load_increment;
+    this->param.load_increment              = load_increment;
+    this->param.postprocess_every_load_step = postprocess_every_load_step;
 
     this->param.mapping_degree              = 1;
     this->param.mapping_degree_coarse_grids = 1;
@@ -316,10 +394,9 @@ private:
 
     // the frictionless penalty contact has a symmetric tangent
     // (Nitsche's method with theta = 0 has a non-symmetric tangent)
-    bool const symmetric = not(lower_block == LowerBlock::AnalyticPlane and
-                               analytic_contact_method == ContactMethod::Nitsche) and
-                           not(lower_block != LowerBlock::AnalyticPlane and
-                               deformable_contact_method == ContactMethod::Nitsche);
+    bool const symmetric =
+      not(analytic_contact_used() and analytic_contact_method == ContactMethod::Nitsche) and
+      not(deformable_contact_used() and deformable_contact_method == ContactMethod::Nitsche);
     this->param.solver_data =
       SolverData(1e4, 1.e-14, 1.e-6, symmetric ? LinearSolver::CG : LinearSolver::GMRES, 100);
     this->param.preconditioner = preconditioner;
@@ -355,6 +432,46 @@ private:
           std::vector<unsigned int> const &                        vector_local_refinements) {
         (void)periodic_face_pairs;
         (void)vector_local_refinements;
+
+        if(setup == Setup::CrushedRing)
+        {
+          dealii::Point<dim> const center;
+          if(ring_model == RingModel::Half)
+            dealii::GridGenerator::half_hyper_shell(
+              tria, center, ring_inner_radius, 1.0, 2 * ring_cells);
+          else
+            dealii::GridGenerator::quarter_hyper_shell(
+              tria, center, ring_inner_radius, 1.0, ring_cells);
+          tria.set_all_manifold_ids(0);
+          tria.set_manifold(0, dealii::SphericalManifold<dim>(center));
+
+          /*
+           * boundary ids: 4 x = 0 (symmetry u_x = 0), 7 y = 0 (Quarter, symmetry u_y = 0), 5 / 6
+           * outer surface y > 0 / y < 0 (upper / lower plate), 20 inner surface (Half,
+           * self-contact), 21 inner surface (Quarter, rigid plane y = 0)
+           */
+          for(auto cell : tria.cell_iterators())
+            for(auto const & f : cell->face_indices())
+            {
+              if(not cell->at_boundary(f))
+                continue;
+              dealii::Point<dim> const   c  = cell->face(f)->center();
+              dealii::types::boundary_id id = 0;
+              if(std::abs(c[0]) < 1e-10)
+                id = 4;
+              else if(ring_model == RingModel::Quarter and std::abs(c[1]) < 1e-10)
+                id = 7;
+              else if(c.norm() > 0.5 * (ring_inner_radius + 1.0))
+                id = (c[1] > 0.0) ? 5 : 6;
+              else
+                id = (ring_model == RingModel::Half) ? 20 : 21;
+              cell->face(f)->set_boundary_id(id);
+            }
+
+          if(global_refinements > 0)
+            tria.refine_global(global_refinements);
+          return;
+        }
 
         if(setup == Setup::SlottedBlock)
         {
@@ -474,6 +591,33 @@ private:
 
     auto & bc = *this->boundary_descriptor;
 
+    if(setup == Setup::CrushedRing)
+    {
+      dealii::ComponentMask mask_x(dim, false), mask_y(dim, false);
+      mask_x.set(0, true);
+      mask_y.set(1, true);
+      bc.dirichlet_bc.insert(pair(4, new dealii::Functions::ZeroFunction<dim>(dim)));
+      bc.dirichlet_bc_initial_acceleration.insert(
+        pair(4, new dealii::Functions::ZeroFunction<dim>(dim)));
+      bc.dirichlet_bc_component_mask.insert(pair_mask(4, mask_x));
+      bc.contact_bc.insert(pair(5, new Plate<dim>(1.0, crush)));
+      if(ring_model == RingModel::Half)
+      {
+        bc.contact_bc.insert(pair(6, new Plate<dim>(-1.0, crush)));
+        bc.neumann_bc.insert(pair(20, new dealii::Functions::ZeroFunction<dim>(dim)));
+        bc.deformable_contact_pairs.push_back({20, 20});
+      }
+      else
+      {
+        bc.dirichlet_bc.insert(pair(7, new dealii::Functions::ZeroFunction<dim>(dim)));
+        bc.dirichlet_bc_initial_acceleration.insert(
+          pair(7, new dealii::Functions::ZeroFunction<dim>(dim)));
+        bc.dirichlet_bc_component_mask.insert(pair_mask(7, mask_y));
+        bc.contact_bc.insert(pair(21, new HorizontalPlane<dim>()));
+      }
+      return;
+    }
+
     if(setup == Setup::SlottedBlock)
     {
       bc.neumann_bc.insert(pair(0, new dealii::Functions::ZeroFunction<dim>(dim)));
@@ -550,6 +694,21 @@ private:
   {
     typedef std::pair<dealii::types::material_id, std::shared_ptr<MaterialData>> Pair;
 
+    if(material == MaterialType::IncompressibleNeoHookean)
+    {
+      // neo-Hookean with the same small-strain moduli: mu = E / (2 (1 + nu)),
+      // kappa = E / (3 (1 - 2 nu)) (penalty on J = 1 with finite bulk modulus, compressible)
+      double const shear_modulus = youngs_modulus / (2.0 * (1.0 + poissons_ratio));
+      double const bulk_modulus  = youngs_modulus / (3.0 * (1.0 - 2.0 * poissons_ratio));
+      this->material_descriptor->insert(
+        Pair(0,
+             new IncompressibleNeoHookeanData<dim>(MaterialType::IncompressibleNeoHookean,
+                                                   shear_modulus,
+                                                   bulk_modulus,
+                                                   Type2D::PlaneStrain)));
+      return;
+    }
+
     this->material_descriptor->insert(
       Pair(0,
            new StVenantKirchhoffData<dim>(MaterialType::StVenantKirchhoff,
@@ -587,10 +746,30 @@ private:
     return post;
   }
 
-  Setup        setup         = Setup::TwoBlocks;
-  SlotSurfaces slot_surfaces = SlotSurfaces::SelfContact;
-  double       slot_width    = 0.02;
-  double       push          = 0.045;
+  // contact with analytic rigid obstacles / between deformable surfaces
+  bool
+  analytic_contact_used() const
+  {
+    return setup == Setup::CrushedRing or
+           (setup == Setup::TwoBlocks and lower_block == LowerBlock::AnalyticPlane);
+  }
+
+  bool
+  deformable_contact_used() const
+  {
+    if(setup == Setup::CrushedRing)
+      return ring_model == RingModel::Half;
+    return not(setup == Setup::TwoBlocks and lower_block == LowerBlock::AnalyticPlane);
+  }
+
+  Setup        setup             = Setup::TwoBlocks;
+  RingModel    ring_model        = RingModel::Half;
+  double       ring_inner_radius = 0.8;
+  unsigned int ring_cells        = 8;
+  double       crush             = 1.0;
+  SlotSurfaces slot_surfaces     = SlotSurfaces::SelfContact;
+  double       slot_width        = 0.02;
+  double       push              = 0.045;
 
   ContactSurfaces contact_surfaces = ContactSurfaces::Faces;
   LowerBlock      lower_block      = LowerBlock::Deformable;
@@ -600,8 +779,9 @@ private:
   double       slide       = 0.3;
   double const t_press     = 0.5;
 
-  double youngs_modulus = 1.0;
-  double poissons_ratio = 0.3;
+  MaterialType material       = MaterialType::StVenantKirchhoff;
+  double       youngs_modulus = 1.0;
+  double       poissons_ratio = 0.3;
 
   double                penalty_parameter           = 1000.0;
   double                contact_radius              = 0.05;
@@ -624,8 +804,9 @@ private:
   double                nonmonotone_factor          = 2.0;
   unsigned int          nonmonotone_steps           = 3;
 
-  double load_increment = 0.05;
-  double newton_abs_tol = 1.e-8;
+  double load_increment              = 0.05;
+  bool   postprocess_every_load_step = false;
+  double newton_abs_tol              = 1.e-8;
 
   Preconditioner preconditioner = Preconditioner::AMG;
 };

@@ -459,3 +459,62 @@ St. Venant-Kirchhoff bulk fails there (also without contact: L3 at push ~0.052, 
 the push is limited (default 0.045; 0.035 for L4). A first variant with the push applied only on
 x < 0.3 failed already at the end of the loaded zone (singular corner of the Dirichlet data).
 
+
+## Crushed ring: self-contact against an independent rigid-contact model (measured 2026-11-28)
+
+Setup `CrushedRing`: ring 0.8 <= |x| <= 1, plane strain, crushed between two rigid frictionless
+plates y = +-(1 - d t / 2) (existing rigid obstacle contact, Nitsche, gamma_0 E = 10, on the outer
+surface). Two models of the same problem with independent contact implementations:
+
+- `RingModel = Half`: x >= 0 (u_x = 0 at x = 0), the inner surface is one self-contact surface
+  (pair (20, 20), augmented Lagrangian, eps = 1000, Uzawa tolerance 1e-6),
+- `RingModel = Quarter`: x, y >= 0 (additionally u_y = 0 at y = 0), the inner surface is in contact
+  with the rigid plane y = 0 (rigid obstacle contact, Nitsche).
+
+The force and the active area of each rigid contact boundary are written to
+`<output>_contact_boundaries.txt` (and printed if there is more than one contact boundary);
+`PostprocessEveryLoadStep = true` gives the whole load path. `Material = IncompressibleNeoHookean`
+(compressible neo-Hookean with mu, kappa from E = 1, nu = 0.3): St. Venant-Kirchhoff softens in
+compression and collapses in the hinges of the ring (stretch < 1/sqrt(3)), both models fail there
+at d ~ 1.5.
+
+Bug fix needed for this test: `IncompressibleNeoHookean` used the three-dimensional isochoric
+stress with I_1 = tr C of the 2 x 2 tensor in 2d, i.e. S = mu / 3 I in the reference configuration
+(the quasi-static solver diverged in the second load step). Plane strain now uses I_1 = tr C + 1
+(C_33 = 1); the three-dimensional material is unchanged.
+
+Linear stiffness (d = 0.001, quarter model, P = plate force of the full ring per unit depth)
+against the thick-ring formula of Roark (point loads, bending, normal force and shear):
+
+| R_i | t / R | L = 2 | L = 4 | L = 6 | Roark |
+|---|---|---|---|---|---|
+| 0.9 | 0.105 | 3.795e-4 | 6.874e-4 | 7.039e-4 | 7.040e-4 |
+| 0.8 | 0.222 | 3.199e-3 | 6.046e-3 | 6.163e-3 | 6.209e-3 (-0.7 %: thick-ring theory, local indentation) |
+
+Large deformation (d up to 1.75, load increment 0.0175, Q1, sequential):
+
+| L | inner contact onset d (half / quarter) | P(1.0) half / quarter | P(1.75) half / quarter |
+|---|---|---|---|
+| 2 | 1.61 / 1.61 | 6.296521e-3 / 6.296521e-3 | 1.956368 / 1.956379 |
+| 3 | 1.575 / 1.575 | 6.120961e-3 / 6.120961e-3 | 1.950733 / 1.950749 |
+| 4 | 1.474 / 1.470 | 6.074423e-3 / 6.074423e-3 | 1.949402 / 1.949410 |
+| 5 | 1.451 / (quarter failed at d = 1.44) | 6.062683e-3 / 6.062683e-3 | 1.949180 / - |
+
+- Before the inner contact, both models give identical forces (all printed digits); after the
+  full contact, the plate force agrees within 1e-5 and converges with the mesh.
+- Penalty (eps = 1000) instead of the augmented Lagrangian: P(1.75) lower by 0.43 % for all L.
+- Verlet == exhaustive during the solve (L3, AL): 0 mismatches in 209408 queries.
+- The models differ (up to 1 % of P_max) only in two places, both physical: (i) the first inner
+  contact is not at the crown but in the hinges, where the compressed inner surface reaches the
+  creasing threshold of the neo-Hookean material (circumferential stretch ~0.7) and folds onto
+  itself at the scale of the mesh, so the onset does not converge with the mesh; (ii) at d ~ 1.6 the
+  walls snap onto each other (inner contact half-length from ~0.04 to ~1.2 within two load steps),
+  where the state inside the load step depends on the path. The test therefore validates the
+  self-contact against the rigid symmetric contact, but the onset is not a mesh-independent
+  quantity.
+
+Test `tests/crushed_ring_self_contact.json`: half ring, L = 2, augmented Lagrangian, verified
+search. Note on the test harness: the contact tests write their files to `output/...`, which
+collides with the file `output` of the deal.II test harness (ctest reports DIFF failed, the
+stdout is in `<test>.release/serial/output/stdout`); compared with numdiff (-a 1e-6 -r 1e-8), all
+deformable and rigid contact tests agree with their reference outputs.

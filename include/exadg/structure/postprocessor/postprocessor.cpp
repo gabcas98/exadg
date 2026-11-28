@@ -172,6 +172,17 @@ PostProcessor<dim, Number>::evaluate_contact(VectorType const & solution, double
         << std::endl
         << "  Min. gap:                  " << std::setprecision(5) << filter(contact.min_gap)
         << std::endl;
+  // several contact boundaries (e.g. a body pressed between two obstacles): force and active
+  // area of each boundary
+  if(contact.force_per_boundary.size() > 1)
+    for(auto const & force_boundary : contact.force_per_boundary)
+    {
+      pcout << "  Boundary " << std::setw(3) << force_boundary.first << " force / area:";
+      for(unsigned int d = 0; d < dim; ++d)
+        pcout << " " << std::setprecision(5) << filter(force_boundary.second[d]);
+      pcout << " / " << std::setprecision(5)
+            << filter(contact.active_area_per_boundary.at(force_boundary.first)) << std::endl;
+    }
   if(contact.friction)
     pcout << "  Max. tangential traction:  " << std::setprecision(5)
           << filter(contact.max_tangential_traction) << std::endl
@@ -187,6 +198,23 @@ PostProcessor<dim, Number>::evaluate_contact(VectorType const & solution, double
     f << " " << contact.active_area << " " << contact.max_pressure << " " << contact.min_gap;
     if(contact.friction)
       f << " " << contact.max_tangential_traction << " " << contact.stick_area;
+    f << std::endl;
+  }
+
+  // several contact boundaries: force and active area for each boundary (the total force does not
+  // show the load of a body pressed between two obstacles), columns: time, then for each
+  // boundary: id, force, active area
+  if(rank == 0 and contact.force_per_boundary.size() > 1)
+  {
+    std::ofstream f(data.directory + data.filename + "_boundaries.txt", std::ios::app);
+    f << std::scientific << std::setprecision(10) << contact.time;
+    for(auto const & force_boundary : contact.force_per_boundary)
+    {
+      f << " " << force_boundary.first;
+      for(unsigned int d = 0; d < dim; ++d)
+        f << " " << force_boundary.second[d];
+      f << " " << contact.active_area_per_boundary.at(force_boundary.first);
+    }
     f << std::endl;
   }
 

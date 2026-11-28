@@ -648,6 +648,12 @@ NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & di
                             this->operator_data.dof_index_inhomogeneous,
                             this->operator_data.quad_index);
 
+  for(auto const & boundary : this->operator_data.bc->contact_bc)
+  {
+    result.force_per_boundary[boundary.first]       = dealii::Tensor<1, dim>();
+    result.active_area_per_boundary[boundary.first] = 0.0;
+  }
+
   unsigned int const begin = this->matrix_free->n_inner_face_batches();
   unsigned int const end   = begin + this->matrix_free->n_boundary_face_batches();
   for(unsigned int face = begin; face < end; ++face)
@@ -685,10 +691,17 @@ NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & di
 
       for(unsigned int v = 0; v < n_lanes; ++v)
       {
+        dealii::Tensor<1, dim> & force_boundary = result.force_per_boundary[boundary_id];
         for(unsigned int d = 0; d < dim; ++d)
+        {
           result.force[d] += pressure[v] * obstacle_values.normal[d][v] * JxW[v];
+          force_boundary[d] += pressure[v] * obstacle_values.normal[d][v] * JxW[v];
+        }
         if(pressure[v] > 0.0)
+        {
           result.active_area += JxW[v];
+          result.active_area_per_boundary[boundary_id] += JxW[v];
+        }
 
         if(friction_active)
         {
@@ -696,6 +709,7 @@ NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & di
           for(unsigned int d = 0; d < dim; ++d)
           {
             result.force[d] += state.traction_tangential[d][v] * JxW[v];
+            force_boundary[d] += state.traction_tangential[d][v] * JxW[v];
             norm_t += state.traction_tangential[d][v] * state.traction_tangential[d][v];
           }
           result.max_tangential_traction =
@@ -728,6 +742,11 @@ NonLinearOperator<dim, Number>::compute_contact_quantities(VectorType const & di
     this->matrix_free->get_dof_handler(this->operator_data.dof_index).get_mpi_communicator();
   for(unsigned int d = 0; d < dim; ++d)
     result.force[d] = dealii::Utilities::MPI::sum(result.force[d], mpi_comm);
+  for(auto & force_boundary : result.force_per_boundary)
+    for(unsigned int d = 0; d < dim; ++d)
+      force_boundary.second[d] = dealii::Utilities::MPI::sum(force_boundary.second[d], mpi_comm);
+  for(auto & area : result.active_area_per_boundary)
+    area.second = dealii::Utilities::MPI::sum(area.second, mpi_comm);
   result.active_area  = dealii::Utilities::MPI::sum(result.active_area, mpi_comm);
   result.max_pressure = dealii::Utilities::MPI::max(result.max_pressure, mpi_comm);
   result.min_gap      = dealii::Utilities::MPI::min(result.min_gap, mpi_comm);

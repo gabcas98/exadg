@@ -202,6 +202,10 @@ DriverQuasiStatic<dim, Number>::do_solve()
     // the converged solution is the history for the next load step (frictional contact)
     pde_operator->set_previous_solution(solution, load_factor);
 
+    // intermediate load steps (the final state is postprocessed after the loop)
+    if(param.postprocess_every_load_step and load_factor < 1.0 - eps)
+      postprocessing();
+
     // re-init increment for next load step
     if(step_number == 0)
       load_increment = param.load_increment - last_load_increment;

@@ -24,6 +24,7 @@
 
 // C/C++
 #include <limits>
+#include <map>
 #include <vector>
 
 // deal.II
@@ -50,6 +51,12 @@ struct ContactQuantities
 
   // force exerted by the obstacles on the body, int_{Gamma_C} lambda n dA
   dealii::Tensor<1, dim> force;
+
+  // the same force for each contact boundary (boundary id of the body)
+  std::map<dealii::types::boundary_id, dealii::Tensor<1, dim>> force_per_boundary;
+
+  // the active area for each contact boundary
+  std::map<dealii::types::boundary_id, double> active_area_per_boundary;
 
   // reference area of the active contact zone (g < 0)
   double active_area = 0.0;
